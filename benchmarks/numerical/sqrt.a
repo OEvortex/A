@@ -1,0 +1,7 @@
+fn main() -> void:
+    var acc = 0.0
+    for i in 1..50000:
+        acc += sqrt(f64(i))
+    print(round(acc))
+
+main()

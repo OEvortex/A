@@ -1,0 +1,15 @@
+# Count to one billion, one number at a time.
+# The tree-walking interpreter needs roughly eight minutes for this;
+# lower TARGET for a quick run while experimenting.
+const TARGET: i64 = 1_000_000_000
+const CHUNK: i64 = 100_000_000
+
+fn main() -> void:
+    var count: i64 = 0
+    for _chunk in 0..(TARGET / CHUNK):
+        for _step in 0..CHUNK:
+            count += 1
+        print("counted", count)
+    print("done:", count)
+
+main()

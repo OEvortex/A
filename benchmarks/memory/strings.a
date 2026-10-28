@@ -1,0 +1,8 @@
+fn main() -> void:
+    var total = 0
+    for round in 0..500:
+        parts = [str(n) for n in 0..200]
+        total += len(join(parts, ","))
+    print(total)
+
+main()

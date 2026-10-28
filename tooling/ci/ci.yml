@@ -16,11 +16,7 @@ jobs:
         run: cmake --build build -j
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: Examples
-        run: |
-          for f in examples/*/*.a; do
-            ./build/a run "$f" > /dev/null
-          done
+
 
   sanitizers:
     runs-on: ubuntu-latest

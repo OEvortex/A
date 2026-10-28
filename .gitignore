@@ -8,6 +8,8 @@ cmake-build-*/
 !examples/**/*.a
 !tests/**/*.a
 !stdlib/**/*.a
+!benchmarks/*.a
+!benchmarks/**/*.a
 *.so
 *.dylib
 *.exe

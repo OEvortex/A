@@ -36,6 +36,18 @@ interpreter:
 `a run` executes programs directly; `a check` type-checks without running.
 Native code generation (LLVM) is the next milestone and is not part of v0.3.
 
+### Performance
+
+The v0.3 interpreter is roughly 40×–1,460× slower than optimized C++ on the
+reference suite, depending on workload. The measured baseline, the code-level
+causes, and the phased plan to reach native parity (tagged dispatch, slot
+frames, bytecode VM, typed IR, LLVM backend) are in
+[`docs/performance`](docs/performance/README.md). Compare all three languages:
+
+```sh
+python3 tools/benchmark-runner/compare.py --runs 5
+```
+
 ## Build
 
 Requirements: CMake 3.20+, a C++20 compiler (GCC 11+, Clang 14+, MSVC 19.29+).
@@ -125,11 +137,11 @@ runtime/errors                 runtime error types
 runtime/collections            transparent string-keyed tables
 stdlib/                        native and A-file library modules
 tests/integration              golden-file suite
-tools/                         formatter, LSP, docs, benchmark runner (planned)
-benchmarks/                    performance suite
+tools/                         formatter, LSP, docs, benchmark runner
+benchmarks/                    performance suite and cross-language equivalents
 examples/                      sample programs by topic
 tooling/                       build, release, and CI scripts
-docs/                          language, design, and library references
+docs/                          language, design, library, and performance references
 ```
 
 Each compiler stage is a separate static library (`a_diagnostics`, `a_lexer`,

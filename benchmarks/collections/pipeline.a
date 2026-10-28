@@ -1,0 +1,9 @@
+fn main() -> void:
+    data = [n for n in 0..5000]
+    total = data
+        |> filter(fn(n) => n % 3 == 0)
+        |> map(fn(n) => n * 2)
+        |> sum()
+    print(total)
+
+main()

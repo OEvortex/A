@@ -1,0 +1,7 @@
+fn main() -> void:
+    var total = 0
+    for i in 0..200000:
+        total += i
+    print(total)
+
+main()

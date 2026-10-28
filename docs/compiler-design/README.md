@@ -193,6 +193,22 @@ Two details worth preserving when extending the runtime:
 - Integer operations are overflow-checked; shifts validate 0..63, `<<` wraps
   on 64 bits, and division/modulo/conversions check their domains.
 
+## Performance
+
+The v0.3 backend is a tree-walking interpreter, and every optimization decision
+for the future VM/LLVM backends must keep its semantics (checked arithmetic,
+`defer` unwinding, reference-valued arrays). The measured baseline, per-phase
+targets, and the C++-parity gates are in
+[`docs/performance`](../performance/README.md).
+
+Known hot-path costs, in order of impact:
+
+- RTTI `dynamic_cast` chains in `exec`/`eval` (`backend/interpreter.cpp`);
+- string-keyed `Env::find` walks per identifier access;
+- `std::variant` `Value` construction and `shared_ptr` copies;
+- string comparison for operator dispatch in `applyBinary`;
+- no unboxed locals or slot-resolved frames, despite `Sema` knowing every type.
+
 ## Adding a feature
 
 A typical language addition touches each layer in order:
