@@ -85,10 +85,18 @@ add_library(a_backend STATIC
 )
 target_link_libraries(a_backend PUBLIC a_type_checker a_runtime)
 
+add_library(a_tooling STATIC
+  compiler/source/tooling/source_text.cpp
+  compiler/source/tooling/ast_text.cpp
+  compiler/source/tooling/formatter.cpp
+  compiler/source/tooling/docgen.cpp
+)
+target_link_libraries(a_tooling PUBLIC a_parser)
+
 add_library(a_driver STATIC
   compiler/source/driver/driver.cpp
 )
-target_link_libraries(a_driver PUBLIC a_backend)
+target_link_libraries(a_driver PUBLIC a_backend a_tooling)
 
 # Namespaced aliases keep embedding projects decoupled from target names.
 add_library(a::diagnostics ALIAS a_diagnostics)
@@ -98,6 +106,7 @@ add_library(a::name_resolution ALIAS a_name_resolution)
 add_library(a::type_checker ALIAS a_type_checker)
 add_library(a::runtime ALIAS a_runtime)
 add_library(a::backend ALIAS a_backend)
+add_library(a::tooling ALIAS a_tooling)
 add_library(a::driver ALIAS a_driver)
 
 # ---------------------------------------------------------------------- cli
@@ -112,7 +121,7 @@ add_executable(a-lsp
   tools/language-server/analysis.cpp
   tools/language-server/json.cpp
 )
-target_link_libraries(a-lsp PRIVATE a_type_checker)
+target_link_libraries(a-lsp PRIVATE a_type_checker a_tooling)
 
 # ---------------------------------------------------------------- packaging
 
@@ -131,6 +140,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh")
   add_test(NAME language-suite
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh $<TARGET_FILE:a>)
 endif()
+
+add_executable(a-tooling-tests tests/tooling/tooling_tests.cpp)
+target_link_libraries(a-tooling-tests PRIVATE a_tooling)
+add_test(NAME tooling-tests COMMAND a-tooling-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

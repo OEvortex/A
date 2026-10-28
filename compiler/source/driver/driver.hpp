@@ -32,10 +32,29 @@ int buildFile(const std::string& path, const std::string& outputPath,
 int emitLLVMFile(const std::string& path, const std::string& outputPath,
                  const DriverConfig& config, std::ostream& err);
 
-// Formats a source file, printing the formatted text to `out`.
-int formatFile(const std::string& path, std::ostream& out, std::ostream& err);
+// Formats a source file. By default the formatted text is written to `out`;
+// `checkOnly` reports whether the file is already formatted, and
+// `writeInPlace` rewrites the input file.
+struct FormatFileOptions {
+  bool checkOnly = false;
+  bool writeInPlace = false;
+  int indentWidth = 4;
+  bool useColor = false;
+};
 
-// Generates documentation markdown for a module, printing to `out`.
-int documentFile(const std::string& path, std::ostream& out, std::ostream& err);
+int formatFile(const std::string& path, const FormatFileOptions& options, std::ostream& out,
+               std::ostream& err);
+
+// Generates documentation for a module. Markdown is produced by default;
+// `json` selects the structured JSON form, and `outputPath` writes to a file
+// instead of `out`.
+struct DocFileOptions {
+  bool json = false;
+  bool useColor = false;
+  std::string outputPath;
+};
+
+int documentFile(const std::string& path, const DocFileOptions& options, std::ostream& out,
+                 std::ostream& err);
 
 }  // namespace a

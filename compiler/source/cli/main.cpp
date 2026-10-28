@@ -26,12 +26,16 @@ void printUsage(std::ostream& os) {
       << "  build <file.a>   compile program to native binary (-o <bin>)\n"
       << "  check <file.a>   type-check a program without running it\n"
       << "  fmt <file.a>     format a source file (prints to stdout)\n"
-      << "  doc <file.a>     generate documentation markdown (prints to stdout)\n"
+      << "  doc <file.a>     generate documentation (markdown, prints to stdout)\n"
       << "  version          print the toolchain version\n"
       << "  help             show this message\n"
      << "\n"
      << "Options:\n"
-     << "  -o <file>        output binary path (for 'build')\n"
+     << "  -o <file>        output path (for 'build' and 'doc')\n"
+     << "  -w, --write      rewrite the source file in place (for 'fmt')\n"
+     << "  --check          exit nonzero if the file needs formatting (for 'fmt')\n"
+     << "  --indent <n>     indentation width in spaces (for 'fmt', default 4)\n"
+     << "  --json           emit structured JSON (for 'doc')\n"
      << "  --backend <name> compilation backend: 'native' (default) or 'llvm'\n"
      << "  --emit-llvm      emit textual LLVM IR (.ll) file instead of executable\n"
      << "  -I <dir>         add a module search directory (repeatable)\n"
@@ -58,6 +62,10 @@ struct Options {
   std::vector<std::string> modulePaths;
   std::string stdlibRoot;
   bool useColor = false;
+  bool checkOnly = false;
+  bool writeInPlace = false;
+  bool jsonOutput = false;
+  int indentWidth = 4;
 };
 
 bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
@@ -70,6 +78,40 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
       colorDisabled = true;
     } else if (arg == "--emit-llvm") {
       options.emitLLVM = true;
+    } else if (arg == "--check") {
+      options.checkOnly = true;
+    } else if (arg == "-w" || arg == "--write") {
+      options.writeInPlace = true;
+    } else if (arg == "--json") {
+      options.jsonOutput = true;
+    } else if (arg == "--indent") {
+      if (i + 1 >= argc) {
+        err << "error: '--indent' requires a positive number\n";
+        return false;
+      }
+      std::string value = argv[++i];
+      try {
+        options.indentWidth = std::stoi(value);
+      } catch (...) {
+        err << "error: invalid indentation width '" << value << "'\n";
+        return false;
+      }
+      if (options.indentWidth < 1 || options.indentWidth > 16) {
+        err << "error: indentation width must be between 1 and 16\n";
+        return false;
+      }
+    } else if (arg.rfind("--indent=", 0) == 0) {
+      std::string value = arg.substr(9);
+      try {
+        options.indentWidth = std::stoi(value);
+      } catch (...) {
+        err << "error: invalid indentation width '" << value << "'\n";
+        return false;
+      }
+      if (options.indentWidth < 1 || options.indentWidth > 16) {
+        err << "error: indentation width must be between 1 and 16\n";
+        return false;
+      }
     } else if (arg == "--backend") {
       if (i + 1 >= argc) {
         err << "error: '--backend' requires a name ('native' or 'llvm')\n";
@@ -210,11 +252,20 @@ int main(int argc, char** argv) {
   }
 
   if (options.command == "fmt") {
-    return a::formatFile(options.path, std::cout, std::cerr);
+    a::FormatFileOptions formatOptions;
+    formatOptions.checkOnly = options.checkOnly;
+    formatOptions.writeInPlace = options.writeInPlace;
+    formatOptions.indentWidth = options.indentWidth;
+    formatOptions.useColor = options.useColor;
+    return a::formatFile(options.path, formatOptions, std::cout, std::cerr);
   }
 
   if (options.command == "doc") {
-    return a::documentFile(options.path, std::cout, std::cerr);
+    a::DocFileOptions docOptions;
+    docOptions.json = options.jsonOutput;
+    docOptions.useColor = options.useColor;
+    docOptions.outputPath = options.outputPath;
+    return a::documentFile(options.path, docOptions, std::cout, std::cerr);
   }
 
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);
