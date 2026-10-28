@@ -1,0 +1,39 @@
+# Object-oriented programming in A: Classes, Inheritance, and Metaclasses
+
+class Entity:
+    id: int
+    name: str
+
+    fn describe(self) -> str:
+        return "#{self.id}: {self.name}"
+
+class User(Entity):
+    email: str
+    active: bool
+
+    fn greet(self) -> void:
+        print("Hello, my name is {self.name} ({self.email})")
+
+# Metaclass declaration
+metaclass RegisteredMeta:
+    pass
+
+class Service(metaclass=RegisteredMeta):
+    name: str
+    port: int
+
+    fn url(self) -> str:
+        return "http://localhost:{self.port}"
+
+# Instantiation & usage
+user = User(1, "Vortex", "vortex@example.com", true)
+user.greet()
+print("Entity info:", user.describe())
+
+# Reassignment (Python-style variable mutation)
+user.name = "OEvortex"
+print("Updated name:", user.name)
+
+# Metaclass-backed service instance
+api = Service("Gateway", 8080)
+print("Service URL:", api.url())

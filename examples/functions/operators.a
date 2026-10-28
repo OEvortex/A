@@ -1,0 +1,40 @@
+# Demonstrating A's 25+ operators and Python-style dynamic ergonomics
+
+# 1. Python-style variable declaration (no 'var' required)
+count = 10
+count += 5
+count *= 2
+print("Count:", count)  # 30
+
+# 2. Arithmetic & Exponentiation (+, -, *, /, %, **)
+print("2 ** 10 =", 2 ** 10)
+print("100 % 7 =", 100 % 7)
+
+# 3. Bitwise operators (&, |, ^, ~, <<, >>)
+flags = 0b1010
+mask = 0b1100
+print("Bitwise AND:", flags & mask)
+print("Bitwise OR:", flags | mask)
+print("Bitwise XOR:", flags ^ mask)
+print("Bitwise NOT:", ~flags)
+print("Shift left:", 1 << 4)
+
+# 4. Containment (in, not in) on arrays, strings, and ranges
+languages = ["Rust", "Python", "C++", "A"]
+print("'A' in languages:", "A" in languages)
+print("'Java' not in languages:", "Java" not in languages)
+
+digits = 0..10
+print("7 in 0..10:", 7 in digits)
+
+# 5. Null Coalescing / Elvis (??)
+fallback_name = None ?? "Default User"
+print("Fallback name:", fallback_name)
+
+# 6. Pipeline operator (|>)
+total = [1, 2, 3, 4, 5, 6]
+    |> filter(fn(x) => x % 2 == 0)
+    |> map(fn(x) => x * x)
+    |> sum()
+
+print("Sum of even squares:", total)

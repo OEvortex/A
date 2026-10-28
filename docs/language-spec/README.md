@@ -9,7 +9,7 @@ and indented consistently; braces are not used for blocks.
 - Indentation must use spaces; tabs in indentation are reported as errors.
 - Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. A bare `_` is a discard name.
 - Keywords: `var const fn if elif else while do for in loop break continue
-  return defer struct enum self true false and or not import from as match
+  return defer struct class Class metaclass Metaclass pass enum self true false and or not import from as match
   None`.
 - Numeric literals support `_` separators, decimal integers, fractional parts,
   exponent notation, and hex/binary integer literals (`0xFF`, `0b1010_1011`).
@@ -22,27 +22,23 @@ and indented consistently; braces are not used for blocks.
   newline immediately after the opening quotes. Dedenting is not performed.
 - Character literals use single quotes, cover one Unicode code point, and
   accept the same escapes as strings.
-- Operators: `+ - * / % ** & | ^ ~ << >> .. == != < <= > >= = += -= *= /= %=
+- Operators (25+): `+ - * / % ** & | ^ ~ << >> .. in not in == != < <= > >= = += -= *= /= %=
   &= |= ^= <<= >>= and or not ?. ?? ? : ! => -> |>`.
 
 
 ## Bindings and types
 
 ```a
-answer = 42              # immutable, inferred as i32
-name: String = "Ada"     # explicit annotation
-var total = 0            # mutable binding
+answer = 42              # mutable by default (Python style), inferred as i32
+answer = 43              # rebind in place
 total += 5               # compound assignment
+name: String = "Ada"     # explicit type annotation (also accepts 'str', 'int', 'float')
+const PI = 3.14159       # immutable constant
 ```
 
-The first assignment to an unknown name declares a binding. Redeclaration in
-the same scope is an error. Without `var`, rebinding is rejected. Mutability
-controls reassignment only: fields of struct values and elements of arrays can
-always be updated.
-
-`const NAME = expr` declares a named immutable value, valid at module and local
-scope. Constants cannot be reassigned (`Cannot assign to constant 'NAME'.`) and
-are initialized in order at runtime.
+The first assignment to an unknown name declares a mutable binding (Python-style variable declaration).
+`var` can also be used explicitly. Rebinding and updating in place are fully supported.
+To define an immutable value that cannot be reassigned, use `const`:
 
 ```a
 const LIMIT = 10
@@ -325,30 +321,40 @@ Destructuring requires a tuple of the same arity. Tuple slots cannot be
 indexed and tuples cannot be compared with `==` in v0.3; compare their fields
 instead.
 
-## Structs and methods
+## Classes, structs, and methods
+
+Both `class` (or `Class`) and `struct` are supported:
 
 ```a
-struct Point:
-    x: i32
-    y: i32
+class Animal:
+    sound: str
 
-    fn sum(self) -> i32:
-        return self.x + self.y
+    fn speak(self) -> str:
+        return self.sound
 
-    fn shift(self, dx: i32, dy: i32) -> void:
-        self.x += dx
-        self.y += dy
+class Dog(Animal):
+    name: str
 
-p = Point(3, 4)             # positional
-q = Point(y=10, x=20)       # named, all-or-nothing
-p.shift(1, 1)
-print(p.sum())
+d = Dog("Woof", "Rex")
+print(d.name, "says", d.speak())
+```
+
+### Metaclasses and `pass`
+
+```a
+metaclass ModelMeta:
+    pass
+
+class BaseModel(metaclass=ModelMeta):
+    id: int
+
+m = BaseModel(1)
 ```
 
 Constructors accept either positional arguments or named arguments (mixing is
-an error). Methods declare `self` explicitly as the first parameter. Struct
+an error). Methods declare `self` explicitly as the first parameter. Class/struct
 values are reference values: passing or assigning one shares the same object.
-A field holding a function value can be called like a method.
+Derived classes inherit fields and methods from their base class.
 
 ## Enums
 

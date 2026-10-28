@@ -39,6 +39,11 @@ class DiagnosticSink {
   bool hasErrors() const { return errors_ > 0; }
   int errorCount() const { return errors_; }
 
+  // Diagnostics collected so far, in insertion order. Language tooling uses
+  // this to translate compiler diagnostics into editor diagnostics without
+  // going through the terminal renderer.
+  const std::vector<Diagnostic>& diagnostics() const { return diagnostics_; }
+
   // Prints diagnostics added since the previous flush. This lets each
   // pipeline stage flush without reprinting earlier output.
   void flush(std::ostream& os, bool useColor);
