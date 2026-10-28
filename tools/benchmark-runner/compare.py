@@ -85,6 +85,7 @@ def main() -> int:
     parser.add_argument("--json", default="")
     parser.add_argument("--skip-cpp", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
+    parser.add_argument("--native", action="store_true", help="Benchmark 'a build' native binaries against C++")
     args = parser.parse_args()
 
     if not os.access(args.a, os.X_OK):
@@ -107,7 +108,13 @@ def main() -> int:
 
     for name, cfg in BENCHES.items():
         row = {}
-        a_best, a_med, a_out = time_cmd([args.a, "run", os.path.join(ROOT, cfg["a"])], args.runs)
+        src_a = os.path.join(ROOT, cfg["a"])
+        if args.native:
+            bin_a = os.path.join(tmp, name.replace("/", "_") + "_native")
+            subprocess.run([args.a, "build", src_a, "-o", bin_a], check=True)
+            a_best, a_med, a_out = time_cmd([bin_a], args.runs)
+        else:
+            a_best, a_med, a_out = time_cmd([args.a, "run", src_a], args.runs)
         row["a"] = {"best_ms": a_best, "median_ms": a_med, "output": a_out}
 
         py_out = ""

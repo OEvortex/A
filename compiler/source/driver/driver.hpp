@@ -24,4 +24,8 @@ int runFile(const std::string& path, const DriverConfig& config, std::istream& i
 int runSource(const std::string& displayPath, std::string source, const DriverConfig& config,
               std::istream& in, std::ostream& out, std::ostream& err);
 
+// Compiles a program to a native binary executable (`a build`).
+int buildFile(const std::string& path, const std::string& outputPath,
+              const DriverConfig& config, std::ostream& err);
+
 }  // namespace a

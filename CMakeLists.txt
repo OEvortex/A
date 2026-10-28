@@ -80,6 +80,7 @@ target_link_libraries(a_runtime PUBLIC a_project_options)
 
 add_library(a_backend STATIC
   compiler/source/backend/interpreter.cpp
+  compiler/source/backend/native/native_codegen.cpp
 )
 target_link_libraries(a_backend PUBLIC a_type_checker a_runtime)
 

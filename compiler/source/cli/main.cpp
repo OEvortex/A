@@ -23,11 +23,13 @@ void printUsage(std::ostream& os) {
      << "\n"
      << "Commands:\n"
      << "  run <file.a>     compile and execute a program\n"
+     << "  build <file.a>   compile program to native binary (-o <bin>)\n"
      << "  check <file.a>   type-check a program without running it\n"
      << "  version          print the toolchain version\n"
      << "  help             show this message\n"
      << "\n"
      << "Options:\n"
+     << "  -o <file>        output binary path (for 'build')\n"
      << "  -I <dir>         add a module search directory (repeatable)\n"
      << "  --stdlib <dir>   override the standard library directory\n"
      << "  --no-color       disable colored diagnostics\n"
@@ -46,6 +48,7 @@ bool isTerminal() {
 struct Options {
   std::string command;
   std::string path;
+  std::string outputPath;
   std::vector<std::string> modulePaths;
   std::string stdlibRoot;
   bool useColor = false;
@@ -59,6 +62,12 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     std::string arg = argv[i];
     if (arg == "--no-color") {
       colorDisabled = true;
+    } else if (arg == "-o" || arg == "--output") {
+      if (i + 1 >= argc) {
+        err << "error: '" << arg << "' requires a file path\n";
+        return false;
+      }
+      options.outputPath = argv[++i];
     } else if (arg == "-I" || arg == "--include") {
       if (i + 1 >= argc) {
         err << "error: '" << arg << "' requires a directory\n";
@@ -96,7 +105,7 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     return false;
   }
 
-  static const std::vector<std::string> kCommands = {"run", "check", "version", "help"};
+  static const std::vector<std::string> kCommands = {"run", "build", "check", "version", "help"};
   bool known = false;
   for (const auto& command : kCommands) {
     if (positional[0] == command) {
@@ -164,6 +173,19 @@ int main(int argc, char** argv) {
   config.useColor = options.useColor;
   config.modulePaths = options.modulePaths;
   config.stdlibRoot = options.stdlibRoot;
+
+  if (options.command == "build") {
+    std::string out = options.outputPath;
+    if (out.empty()) {
+      out = options.path;
+      if (out.size() >= 2 && out.substr(out.size() - 2) == ".a") {
+        out = out.substr(0, out.size() - 2);
+      } else {
+        out += ".out";
+      }
+    }
+    return a::buildFile(options.path, out, config, std::cerr);
+  }
 
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);
 }
