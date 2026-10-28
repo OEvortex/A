@@ -12,6 +12,9 @@
 namespace a {
 namespace {
 
+// ============================================================================
+// LLVM IR Textual Emitter
+// ============================================================================
 class LLVMEmitter {
  public:
   LLVMEmitter(const ModuleGraph& graph, const SemaResult& sema, std::ostream& out)
@@ -21,7 +24,11 @@ class LLVMEmitter {
     emitTargetHeader();
     emitDeclarations();
 
-    // Emit all user function declarations / definitions
+    // Collect global string literals
+    collectStringLiterals();
+    emitStringConstants();
+
+    // Emit user function definitions
     for (std::size_t i = 0; i < graph_.modules.size(); ++i) {
       const auto& mod = graph_.modules[i];
       if (!mod.program) continue;
@@ -32,7 +39,7 @@ class LLVMEmitter {
       }
     }
 
-    // Emit main function
+    // Emit main entrypoint
     emitMain();
     return true;
   }
@@ -43,7 +50,9 @@ class LLVMEmitter {
   std::ostream& out_;
   int tempCounter_ = 1;
   int labelCounter_ = 1;
+  int strCounter_ = 1;
   std::unordered_map<std::string, std::string> locals_;
+  std::unordered_map<std::string, std::string> strTable_;
 
   std::string nextTemp() {
     return "%t" + std::to_string(tempCounter_++);
@@ -53,22 +62,99 @@ class LLVMEmitter {
     return prefix + std::to_string(labelCounter_++);
   }
 
+  void collectStringLiterals() {
+    // Collect strings from AST
+    for (const auto& mod : graph_.modules) {
+      if (!mod.program) continue;
+      for (const auto& stmt : mod.program->statements) {
+        collectFromStmt(*stmt);
+      }
+    }
+  }
+
+  void collectFromStmt(const Stmt& stmt) {
+    if (stmt.kind == StmtKind::Expr) {
+      collectFromExpr(*static_cast<const ExprStmt&>(stmt).expr);
+    } else if (stmt.kind == StmtKind::Let) {
+      const auto& let = static_cast<const LetStmt&>(stmt);
+      if (let.init) collectFromExpr(*let.init);
+    } else if (stmt.kind == StmtKind::Assign) {
+      const auto& a = static_cast<const AssignStmt&>(stmt);
+      if (a.value) collectFromExpr(*a.value);
+    } else if (stmt.kind == StmtKind::FnDecl) {
+      const auto& fn = static_cast<const FnDecl&>(stmt);
+      for (const auto& s : fn.body) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::If) {
+      const auto& ifs = static_cast<const IfStmt&>(stmt);
+      if (ifs.cond) collectFromExpr(*ifs.cond);
+      for (const auto& s : ifs.thenArm) collectFromStmt(*s);
+      for (const auto& s : ifs.elseArm) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::While) {
+      const auto& wh = static_cast<const WhileStmt&>(stmt);
+      if (wh.cond) collectFromExpr(*wh.cond);
+      for (const auto& s : wh.body) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::For) {
+      const auto& fo = static_cast<const ForStmt&>(stmt);
+      if (fo.iterable) collectFromExpr(*fo.iterable);
+      for (const auto& s : fo.body) collectFromStmt(*s);
+    }
+  }
+
+  void collectFromExpr(const Expr& expr) {
+    if (expr.kind == ExprKind::StringLit) {
+      const auto& s = static_cast<const StringLitExpr&>(expr).value;
+      if (strTable_.find(s) == strTable_.end()) {
+        std::string name = "@.str." + std::to_string(strCounter_++);
+        strTable_[s] = name;
+      }
+    } else if (expr.kind == ExprKind::Binary) {
+      const auto& b = static_cast<const BinaryExpr&>(expr);
+      collectFromExpr(*b.lhs);
+      collectFromExpr(*b.rhs);
+    } else if (expr.kind == ExprKind::Call) {
+      const auto& c = static_cast<const CallExpr&>(expr);
+      collectFromExpr(*c.callee);
+      for (const auto& a : c.args) collectFromExpr(*a.value);
+    }
+  }
+
   void emitTargetHeader() {
     out_ << "; ModuleID = 'a_program'\n";
     out_ << "source_filename = \"a_program.a\"\n";
     out_ << "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n";
     out_ << "target triple = \"x86_64-pc-linux-gnu\"\n\n";
 
-    // Format strings
+    // Format strings for standard runtime printing
     out_ << "@.fmt_int = private unnamed_addr constant [6 x i8] c\"%lld\\0A\\00\", align 1\n";
-    out_ << "@.fmt_float = private unnamed_addr constant [6 x i8] c\"%.1f\\0A\\00\", align 1\n";
-    out_ << "@.fmt_str = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n\n";
+    out_ << "@.fmt_float = private unnamed_addr constant [6 x i8] c\"%.2f\\0A\\00\", align 1\n";
+    out_ << "@.fmt_str = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n";
+    out_ << "@.fmt_true = private unnamed_addr constant [6 x i8] c\"true\\0A\\00\", align 1\n";
+    out_ << "@.fmt_false = private unnamed_addr constant [7 x i8] c\"false\\0A\\00\", align 1\n\n";
+  }
+
+  void emitStringConstants() {
+    for (const auto& pair : strTable_) {
+      const std::string& str = pair.first;
+      const std::string& name = pair.second;
+      std::size_t len = str.size() + 1;
+      out_ << name << " = private unnamed_addr constant [" << len << " x i8] c\"";
+      for (char c : str) {
+        if (c == '\n') out_ << "\\0A";
+        else if (c == '\t') out_ << "\\09";
+        else if (c == '\"') out_ << "\\22";
+        else if (c == '\\') out_ << "\\5C";
+        else out_ << c;
+      }
+      out_ << "\\00\", align 1\n";
+    }
+    if (!strTable_.empty()) out_ << "\n";
   }
 
   void emitDeclarations() {
     out_ << "declare i32 @printf(ptr, ...)\n";
     out_ << "declare double @sqrt(double)\n";
-    out_ << "declare double @round(double)\n\n";
+    out_ << "declare double @round(double)\n";
+    out_ << "declare double @pow(double, double)\n\n";
   }
 
   std::string mangle(const std::string& name) {
@@ -136,8 +222,66 @@ class LLVMEmitter {
             std::string sum = nextTemp();
             out_ << "  " << sum << " = add nsw i64 " << cur << ", " << val << "\n";
             out_ << "  store i64 " << sum << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "-=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string diff = nextTemp();
+            out_ << "  " << diff << " = sub nsw i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << diff << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "*=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string prod = nextTemp();
+            out_ << "  " << prod << " = mul nsw i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << prod << ", ptr " << locals_[id.name] << ", align 8\n";
           }
         }
+        break;
+      }
+      case StmtKind::If: {
+        const auto& ifStmt = static_cast<const IfStmt&>(stmt);
+        std::string condVal = emitExpr(*ifStmt.cond);
+        std::string cmp = nextTemp();
+        out_ << "  " << cmp << " = icmp ne i64 " << condVal << ", 0\n";
+
+        std::string thenLbl = nextLabel("if.then");
+        std::string elseLbl = nextLabel("if.else");
+        std::string endLbl = nextLabel("if.end");
+
+        out_ << "  br i1 " << cmp << ", label %" << thenLbl << ", label %" 
+             << (!ifStmt.elseArm.empty() ? elseLbl : endLbl) << "\n\n";
+
+        out_ << thenLbl << ":\n";
+        for (const auto& s : ifStmt.thenArm) emitStmt(*s);
+        out_ << "  br label %" << endLbl << "\n\n";
+
+        if (!ifStmt.elseArm.empty()) {
+          out_ << elseLbl << ":\n";
+          for (const auto& s : ifStmt.elseArm) emitStmt(*s);
+          out_ << "  br label %" << endLbl << "\n\n";
+        }
+
+        out_ << endLbl << ":\n";
+        break;
+      }
+      case StmtKind::While: {
+        const auto& whileStmt = static_cast<const WhileStmt&>(stmt);
+        std::string condLbl = nextLabel("while.cond");
+        std::string bodyLbl = nextLabel("while.body");
+        std::string endLbl = nextLabel("while.end");
+
+        out_ << "  br label %" << condLbl << "\n\n";
+        out_ << condLbl << ":\n";
+        std::string condVal = emitExpr(*whileStmt.cond);
+        std::string cmp = nextTemp();
+        out_ << "  " << cmp << " = icmp ne i64 " << condVal << ", 0\n";
+        out_ << "  br i1 " << cmp << ", label %" << bodyLbl << ", label %" << endLbl << "\n\n";
+
+        out_ << bodyLbl << ":\n";
+        for (const auto& s : whileStmt.body) emitStmt(*s);
+        out_ << "  br label %" << condLbl << "\n\n";
+
+        out_ << endLbl << ":\n";
         break;
       }
       case StmtKind::For: {
@@ -206,6 +350,8 @@ class LLVMEmitter {
     switch (expr.kind) {
       case ExprKind::IntLit:
         return std::to_string(static_cast<const IntLitExpr&>(expr).value);
+      case ExprKind::BoolLit:
+        return static_cast<const BoolLitExpr&>(expr).value ? "1" : "0";
       case ExprKind::Ident: {
         const auto& id = static_cast<const IdentExpr&>(expr);
         auto it = locals_.find(id.name);
@@ -229,6 +375,63 @@ class LLVMEmitter {
           out_ << "  " << res << " = mul nsw i64 " << l << ", " << r << "\n";
         } else if (bin.op == "/") {
           out_ << "  " << res << " = sdiv i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "%") {
+          out_ << "  " << res << " = srem i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "==") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp eq i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == "!=") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp ne i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == "<") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp slt i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == "<=") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp sle i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == ">") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp sgt i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == ">=") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp sge i64 " << l << ", " << r << "\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (bin.op == "and") {
+          out_ << "  " << res << " = and i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "or") {
+          out_ << "  " << res << " = or i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "&") {
+          out_ << "  " << res << " = and i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "|") {
+          out_ << "  " << res << " = or i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "^") {
+          out_ << "  " << res << " = xor i64 " << l << ", " << r << "\n";
+        } else if (bin.op == "<<") {
+          out_ << "  " << res << " = shl i64 " << l << ", " << r << "\n";
+        } else if (bin.op == ">>") {
+          out_ << "  " << res << " = ashr i64 " << l << ", " << r << "\n";
+        } else {
+          out_ << "  " << res << " = add i64 " << l << ", " << r << "\n";
+        }
+        return res;
+      }
+      case ExprKind::Unary: {
+        const auto& un = static_cast<const UnaryExpr&>(expr);
+        std::string operand = emitExpr(*un.operand);
+        std::string res = nextTemp();
+        if (un.op == "-") {
+          out_ << "  " << res << " = sub nsw i64 0, " << operand << "\n";
+        } else if (un.op == "not" || un.op == "!") {
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp eq i64 " << operand << ", 0\n";
+          out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
+        } else if (un.op == "~") {
+          out_ << "  " << res << " = xor i64 " << operand << ", -1\n";
         }
         return res;
       }
@@ -238,13 +441,21 @@ class LLVMEmitter {
           std::string name = static_cast<const IdentExpr&>(*call.callee).name;
           if (name == "print") {
             if (!call.args.empty()) {
-              std::string arg = emitExpr(*call.args[0].value);
+              const auto& argExpr = *call.args[0].value;
+              if (argExpr.kind == ExprKind::StringLit) {
+                std::string s = static_cast<const StringLitExpr&>(argExpr).value;
+                std::string strSym = strTable_[s];
+                std::string callRes = nextTemp();
+                out_ << "  " << callRes << " = call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr " << strSym << ")\n";
+                return "0";
+              }
+              std::string arg = emitExpr(argExpr);
               std::string callRes = nextTemp();
               out_ << "  " << callRes << " = call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 " << arg << ")\n";
               return "0";
             }
           }
-          // General function call
+          // General user function call
           std::vector<std::string> args;
           for (const auto& a : call.args) args.push_back(emitExpr(*a.value));
           std::string callRes = nextTemp();
@@ -281,10 +492,416 @@ class LLVMEmitter {
   }
 };
 
+// ============================================================================
+// Direct GNU x86-64 Assembly Emitter
+// ============================================================================
+class X86Emitter {
+ public:
+  X86Emitter(const ModuleGraph& graph, const SemaResult& sema, std::ostream& out)
+      : graph_(graph), sema_(sema), out_(out) {}
+
+  bool emit() {
+    collectStringLiterals();
+
+    out_ << ".intel_syntax noprefix\n";
+    out_ << ".text\n\n";
+
+    // Format strings
+    out_ << ".section .rodata\n";
+    out_ << ".Lfmt_int:\n  .asciz \"%lld\\n\"\n";
+    out_ << ".Lfmt_str:\n  .asciz \"%s\\n\"\n";
+
+    for (const auto& pair : strTable_) {
+      out_ << pair.second << ":\n  .asciz \"";
+      for (char c : pair.first) {
+        if (c == '\n') out_ << "\\n";
+        else if (c == '\t') out_ << "\\t";
+        else if (c == '\"') out_ << "\\\"";
+        else if (c == '\\') out_ << "\\\\";
+        else out_ << c;
+      }
+      out_ << "\"\n";
+    }
+
+    out_ << "\n.text\n";
+
+    // Emit functions
+    for (std::size_t i = 0; i < graph_.modules.size(); ++i) {
+      const auto& mod = graph_.modules[i];
+      if (!mod.program) continue;
+      for (const auto& stmt : mod.program->statements) {
+        if (stmt->kind == StmtKind::FnDecl) {
+          emitFunction(*static_cast<const FnDecl*>(stmt.get()));
+        }
+      }
+    }
+
+    // Emit main
+    emitMain();
+    return true;
+  }
+
+ private:
+  const ModuleGraph& graph_;
+  const SemaResult& sema_;
+  std::ostream& out_;
+  int labelCounter_ = 1;
+  int strCounter_ = 1;
+  int currentStackOffset_ = 0;
+  std::unordered_map<std::string, int> stackSlots_;
+  std::unordered_map<std::string, std::string> strTable_;
+
+  std::string nextLabel(const std::string& prefix = "L") {
+    return "." + prefix + "_" + std::to_string(labelCounter_++);
+  }
+
+  void collectStringLiterals() {
+    for (const auto& mod : graph_.modules) {
+      if (!mod.program) continue;
+      for (const auto& stmt : mod.program->statements) {
+        collectFromStmt(*stmt);
+      }
+    }
+  }
+
+  void collectFromStmt(const Stmt& stmt) {
+    if (stmt.kind == StmtKind::Expr) {
+      collectFromExpr(*static_cast<const ExprStmt&>(stmt).expr);
+    } else if (stmt.kind == StmtKind::FnDecl) {
+      const auto& fn = static_cast<const FnDecl&>(stmt);
+      for (const auto& s : fn.body) collectFromStmt(*s);
+    }
+  }
+
+  void collectFromExpr(const Expr& expr) {
+    if (expr.kind == ExprKind::StringLit) {
+      const auto& s = static_cast<const StringLitExpr&>(expr).value;
+      if (strTable_.find(s) == strTable_.end()) {
+        strTable_[s] = ".Lstr_" + std::to_string(strCounter_++);
+      }
+    } else if (expr.kind == ExprKind::Call) {
+      const auto& c = static_cast<const CallExpr&>(expr);
+      for (const auto& a : c.args) collectFromExpr(*a.value);
+    }
+  }
+
+  int allocateSlot(const std::string& name) {
+    auto it = stackSlots_.find(name);
+    if (it != stackSlots_.end()) return it->second;
+    currentStackOffset_ += 8;
+    stackSlots_[name] = currentStackOffset_;
+    return currentStackOffset_;
+  }
+
+  void emitFunction(const FnDecl& fn) {
+    stackSlots_.clear();
+    currentStackOffset_ = 0;
+
+    std::string fnLabel = fn.name == "main" ? "_a_main" : "_a_" + fn.name;
+    out_ << ".globl " << fnLabel << "\n";
+    out_ << ".type " << fnLabel << ", @function\n";
+    out_ << fnLabel << ":\n";
+    out_ << "  push rbp\n";
+    out_ << "  mov rbp, rsp\n";
+    out_ << "  sub rsp, 256\n";  // Reserve stack frame
+
+    static const char* kArgRegs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+    for (std::size_t i = 0; i < fn.params.size() && i < 6; ++i) {
+      int slot = allocateSlot(fn.params[i].name);
+      out_ << "  mov [rbp - " << slot << "], " << kArgRegs[i] << "\n";
+    }
+
+    for (const auto& s : fn.body) emitStmt(*s);
+
+    out_ << "  mov rax, 0\n";
+    out_ << "  mov rsp, rbp\n";
+    out_ << "  pop rbp\n";
+    out_ << "  ret\n\n";
+  }
+
+  void emitStmt(const Stmt& stmt) {
+    switch (stmt.kind) {
+      case StmtKind::Let: {
+        const auto& let = static_cast<const LetStmt&>(stmt);
+        int slot = allocateSlot(let.name);
+        if (let.init) {
+          emitExpr(*let.init);
+          out_ << "  mov [rbp - " << slot << "], rax\n";
+        }
+        break;
+      }
+      case StmtKind::Assign: {
+        const auto& assign = static_cast<const AssignStmt&>(stmt);
+        if (assign.target->kind == ExprKind::Ident) {
+          const auto& id = static_cast<const IdentExpr&>(*assign.target);
+          int slot = allocateSlot(id.name);
+          emitExpr(*assign.value);
+          if (assign.op == "=") {
+            out_ << "  mov [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "+=") {
+            out_ << "  add [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "-=") {
+            out_ << "  sub [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "*=") {
+            out_ << "  mov rcx, [rbp - " << slot << "]\n";
+            out_ << "  imul rax, rcx\n";
+            out_ << "  mov [rbp - " << slot << "], rax\n";
+          }
+        }
+        break;
+      }
+      case StmtKind::If: {
+        const auto& ifStmt = static_cast<const IfStmt&>(stmt);
+        emitExpr(*ifStmt.cond);
+        out_ << "  cmp rax, 0\n";
+        std::string elseLbl = nextLabel("else");
+        std::string endLbl = nextLabel("endif");
+        out_ << "  je " << (!ifStmt.elseArm.empty() ? elseLbl : endLbl) << "\n";
+
+        for (const auto& s : ifStmt.thenArm) emitStmt(*s);
+        out_ << "  jmp " << endLbl << "\n";
+
+        if (!ifStmt.elseArm.empty()) {
+          out_ << elseLbl << ":\n";
+          for (const auto& s : ifStmt.elseArm) emitStmt(*s);
+        }
+        out_ << endLbl << ":\n";
+        break;
+      }
+      case StmtKind::While: {
+        const auto& wh = static_cast<const WhileStmt&>(stmt);
+        std::string condLbl = nextLabel("while_cond");
+        std::string endLbl = nextLabel("while_end");
+
+        out_ << condLbl << ":\n";
+        emitExpr(*wh.cond);
+        out_ << "  cmp rax, 0\n";
+        out_ << "  je " << endLbl << "\n";
+
+        for (const auto& s : wh.body) emitStmt(*s);
+        out_ << "  jmp " << condLbl << "\n";
+        out_ << endLbl << ":\n";
+        break;
+      }
+      case StmtKind::For: {
+        const auto& forStmt = static_cast<const ForStmt&>(stmt);
+        if (forStmt.iterable->kind == ExprKind::Range) {
+          const auto& range = static_cast<const RangeExpr&>(*forStmt.iterable);
+          int varSlot = allocateSlot(forStmt.var);
+          emitExpr(*range.start);
+          out_ << "  mov [rbp - " << varSlot << "], rax\n";
+
+          int endSlot = allocateSlot("__end_" + forStmt.var);
+          emitExpr(*range.end);
+          out_ << "  mov [rbp - " << endSlot << "], rax\n";
+
+          std::string condLbl = nextLabel("for_cond");
+          std::string endLbl = nextLabel("for_end");
+
+          out_ << condLbl << ":\n";
+          out_ << "  mov rax, [rbp - " << varSlot << "]\n";
+          out_ << "  cmp rax, [rbp - " << endSlot << "]\n";
+          out_ << "  jge " << endLbl << "\n";
+
+          for (const auto& s : forStmt.body) emitStmt(*s);
+
+          out_ << "  add qword ptr [rbp - " << varSlot << "], 1\n";
+          out_ << "  jmp " << condLbl << "\n";
+          out_ << endLbl << ":\n";
+        }
+        break;
+      }
+      case StmtKind::Return: {
+        const auto& ret = static_cast<const ReturnStmt&>(stmt);
+        if (ret.value) {
+          emitExpr(*ret.value);
+        } else {
+          out_ << "  mov rax, 0\n";
+        }
+        out_ << "  mov rsp, rbp\n";
+        out_ << "  pop rbp\n";
+        out_ << "  ret\n";
+        break;
+      }
+      case StmtKind::Expr: {
+        const auto& es = static_cast<const ExprStmt&>(stmt);
+        emitExpr(*es.expr);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  void emitExpr(const Expr& expr) {
+    switch (expr.kind) {
+      case ExprKind::IntLit:
+        out_ << "  mov rax, " << static_cast<const IntLitExpr&>(expr).value << "\n";
+        break;
+      case ExprKind::BoolLit:
+        out_ << "  mov rax, " << (static_cast<const BoolLitExpr&>(expr).value ? 1 : 0) << "\n";
+        break;
+      case ExprKind::Ident: {
+        const auto& id = static_cast<const IdentExpr&>(expr);
+        auto it = stackSlots_.find(id.name);
+        if (it != stackSlots_.end()) {
+          out_ << "  mov rax, [rbp - " << it->second << "]\n";
+        } else {
+          out_ << "  mov rax, 0\n";
+        }
+        break;
+      }
+      case ExprKind::Binary: {
+        const auto& bin = static_cast<const BinaryExpr&>(expr);
+        emitExpr(*bin.lhs);
+        out_ << "  push rax\n";
+        emitExpr(*bin.rhs);
+        out_ << "  mov rbx, rax\n";
+        out_ << "  pop rax\n";
+
+        if (bin.op == "+") {
+          out_ << "  add rax, rbx\n";
+        } else if (bin.op == "-") {
+          out_ << "  sub rax, rbx\n";
+        } else if (bin.op == "*") {
+          out_ << "  imul rax, rbx\n";
+        } else if (bin.op == "/") {
+          out_ << "  cqo\n";
+          out_ << "  idiv rbx\n";
+        } else if (bin.op == "%") {
+          out_ << "  cqo\n";
+          out_ << "  idiv rbx\n";
+          out_ << "  mov rax, rdx\n";
+        } else if (bin.op == "==") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  sete al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == "!=") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  setne al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == "<") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  setl al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == "<=") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  setle al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == ">") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  setg al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == ">=") {
+          out_ << "  cmp rax, rbx\n";
+          out_ << "  setge al\n";
+          out_ << "  movzx rax, al\n";
+        } else if (bin.op == "and" || bin.op == "&") {
+          out_ << "  and rax, rbx\n";
+        } else if (bin.op == "or" || bin.op == "|") {
+          out_ << "  or rax, rbx\n";
+        } else if (bin.op == "^") {
+          out_ << "  xor rax, rbx\n";
+        } else if (bin.op == "<<") {
+          out_ << "  mov rcx, rbx\n";
+          out_ << "  shl rax, cl\n";
+        } else if (bin.op == ">>") {
+          out_ << "  mov rcx, rbx\n";
+          out_ << "  sar rax, cl\n";
+        }
+        break;
+      }
+      case ExprKind::Unary: {
+        const auto& un = static_cast<const UnaryExpr&>(expr);
+        emitExpr(*un.operand);
+        if (un.op == "-") {
+          out_ << "  neg rax\n";
+        } else if (un.op == "~") {
+          out_ << "  not rax\n";
+        } else if (un.op == "not" || un.op == "!") {
+          out_ << "  cmp rax, 0\n";
+          out_ << "  sete al\n";
+          out_ << "  movzx rax, al\n";
+        }
+        break;
+      }
+      case ExprKind::Call: {
+        const auto& call = static_cast<const CallExpr&>(expr);
+        if (call.callee->kind == ExprKind::Ident) {
+          std::string name = static_cast<const IdentExpr&>(*call.callee).name;
+          if (name == "print") {
+            if (!call.args.empty()) {
+              const auto& argExpr = *call.args[0].value;
+              if (argExpr.kind == ExprKind::StringLit) {
+                std::string s = static_cast<const StringLitExpr&>(argExpr).value;
+                out_ << "  lea rdi, " << strTable_[s] << "[rip]\n";
+                out_ << "  mov rax, 0\n";
+                out_ << "  call printf@PLT\n";
+                return;
+              }
+              emitExpr(argExpr);
+              out_ << "  mov rsi, rax\n";
+              out_ << "  lea rdi, .Lfmt_int[rip]\n";
+              out_ << "  mov rax, 0\n";
+              out_ << "  call printf@PLT\n";
+              return;
+            }
+          }
+
+          // User function call
+          static const char* kArgRegs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+          for (std::size_t i = 0; i < call.args.size() && i < 6; ++i) {
+            emitExpr(*call.args[i].value);
+            out_ << "  push rax\n";
+          }
+          for (int i = static_cast<int>(call.args.size()) - 1; i >= 0 && i < 6; --i) {
+            out_ << "  pop " << kArgRegs[i] << "\n";
+          }
+          out_ << "  call " << (name == "main" ? "_a_main" : "_a_" + name) << "\n";
+        }
+        break;
+      }
+      default:
+        out_ << "  mov rax, 0\n";
+        break;
+    }
+  }
+
+  void emitMain() {
+    out_ << ".globl main\n";
+    out_ << ".type main, @function\n";
+    out_ << "main:\n";
+    out_ << "  push rbp\n";
+    out_ << "  mov rbp, rsp\n";
+    out_ << "  sub rsp, 256\n";
+
+    if (graph_.entry >= 0 && static_cast<std::size_t>(graph_.entry) < graph_.modules.size()) {
+      const auto& root = graph_.modules[static_cast<std::size_t>(graph_.entry)];
+      if (root.program) {
+        for (const auto& stmt : root.program->statements) {
+          if (stmt->kind != StmtKind::FnDecl) {
+            emitStmt(*stmt);
+          }
+        }
+      }
+    }
+
+    out_ << "  mov rax, 0\n";
+    out_ << "  mov rsp, rbp\n";
+    out_ << "  pop rbp\n";
+    out_ << "  ret\n";
+  }
+};
+
 }  // namespace
 
 bool emitLLVMIR(const ModuleGraph& graph, const SemaResult& sema, std::ostream& out) {
   LLVMEmitter emitter(graph, sema, out);
+  return emitter.emit();
+}
+
+bool emitX86Assembly(const ModuleGraph& graph, const SemaResult& sema, std::ostream& out) {
+  X86Emitter emitter(graph, sema, out);
   return emitter.emit();
 }
 
@@ -303,10 +920,28 @@ bool buildLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
     }
   }
 
-  // If llc or clang is present, use it; otherwise the LLVM IR is saved and verified
-  std::string cmd = "clang -O3 " + tmpLL + " -o " + outputPath + " 2>/dev/null || llc -O3 " + tmpLL + " -o " + tmpLL + ".s 2>/dev/null";
+  // Also emit direct x86-64 assembly to guarantee compilation into standalone ELF executable
+  std::string tmpS = outputPath + ".s";
+  {
+    std::ofstream ofs(tmpS);
+    if (!ofs) {
+      err << "error: failed to open temporary assembly file " << tmpS << "\n";
+      return false;
+    }
+    if (!emitX86Assembly(graph, sema, ofs)) {
+      err << "error: failed to generate x86 assembly\n";
+      return false;
+    }
+  }
+
+  // Assemble and link via gcc/as
+  std::string cmd = "gcc -no-pie " + tmpS + " -o " + outputPath + " -lm 2>/dev/null";
   int ret = std::system(cmd.c_str());
-  (void)ret;
+  if (ret != 0) {
+    err << "error: assembly/linking failed with exit code " << ret << "\n";
+    return false;
+  }
+
   return true;
 }
 

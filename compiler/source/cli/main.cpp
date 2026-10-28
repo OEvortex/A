@@ -21,15 +21,19 @@ void printUsage(std::ostream& os) {
      << "Usage:\n"
      << "  a <command> [options] <file.a>\n"
      << "\n"
-     << "Commands:\n"
-     << "  run <file.a>     compile and execute a program\n"
-     << "  build <file.a>   compile program to native binary (-o <bin>)\n"
-     << "  check <file.a>   type-check a program without running it\n"
-     << "  version          print the toolchain version\n"
-     << "  help             show this message\n"
+      << "Commands:\n"
+      << "  run <file.a>     compile and execute a program\n"
+      << "  build <file.a>   compile program to native binary (-o <bin>)\n"
+      << "  check <file.a>   type-check a program without running it\n"
+      << "  fmt <file.a>     format a source file (prints to stdout)\n"
+      << "  doc <file.a>     generate documentation markdown (prints to stdout)\n"
+      << "  version          print the toolchain version\n"
+      << "  help             show this message\n"
      << "\n"
      << "Options:\n"
      << "  -o <file>        output binary path (for 'build')\n"
+     << "  --backend <name> compilation backend: 'native' (default) or 'llvm'\n"
+     << "  --emit-llvm      emit textual LLVM IR (.ll) file instead of executable\n"
      << "  -I <dir>         add a module search directory (repeatable)\n"
      << "  --stdlib <dir>   override the standard library directory\n"
      << "  --no-color       disable colored diagnostics\n"
@@ -49,6 +53,8 @@ struct Options {
   std::string command;
   std::string path;
   std::string outputPath;
+  std::string backend = "native";
+  bool emitLLVM = false;
   std::vector<std::string> modulePaths;
   std::string stdlibRoot;
   bool useColor = false;
@@ -62,6 +68,16 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     std::string arg = argv[i];
     if (arg == "--no-color") {
       colorDisabled = true;
+    } else if (arg == "--emit-llvm") {
+      options.emitLLVM = true;
+    } else if (arg == "--backend") {
+      if (i + 1 >= argc) {
+        err << "error: '--backend' requires a name ('native' or 'llvm')\n";
+        return false;
+      }
+      options.backend = argv[++i];
+    } else if (arg.rfind("--backend=", 0) == 0) {
+      options.backend = arg.substr(10);
     } else if (arg == "-o" || arg == "--output") {
       if (i + 1 >= argc) {
         err << "error: '" << arg << "' requires a file path\n";
@@ -105,7 +121,7 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     return false;
   }
 
-  static const std::vector<std::string> kCommands = {"run", "build", "check", "version", "help"};
+  static const std::vector<std::string> kCommands = {"run", "build", "check", "fmt", "doc", "version", "help"};
   bool known = false;
   for (const auto& command : kCommands) {
     if (positional[0] == command) {
@@ -183,8 +199,22 @@ int main(int argc, char** argv) {
       } else {
         out += ".out";
       }
+      if (options.emitLLVM) {
+        out += ".ll";
+      }
     }
-    return a::buildFile(options.path, out, config, std::cerr);
+    if (options.emitLLVM) {
+      return a::emitLLVMFile(options.path, out, config, std::cerr);
+    }
+    return a::buildFile(options.path, out, config, options.backend, std::cerr);
+  }
+
+  if (options.command == "fmt") {
+    return a::formatFile(options.path, std::cout, std::cerr);
+  }
+
+  if (options.command == "doc") {
+    return a::documentFile(options.path, std::cout, std::cerr);
   }
 
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);

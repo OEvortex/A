@@ -26,6 +26,16 @@ int runSource(const std::string& displayPath, std::string source, const DriverCo
 
 // Compiles a program to a native binary executable (`a build`).
 int buildFile(const std::string& path, const std::string& outputPath,
-              const DriverConfig& config, std::ostream& err);
+              const DriverConfig& config, const std::string& backend, std::ostream& err);
+
+// Emits textual LLVM IR (.ll) to a file.
+int emitLLVMFile(const std::string& path, const std::string& outputPath,
+                 const DriverConfig& config, std::ostream& err);
+
+// Formats a source file, printing the formatted text to `out`.
+int formatFile(const std::string& path, std::ostream& out, std::ostream& err);
+
+// Generates documentation markdown for a module, printing to `out`.
+int documentFile(const std::string& path, std::ostream& out, std::ostream& err);
 
 }  // namespace a

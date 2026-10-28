@@ -10,6 +10,7 @@
 
 #include "backend/interpreter.hpp"
 #include "backend/native/native_codegen.hpp"
+#include "backend/llvm/llvm_backend.hpp"
 #include "diagnostics/diagnostics.hpp"
 #include "lexer/source.hpp"
 #include "name-resolution/module_loader.hpp"
@@ -70,7 +71,7 @@ int runFile(const std::string& path, const DriverConfig& config, std::istream& i
 }
 
 int buildFile(const std::string& path, const std::string& outputPath,
-              const DriverConfig& config, std::ostream& err) {
+              const DriverConfig& config, const std::string& backend, std::ostream& err) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     err << "error: cannot open '" << path << "'\n";
@@ -99,7 +100,55 @@ int buildFile(const std::string& path, const std::string& outputPath,
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
-  if (!buildNativeBinary(graph, result, outputPath, err)) {
+  if (backend == "llvm") {
+    if (!buildLLVMModule(graph, result, outputPath, err)) {
+      return kExitCompileError;
+    }
+  } else {
+    if (!buildNativeBinary(graph, result, outputPath, err)) {
+      return kExitCompileError;
+    }
+  }
+  return kExitOk;
+}
+
+int emitLLVMFile(const std::string& path, const std::string& outputPath,
+                 const DriverConfig& config, std::ostream& err) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    err << "error: cannot open '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+  if (file.bad()) {
+    err << "error: failed to read '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  DiagnosticSink sink;
+  ModuleLoaderOptions options;
+  options.modulePaths = config.modulePaths;
+  options.stdlibRoot = config.stdlibRoot;
+  ModuleLoader loader(std::move(options), sink);
+  ModuleGraph graph = loader.load(path, buffer.str());
+
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  Sema sema(graph, sink);
+  SemaResult result = sema.analyze();
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  std::ofstream out(outputPath);
+  if (!out) {
+    err << "error: cannot open '" << outputPath << "' for writing\n";
+    return kExitCompileError;
+  }
+
+  if (!emitLLVMIR(graph, result, out)) {
     return kExitCompileError;
   }
   return kExitOk;
