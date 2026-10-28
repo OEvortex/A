@@ -32,9 +32,7 @@ enum class Tok {
   KwContinue,
   KwReturn,
   KwDefer,
-  KwClass,
-  KwMetaclass,
-  KwPass,
+  KwStruct,
   KwSelf,
   KwTrue,
   KwFalse,
@@ -118,4 +116,3 @@ const char* tokName(Tok kind);
 std::string describeToken(const Token& token);
 
 }  // namespace a
-
