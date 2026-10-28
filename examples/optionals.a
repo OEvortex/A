@@ -1,0 +1,35 @@
+# Optional values: safe navigation, fallbacks, and unwrapping.
+
+struct Address:
+    city: String
+    country: String
+
+struct User:
+    name: String
+    address: Address?
+
+fn find_user(id: i32) -> User?:
+    if id == 1:
+        return Some(User("Ada", Some(Address("London", "UK"))))
+    return None
+
+first = find_user(1)
+second = find_user(2)
+
+print("name:", first?.name ?? "anonymous")
+print("city:", first?.address?.city ?? "unknown")
+print("second city:", second?.address?.city ?? "unknown")
+
+# The fallback is lazy: this division only runs if the value is None.
+var maybe: i32? = None
+safe = maybe ?? 0
+print("safe:", safe)
+
+maybe = Some(10)
+print("unwrapped:", maybe! * 2)
+
+# Probe without crashing.
+if first?.name == Some("Ada"):
+    print("found Ada")
+
+print("comparisons:", first?.name == None, second?.name == None)

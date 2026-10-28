@@ -1,0 +1,13 @@
+# Raw triple-quoted strings: no escapes, no interpolation, one leading
+# newline stripped after the opening quotes.
+
+text = """
+C:\Users\name
+tab	here and "quotes" untouched {not interpolated}"""
+print(text)
+print("---")
+
+single = """one line"""
+print(single)
+
+print("len:", len(single))

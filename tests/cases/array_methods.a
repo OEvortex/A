@@ -1,0 +1,25 @@
+var xs = [3, 1, 4, 1, 5]
+print("len:", len(xs), "contains:", xs.contains(4), "index:", xs.index_of(1), "missing:", xs.index_of(9))
+print("first:", xs.first(), "last:", xs.last())
+
+xs.insert(0, 10)
+xs.insert(6, 20)
+print("after insert:", xs)
+
+print("remove:", xs.remove_at(0), "->", xs)
+print("remove negative:", xs.remove_at(-1), "->", xs)
+
+var words = ["pear", "apple", "fig"]
+words.sort()
+print("sorted strings:", words.join(" "))
+
+var floats = [2.5, 0.5, 1.5]
+floats.sort()
+print("sorted floats:", floats)
+
+xs.reverse()
+print("reversed:", xs)
+print("joined:", xs.join(","))
+
+var empty: [i32] = []
+print("empty first:", empty.first())

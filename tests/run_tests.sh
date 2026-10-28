@@ -14,6 +14,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 A_BIN="${1:-$ROOT_DIR/build/a}"
+if [[ "$A_BIN" != /* ]]; then
+  A_BIN="$(cd "$(dirname "$A_BIN")" 2>/dev/null && pwd)/$(basename "$A_BIN")"
+fi
 
 if [[ ! -x "$A_BIN" ]]; then
   echo "error: A binary not found at '$A_BIN'" >&2
@@ -47,7 +50,11 @@ for source in "$CASES_DIR"/*.a; do
   stdin_file=/dev/null
   [[ -f "$base.in" ]] && stdin_file="$base.in"
 
-  "$A_BIN" "$command" "$source" <"$stdin_file" \
+  # Each case runs in its own scratch directory so file I/O tests are isolated.
+  case_dir="$WORK_DIR/cwd/$name"
+  mkdir -p "$case_dir"
+
+  (cd "$case_dir" && "$A_BIN" "$command" "$source" <"$stdin_file") \
     >"$WORK_DIR/$name.stdout" 2>"$WORK_DIR/$name.stderr"
   actual_exit=$?
 

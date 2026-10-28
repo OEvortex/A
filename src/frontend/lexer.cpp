@@ -38,6 +38,8 @@ const char* tokName(Tok kind) {
     case Tok::KwOr: return "'or'";
     case Tok::KwNot: return "'not'";
     case Tok::KwImport: return "'import'";
+    case Tok::KwMatch: return "'match'";
+    case Tok::KwNone: return "'None'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";
     case Tok::LBracket: return "'['";
@@ -49,6 +51,12 @@ const char* tokName(Tok kind) {
     case Tok::Dot: return "'.'";
     case Tok::DotDot: return "'..'";
     case Tok::Arrow: return "'->'";
+    case Tok::FatArrow: return "'=>'";
+    case Tok::Pipe: return "'|>'";
+    case Tok::Bang: return "'!'";
+    case Tok::Question: return "'?'";
+    case Tok::QuestionDot: return "'?.'";
+    case Tok::QuestionQuestion: return "'\?\?'";
     case Tok::Plus: return "'+'";
     case Tok::Minus: return "'-'";
     case Tok::Star: return "'*'";
@@ -105,7 +113,7 @@ const std::unordered_map<std::string, Tok>& keywordTable() {
       {"return", Tok::KwReturn}, {"defer", Tok::KwDefer},   {"struct", Tok::KwStruct},
       {"self", Tok::KwSelf},     {"true", Tok::KwTrue},     {"false", Tok::KwFalse},
       {"and", Tok::KwAnd},       {"or", Tok::KwOr},         {"not", Tok::KwNot},
-      {"import", Tok::KwImport},
+      {"import", Tok::KwImport}, {"match", Tok::KwMatch},     {"None", Tok::KwNone},
   };
   return table;
 }
@@ -286,6 +294,65 @@ void Lexer::scanNumber() {
   int startCol = col_;
   bool isFloat = false;
 
+  // Check for hex (0x / 0X) or binary (0b / 0B) or octal (0o / 0O)
+  if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
+    advance(); // '0'
+    advance(); // 'x'
+    std::string hexDigits;
+    while (!atEnd() && (std::isxdigit(static_cast<unsigned char>(peek())) || peek() == '_')) {
+      char c = advance();
+      if (c != '_') hexDigits.push_back(c);
+    }
+    Token token;
+    token.kind = Tok::Int;
+    token.lexeme = text_.substr(start, pos_ - start);
+    token.span = makeSpan(start, startLine, startCol);
+    if (hexDigits.empty()) {
+      error(token.span, "Hexadecimal literal has no digits.", "Write digits after '0x', e.g. '0xFF'.");
+      token.intValue = 0;
+    } else {
+      errno = 0;
+      char* end = nullptr;
+      unsigned long long val = std::strtoull(hexDigits.c_str(), &end, 16);
+      if (errno == ERANGE) {
+        error(token.span, "Hexadecimal literal is too large.", "Literal must fit in 64 bits.");
+        val = 0;
+      }
+      token.intValue = static_cast<std::int64_t>(val);
+    }
+    tokens_.push_back(std::move(token));
+    return;
+  }
+
+  if (peek() == '0' && (peek(1) == 'b' || peek(1) == 'B')) {
+    advance(); // '0'
+    advance(); // 'b'
+    std::string binDigits;
+    while (!atEnd() && (peek() == '0' || peek() == '1' || peek() == '_')) {
+      char c = advance();
+      if (c != '_') binDigits.push_back(c);
+    }
+    Token token;
+    token.kind = Tok::Int;
+    token.lexeme = text_.substr(start, pos_ - start);
+    token.span = makeSpan(start, startLine, startCol);
+    if (binDigits.empty()) {
+      error(token.span, "Binary literal has no digits.", "Write binary digits after '0b', e.g. '0b1010'.");
+      token.intValue = 0;
+    } else {
+      errno = 0;
+      char* end = nullptr;
+      unsigned long long val = std::strtoull(binDigits.c_str(), &end, 2);
+      if (errno == ERANGE) {
+        error(token.span, "Binary literal is too large.", "Literal must fit in 64 bits.");
+        val = 0;
+      }
+      token.intValue = static_cast<std::int64_t>(val);
+    }
+    tokens_.push_back(std::move(token));
+    return;
+  }
+
   while (!atEnd() && (isDigit(peek()) || peek() == '_')) advance();
 
   // A '.' starts a fractional part only when the next character is a digit,
@@ -342,6 +409,53 @@ void Lexer::scanString() {
   std::size_t start = pos_;
   int startLine = line_;
   int startCol = col_;
+
+  if (peek(1) == '"' && peek(2) == '"') {
+    advance();
+    advance();
+    advance();
+    if (peek() == '\r' && peek(1) == '\n') {
+      advance();
+      advance();
+    } else if (peek() == '\n') {
+      advance();
+    }
+    std::size_t contentStart = pos_;
+    bool terminated = false;
+    while (!atEnd()) {
+      if (peek() == '"' && peek(1) == '"' && peek(2) == '"') {
+        std::size_t contentEnd = pos_;
+        advance();
+        advance();
+        advance();
+        terminated = true;
+        Token token;
+        token.kind = Tok::String;
+        token.rawString = true;
+        token.span = makeSpan(start, startLine, startCol);
+        token.lexeme = text_.substr(start, pos_ - start);
+        token.strValue = text_.substr(contentStart, contentEnd - contentStart);
+        if (!terminated) {
+          error(token.span, "Unterminated triple-quoted string literal.",
+                "Close the raw string with '\"\"\"'.");
+        }
+        tokens_.push_back(std::move(token));
+        return;
+      }
+      advance();
+    }
+    Token token;
+    token.kind = Tok::String;
+    token.rawString = true;
+    token.span = makeSpan(start, startLine, startCol);
+    token.lexeme = text_.substr(start, pos_ - start);
+    token.strValue = text_.substr(contentStart);
+    error(token.span, "Unterminated triple-quoted string literal.",
+          "Close the raw string with '\"\"\"'.");
+    tokens_.push_back(std::move(token));
+    return;
+  }
+
   advance();  // opening quote
   std::string raw;
   bool terminated = false;
@@ -497,8 +611,19 @@ std::vector<Token> Lexer::tokenize() {
     if (c == '\n') {
       advance();
       if (!inlineMode_ && bracketDepth_ == 0) {
-        emitNewline();
-        atLineStart_ = true;
+        // A line that continues with the pipeline operator belongs to the
+        // previous statement, so suppress the newline and indentation.
+        std::size_t look = pos_;
+        while (look < text_.size() &&
+               (text_[look] == ' ' || text_[look] == '\t' || text_[look] == '\r')) {
+          ++look;
+        }
+        bool continuation = look + 1 < text_.size() && text_[look] == '|' &&
+                            text_[look + 1] == '>';
+        if (!continuation) {
+          emitNewline();
+          atLineStart_ = true;
+        }
       }
       continue;
     }
@@ -585,15 +710,23 @@ std::vector<Token> Lexer::tokenize() {
         peek(1) == '=' ? emit2(Tok::PercentEq) : emit1(Tok::Percent);
         break;
       case '=':
-        peek(1) == '=' ? emit2(Tok::EqEq) : emit1(Tok::Eq);
+        peek(1) == '>' ? emit2(Tok::FatArrow)
+                       : peek(1) == '=' ? emit2(Tok::EqEq) : emit1(Tok::Eq);
         break;
       case '!':
-        if (peek(1) == '=') {
-          emit2(Tok::NotEq);
+        peek(1) == '=' ? emit2(Tok::NotEq) : emit1(Tok::Bang);
+        break;
+      case '?':
+        peek(1) == '.' ? emit2(Tok::QuestionDot)
+                       : peek(1) == '?' ? emit2(Tok::QuestionQuestion) : emit1(Tok::Question);
+        break;
+      case '|':
+        if (peek(1) == '>') {
+          emit2(Tok::Pipe);
         } else {
           advance();
-          error(makeSpan(start, startLine, startCol), "'!' is not an operator.",
-                "Use 'not' for logical negation, and '!=' for inequality.");
+          error(makeSpan(start, startLine, startCol), "'|' is not an operator.",
+                "Use '|>' to pipe a value into a function call.");
         }
         break;
       case '<':

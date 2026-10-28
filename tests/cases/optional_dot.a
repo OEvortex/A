@@ -1,0 +1,4 @@
+struct Point:
+    x: i32
+p = Point(1)
+print(p?.x)

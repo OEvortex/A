@@ -1,0 +1,30 @@
+# Lambdas: first-class function values with snapshot capture.
+
+double = fn(n) => n * 2
+print("double:", double(21))
+
+add = fn(a: i32, b: i32) -> i32 => a + b
+print("add:", add(20, 22))
+
+# Immediately-invoked lambda.
+print("iife:", (fn() => 99)())
+
+# Capture is a snapshot by value: later mutation is not observed.
+var counter = 10
+bump = fn() => counter + 1
+counter = 100
+print("captured:", bump(), "current:", counter)
+
+# Structs and arrays captured by reference still share identity.
+struct Point:
+    x: i32
+    y: i32
+origin = Point(0, 0)
+getX = fn() => origin.x
+origin.x = 7
+print("shared:", getX())
+
+fn apply(f: fn(i32) -> i32, value: i32) -> i32:
+    return f(value)
+
+print("apply:", apply(double, 5))

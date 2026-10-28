@@ -1,0 +1,10 @@
+len: 5 contains: true index: 1 missing: -1
+first: Some(3) last: Some(5)
+after insert: [10, 3, 1, 4, 1, 5, 20]
+remove: 10 -> [3, 1, 4, 1, 5, 20]
+remove negative: 20 -> [3, 1, 4, 1, 5]
+sorted strings: apple fig pear
+sorted floats: [0.5, 1.5, 2.5]
+reversed: [5, 1, 4, 1, 3]
+joined: 5,1,4,1,3
+empty first: None

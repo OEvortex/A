@@ -1,0 +1,19 @@
+fn square(x: i32) -> i32:
+    return x * x
+
+fn add(a: i32, b: i32) -> i32:
+    return a + b
+
+# Single-line pipeline.
+print(5 |> square())
+print(2 |> add(3))
+
+# Multi-line pipeline: continuation lines may start with '|>'.
+value = 3
+    |> square()
+    |> add(1)
+    |> square()
+print(value)
+
+items = [1, 2, 3, 4]
+print(items |> join("-"))

@@ -1,0 +1,13 @@
+# Strings are indexed and sliced by code point.
+
+greeting = "héllo, wörld"
+
+print("len:", len(greeting))
+print("first:", greeting[0])
+print("sixth:", greeting[6])
+print("slice:", greeting[0..5])
+print("tail:", greeting[7..])
+print("stepped:", greeting[0..12..2])
+
+for c in "añb":
+    print(c)

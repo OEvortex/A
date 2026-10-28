@@ -1,0 +1,16 @@
+nums = [4, 1, 7, 3]
+
+print("map:", map(nums, fn(n) => n * 10))
+print("filter:", filter(nums, fn(n) => n > 2))
+print("reduce:", reduce(nums, 0, fn(acc, n) => acc + n))
+print("any:", any(nums, fn(n) => n > 6))
+print("all:", all(nums, fn(n) => n > 0))
+print("sum:", sum(nums))
+print("join:", join(nums, ", "))
+
+# Named functions work as first-class values too.
+fn triple(n: i32) -> i32:
+    return n * 3
+
+print("named:", map(nums, triple))
+print("chained:", nums |> filter(fn(n) => n > 1) |> map(fn(n) => n * 2) |> sum())

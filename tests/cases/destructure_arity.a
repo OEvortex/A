@@ -1,0 +1,4 @@
+fn pair() -> (i32, i32):
+    return (1, 2)
+(a, b, c) = pair()
+print(a)

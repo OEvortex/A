@@ -32,6 +32,25 @@ struct ArrayTypeExpr : TypeExpr {
   TypeExprPtr element;
 };
 
+struct OptionalTypeExpr : TypeExpr {
+  TypeExprPtr element;
+};
+
+struct TupleTypeExpr : TypeExpr {
+  std::vector<TypeExprPtr> elements;
+};
+
+struct FunctionTypeExpr : TypeExpr {
+  std::vector<TypeExprPtr> params;
+  TypeExprPtr returnType;
+};
+
+struct ParamDecl {
+  std::string name;
+  Span span;
+  TypeExprPtr type;  // may be null for inferred parameter types
+};
+
 // ---------------------------------------------------------------- expressions
 
 struct Expr {
@@ -103,10 +122,18 @@ struct SliceExpr : Expr {
   ExprPtr object;
   ExprPtr start;  // may be null
   ExprPtr end;    // may be null
+  ExprPtr step;   // may be null (defaults to 1)
   Span bracketSpan;
 };
 
 struct FieldExpr : Expr {
+  ExprPtr object;
+  std::string field;
+  Span fieldSpan;
+};
+
+// `object?.field`: None propagates, Some(struct) accesses `field` and wraps it.
+struct SafeNavExpr : Expr {
   ExprPtr object;
   std::string field;
   Span fieldSpan;
@@ -119,6 +146,44 @@ struct ArrayLitExpr : Expr {
 struct RangeExpr : Expr {
   ExprPtr start;
   ExprPtr end;
+};
+
+struct TupleExpr : Expr {
+  std::vector<ExprPtr> elements;
+};
+
+struct LambdaExpr : Expr {
+  std::vector<ParamDecl> params;
+  TypeExprPtr returnType;  // may be null
+  ExprPtr body;
+};
+
+struct ComprehensionExpr : Expr {
+  ExprPtr element;
+  std::string var;
+  Span varSpan;
+  ExprPtr iterable;
+  ExprPtr condition;  // may be null
+};
+
+struct Pattern {
+  enum class Kind { Literal, Range, Wildcard };
+  Kind kind = Kind::Wildcard;
+  Span span;
+  ExprPtr value;       // Literal patterns
+  ExprPtr rangeStart;  // Range patterns (inclusive)
+  ExprPtr rangeEnd;
+};
+
+struct MatchArm {
+  Pattern pattern;
+  ExprPtr guard;   // may be null
+  ExprPtr result;
+};
+
+struct MatchExpr : Expr {
+  ExprPtr subject;
+  std::vector<MatchArm> arms;
 };
 
 // ---------------------------------------------------------------- statements
@@ -145,6 +210,13 @@ struct AssignStmt : Stmt {
 
 struct ExprStmt : Stmt {
   ExprPtr expr;
+};
+
+struct DestructureStmt : Stmt {
+  std::vector<std::string> names;  // "_" discards the slot
+  std::vector<Span> nameSpans;
+  bool mutableBinding = false;
+  ExprPtr value;
 };
 
 struct ReturnStmt : Stmt {
@@ -181,12 +253,6 @@ struct ForStmt : Stmt {
 
 struct LoopStmt : Stmt {
   std::vector<StmtPtr> body;
-};
-
-struct ParamDecl {
-  std::string name;
-  Span span;
-  TypeExprPtr type;  // may be null for inferred parameter types
 };
 
 struct FnDecl : Stmt {

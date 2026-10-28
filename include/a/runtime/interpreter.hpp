@@ -70,20 +70,29 @@ class Interpreter {
   void execBlock(const std::vector<StmtPtr>& body, Env& parent);
 
   Value eval(const Expr& expr, Env& env);
+  Value evalIdentifier(const IdentExpr& expr, Env& env);
   Value evalBinary(const BinaryExpr& expr, Env& env);
   Value evalCall(const CallExpr& expr, Env& env);
   Value evalString(const StringLitExpr& expr, Env& env);
   Value evalIndex(const IndexExpr& expr, Env& env);
   Value evalSlice(const SliceExpr& expr, Env& env);
   Value evalField(const FieldExpr& expr, Env& env);
+  Value evalSafeNav(const SafeNavExpr& expr, Env& env);
   Value evalArray(const ArrayLitExpr& expr, Env& env);
+  Value evalTuple(const TupleExpr& expr, Env& env);
+  Value evalLambda(const LambdaExpr& expr, Env& env);
+  Value evalMatch(const MatchExpr& expr, Env& env);
+  Value evalComprehension(const ComprehensionExpr& expr, Env& env);
   Value applyBinary(const std::string& op, const Value& lhs, const Value& rhs, Span span);
+  bool valuesEqual(const Value& lhs, const Value& rhs);
 
   LValue resolveLValue(const Expr& target, Env& env);
   Value readLValue(const LValue& lv);
   void writeLValue(const LValue& lv, Value value);
 
   Value callFunction(const FnDecl& decl, std::vector<Value> args, Span span);
+  Value callClosure(const ClosurePtr& closure, std::vector<Value> args, Span span);
+  Value callValue(const Value& callee, std::vector<Value> args, Span span);
   Value callMethod(const StructPtr& object, const std::string& methodName,
                    std::vector<Value> args, Span span);
   Value constructStruct(const StructDecl& decl, const std::vector<CallArg>& args, Env& env,

@@ -18,16 +18,18 @@ print("length^2 = {point.length_squared()}")
 
 ## Status
 
-The current release (v0.1.0) ships the complete front end and a tree-walking
+The current release (v0.2.0) ships the complete front end and a tree-walking
 interpreter:
 
-- indentation-aware lexer with string interpolation
+- indentation-aware lexer with string interpolation and raw strings
 - recursive-descent parser with error recovery
 - multi-pass semantic analysis with unification-based type inference
-- interpreter with checked arithmetic, `defer`, structs, and methods
+- interpreter with checked arithmetic, `defer`, structs, methods, lambdas,
+  optionals, tuples, `match`, comprehensions, and pipelines
+- string/array/math builtins plus file I/O
 
 `a run` executes programs directly; `a check` type-checks without running.
-Native code generation (LLVM) is the next milestone and is not part of v0.1.
+Native code generation (LLVM) is the next milestone and is not part of v0.2.
 
 ## Build
 
@@ -87,8 +89,12 @@ Highlights:
   wraparound.
 - **Deterministic cleanup.** `defer` blocks run in reverse order when the
   enclosing block exits, including through `return` and errors.
-- **UTF-8 strings.** Strings are immutable and iterated by Unicode code point;
-  they are intentionally not indexable in v0.1.
+- **Ergonomic syntax.** Pipelines (`|>`), comprehensions, `match` expressions,
+  lambdas, tuples with destructuring, and stepped slices.
+- **Optionals without noise.** `T?`, `None`, `Some(x)`, safe navigation
+  (`user?.name`), lazy fallbacks (`x ?? 0`), and postfix unwrap (`x!`).
+- **UTF-8 strings.** Strings are immutable UTF-8 sequences, indexed and sliced
+  by Unicode code point.
 
 ## Project layout
 
@@ -109,12 +115,15 @@ Each compiler stage is a separate static library (`a_common`, `a_frontend`,
 `a_sema`, `a_runtime`, `a_driver`) with namespaced CMake aliases (`a::sema`,
 `a::runtime`, ...) so that the stages can be embedded or reused independently.
 
-## Limitations (v0.1)
+## Limitations (v0.2)
 
 - No native code generation yet; programs run in the interpreter.
 - No module system (`import` is parsed but rejected with a clear diagnostic).
-- No generics, enums, interfaces, closures, or `Result`/`Option` types.
-- Strings cannot be indexed or sliced; use iteration, `split`, or methods.
+- No generics, enums, interfaces, or `Result` types.
+- Lambdas capture locals by value at creation; later mutation is not observed.
+- Tuples cannot be indexed or compared with `==`.
+- Integers are stored as signed 64-bit values, so `u64` covers only the
+  non-negative half of its range and there is no `U64_MAX` constant.
 - Arrays are reference values; slicing creates a copy.
 
 The full roadmap lives in [Plan.md](Plan.md).

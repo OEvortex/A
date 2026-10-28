@@ -1,0 +1,6 @@
+fn outer() -> void:
+    defer print("defer 1")
+    defer print("defer 2")
+    print("body")
+
+outer()

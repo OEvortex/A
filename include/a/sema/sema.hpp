@@ -83,6 +83,7 @@ class Sema {
   void checkStatement(Stmt& stmt);
   void checkLet(LetStmt& stmt);
   void checkAssign(AssignStmt& stmt);
+  void checkDestructure(DestructureStmt& stmt);
   void checkIf(IfStmt& stmt);
   void checkWhile(WhileStmt& stmt);
   void checkFor(ForStmt& stmt);
@@ -99,8 +100,18 @@ class Sema {
   TypePtr inferIndex(IndexExpr& expr);
   TypePtr inferSlice(SliceExpr& expr);
   TypePtr inferField(FieldExpr& expr);
+  TypePtr inferSafeNav(SafeNavExpr& expr);
   TypePtr inferArrayLiteral(ArrayLitExpr& expr);
   TypePtr inferStringLiteral(StringLitExpr& expr);
+  TypePtr inferTuple(TupleExpr& expr);
+  TypePtr inferLambda(LambdaExpr& expr);
+  TypePtr inferMatch(MatchExpr& expr);
+  TypePtr inferComprehension(ComprehensionExpr& expr);
+  void checkPattern(Pattern& pattern, TypePtr subjectType);
+  void checkLambdaAgainst(LambdaExpr& expr, TypePtr expected);
+  void checkArgAgainst(Expr& expr, TypePtr expected, const std::string& context);
+
+  TypePtr checkFunctionValueCall(const std::string& name, TypePtr fnType, CallExpr& call);
 
   TypePtr checkStructConstruction(const StructSym& sym, CallExpr& call);
   TypePtr checkFunctionCall(const FnSig& sig, CallExpr& call);

@@ -1,0 +1,4 @@
+print(i8(100), i64(3.9), f32(2.5), u8(200))
+print(str(12.5) + "!")
+print(abs(-4), sqrt(9.0))
+print(min(3, 5), max(2.5, 1.0), pow(2, 10))

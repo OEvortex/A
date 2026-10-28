@@ -1,0 +1,8 @@
+var counter = 0
+
+fn bump() -> void:
+    counter += 1
+
+bump()
+bump()
+print(counter)

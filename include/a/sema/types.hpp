@@ -18,6 +18,8 @@ enum class TypeKind {
   String,
   Array,
   Range,
+  Optional,
+  Tuple,
   Struct,
   Function,
   Var,
@@ -41,6 +43,7 @@ struct Type {
   int varId = 0;
   Constraint constraint = Constraint::None;
   bool allowDefault = false;
+  bool allowUnresolved = false;  // e.g. the element type of a bare `None`
   std::string varDescription;
   Span varSpan;
   TypePtr link;
@@ -85,6 +88,18 @@ inline TypePtr typeArray(TypePtr elem) {
 inline TypePtr typeRange(TypePtr elem) {
   auto type = makeType(TypeKind::Range);
   type->elem = std::move(elem);
+  return type;
+}
+
+inline TypePtr typeOptional(TypePtr elem) {
+  auto type = makeType(TypeKind::Optional);
+  type->elem = std::move(elem);
+  return type;
+}
+
+inline TypePtr typeTuple(std::vector<TypePtr> elements) {
+  auto type = makeType(TypeKind::Tuple);
+  type->params = std::move(elements);
   return type;
 }
 
@@ -148,6 +163,16 @@ inline std::string typeName(const TypePtr& type) {
     case TypeKind::Float: return "f" + std::to_string(t->bits);
     case TypeKind::Array: return "[" + typeName(t->elem) + "]";
     case TypeKind::Range: return "range<" + typeName(t->elem) + ">";
+    case TypeKind::Optional: return typeName(t->elem) + "?";
+    case TypeKind::Tuple: {
+      std::string s = "(";
+      for (std::size_t i = 0; i < t->params.size(); ++i) {
+        if (i) s += ", ";
+        s += typeName(t->params[i]);
+      }
+      s += ")";
+      return s;
+    }
     case TypeKind::Struct: return t->structName;
     case TypeKind::Function: {
       std::string s = "fn(";

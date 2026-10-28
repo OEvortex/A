@@ -40,6 +40,8 @@ enum class Tok {
   KwOr,
   KwNot,
   KwImport,
+  KwMatch,
+  KwNone,
 
   LParen,
   RParen,
@@ -52,6 +54,8 @@ enum class Tok {
   Dot,
   DotDot,
   Arrow,
+  FatArrow,
+  Pipe,
 
   Plus,
   Minus,
@@ -59,6 +63,10 @@ enum class Tok {
   Slash,
   Percent,
   StarStar,
+  Bang,
+  Question,
+  QuestionDot,
+  QuestionQuestion,
 
   Eq,
   PlusEq,
@@ -83,6 +91,7 @@ struct Token {
   std::int64_t intValue = 0;
   double floatValue = 0.0;
   char32_t charValue = 0;
+  bool rawString = false;  // triple-quoted literal: no escapes/interpolation
 };
 
 const char* tokName(Tok kind);

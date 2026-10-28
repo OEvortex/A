@@ -1,0 +1,6 @@
+double: 42
+add: 42
+iife: 99
+captured: 101 current: 100
+shared: 7
+apply: 10

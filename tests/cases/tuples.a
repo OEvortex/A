@@ -1,0 +1,17 @@
+fn divmod(a: i32, b: i32) -> (i32, i32):
+    return (a / b, a % b)
+
+(q, r) = divmod(17, 5)
+print(q, r)
+
+var (x, y) = (10, 20)
+print(x + y)
+
+# '_' discards a slot.
+(_, rem) = divmod(9, 4)
+print(rem)
+
+pair = (1, "two")
+print(pair)
+(n, s) = pair
+print(s, n)

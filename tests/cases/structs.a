@@ -1,0 +1,18 @@
+struct Point:
+    x: i32
+    y: i32
+
+    fn sum(self) -> i32:
+        return self.x + self.y
+
+    fn shift(self, dx: i32, dy: i32) -> void:
+        self.x = self.x + dx
+        self.y = self.y + dy
+
+p = Point(3, 4)
+print(p.sum())
+p.shift(1, 2)
+print(p.x, p.y)
+
+named = Point(y=10, x=20)
+print(named.x, named.y)

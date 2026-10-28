@@ -1,0 +1,9 @@
+map: [40, 10, 70, 30]
+filter: [4, 7, 3]
+reduce: 15
+any: true
+all: true
+sum: 15
+join: 4, 1, 7, 3
+named: [12, 3, 21, 9]
+chained: 28

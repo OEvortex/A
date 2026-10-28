@@ -1,0 +1,26 @@
+# Pipelines, comprehensions, and higher-order builtins.
+
+fn double(x: i32) -> i32:
+    return x * 2
+
+fn is_big(x: i32) -> bool:
+    return x > 20
+
+squares = [n * n for n in 1..11]
+print("squares:", squares)
+
+evens = [n for n in 1..21 if n % 2 == 0]
+print("evens:", evens)
+
+total = evens
+    |> filter(fn(n) => n > 4)
+    |> map(fn(n) => n * 2)
+    |> sum()
+print("pipeline total:", total)
+
+print("doubled big:", map([1, 15, 30], double))
+print("any big:", any(squares, is_big))
+print("joined:", join([double(n) for n in 1..6], " "))
+
+names = ["Ada", "Grace", "Alan"]
+print("greeting:", names |> map(fn(name) => "Hi " + name) |> join("; "))

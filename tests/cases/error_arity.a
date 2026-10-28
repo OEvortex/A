@@ -1,0 +1,4 @@
+fn f(x: i32) -> i32:
+    return x
+
+print(f(1, 2))

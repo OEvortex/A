@@ -1,0 +1,43 @@
+# Match: literal patterns, inclusive ranges, guards, and '_'.
+
+fn describe(code: i32) -> String:
+    return match code:
+        200 => "OK"
+        201 => "Created"
+        400..499 => "Client error"
+        500..599 => "Server error"
+        _ => "Unknown"
+
+print(describe(200))
+print(describe(201))
+print(describe(404))
+print(describe(503))
+print(describe(302))
+
+# Guards refine a wildcard; the final unguarded '_' catches the rest.
+fn classify(n: i32) -> String:
+    return match n:
+        0 => "zero"
+        _ if n < 0 => "negative"
+        _ if n > 100 => "large"
+        _ => "small"
+
+print(classify(0), classify(-7), classify(999), classify(5))
+
+# String and char patterns.
+fn vowel(c: char) -> bool:
+    return match c:
+        'a' => true
+        'e' => true
+        'i' => true
+        'o' => true
+        'u' => true
+        _ => false
+
+print(vowel('e'), vowel('z'))
+
+label = match "GET":
+    "GET" => "read"
+    "POST" => "write"
+    _ => "other"
+print(label)

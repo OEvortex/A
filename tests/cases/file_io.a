@@ -1,0 +1,10 @@
+write_file("data.txt", "first line\n")
+append_file("data.txt", "second line\n")
+print(read_file("data.txt"))
+print("exists:", file_exists("data.txt"), file_exists("missing.txt"))
+
+write_file("data.txt", "overwritten\n")
+print(read_file("data.txt"))
+
+flush()
+print("done")

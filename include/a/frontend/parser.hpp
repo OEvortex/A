@@ -60,10 +60,16 @@ class Parser {
   ExprPtr parsePrefix();
   ExprPtr parsePostfix();
   ExprPtr parsePrimary();
+  ExprPtr parseLambda();
+  ExprPtr parseMatch();
+  Pattern parsePattern();
   ExprPtr parseCallOrIndexPostfix(ExprPtr base);
   std::vector<CallArg> parseCallArgs();
   std::vector<StringPart> parseStringParts(const Token& token);
   std::string decodeEscapes(const std::string& raw, Span span);
+
+  StmtPtr parseDestructureDecl(bool mutableBinding, Span start);
+  StmtPtr buildDestructure(ExprPtr target, ExprPtr value, bool mutableBinding, Span span);
 
   static int binaryPrecedence(Tok kind);
   static bool isRightAssociative(Tok kind);

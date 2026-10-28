@@ -1,0 +1,7 @@
+# Comprehensions over ranges, arrays, and strings, with a condition.
+
+print("range:", [n * n for n in 0..5])
+print("array:", [n for n in [1, 2, 3, 4] if n % 2 == 0])
+print("string:", [c for c in "abc"])
+print("filtered chars:", [c for c in "hello" if c != 'l'])
+print("nested:", [[r * c for c in 1..4] for r in 1..4])

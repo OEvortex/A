@@ -1,0 +1,13 @@
+fn is_prime(n: i32) -> bool:
+    if n < 2:
+        return false
+    var d = 2
+    while d * d <= n:
+        if n % d == 0:
+            return false
+        d += 1
+    return true
+
+for n in 0..50:
+    if is_prime(n):
+        print(n)

@@ -56,12 +56,37 @@ invoking a sub-`Lexer`/`Parser` in inline mode for each `{...}` fragment. This
 keeps the lexer single-pass and makes interpolation errors point at the nested
 expression.
 
+Raw strings (`"""..."""`) are scanned across newlines by the lexer itself. The
+token carries `rawString = true`, line/column tracking continues through the
+body, no `Newline`/`Indent` tokens are emitted for its interior, and the parser
+treats the whole token as one literal part. One newline directly after the
+opening quotes is stripped; nothing is dedented.
+
+Multi-line pipelines rely on a lexer rule: when a line's first non-space
+characters are `|>`, the preceding newline is suppressed and indentation is not
+recomputed. The parser therefore sees one continuous expression.
+
 ## Parser
 
 `Parser` is a recursive-descent parser for statements and a Pratt parser for
-expressions. The precedence table lives in `binaryPrecedence`; `**` is
-right-associative. Statements dispatch on the leading token, with a small
-special case for typed declarations (`name: Type = value`).
+expressions. The precedence table lives in `binaryPrecedence`
+(`|>` 1, `??` 2, `or` 3, `and` 4, prefix `not` 5, comparisons 6, `..` 7,
+`+ -` 8, `* / %` 9, prefix `-` 10, right-associative `**` 11); slice bounds
+parse at 8. Statements dispatch on the leading token, with a small special case
+for typed declarations (`name: Type = value`) and destructuring (`(a, b) = ...`,
+`var (a, b) = ...`).
+
+Pipelines are desugared in the parser: after parsing the right side of `|>`,
+it must be a `CallExpr` whose callee is a plain identifier, and the left value
+is inserted as the first argument. Anything else is a parse diagnostic.
+
+`match` parses as a block-shaped expression: subject, `:`, newline, indented
+arms. Arms are `pattern [if guard] => expression`, and the closing dedent ends
+the expression. `expectNewline()` accepts a dedent or a just-closed block so
+statements whose expression ends with a block (`x = match ...`) terminate
+correctly. `(` starts a grouped expression or a tuple depending on the comma;
+`[` starts an array literal or a comprehension when `for` follows the first
+element.
 
 Error recovery uses a `ParseError` exception caught at statement boundaries;
 `synchronize()` skips to the next newline. The parser never throws out of
@@ -83,9 +108,18 @@ globals declared later in the file while still detecting duplicate locals.
 Type inference uses constrained type variables:
 
 - literals create variables constrained to `Integer`/`Floating`/`Numeric`;
-- unification links variables, merging constraints and defaultability;
+- unification links variables, merging constraints, defaultability, and the
+  `allowUnresolved` flag (used by the element type of a bare `None`);
 - unresolved, defaultable variables become `i32` or `f64` at the end;
-- anything still unresolved is reported as an inference error.
+- anything still unresolved is reported as an inference error unless it
+  arrived from `None`.
+
+Structured types are unified recursively: `Optional` through `elem`, `Tuple`
+and `Function` through `params` (plus `ret` for functions). Higher-order
+builtins (`map`, `filter`, `reduce`, `any`, `all`, `sum`, `join`) check lambda
+arguments against an expected `Function` type, so untyped lambda parameters are
+inferred from context. Method dispatch on structs prefers a real method and
+falls back to a function-typed field; the runtime follows the same order.
 
 `SemaResult` hands the interpreter the function and struct lookup tables that
 were successfully analyzed.
@@ -93,13 +127,24 @@ were successfully analyzed.
 ## Runtime
 
 `Value` is a `std::variant` of primitives, `String`, array pointers, struct
-pointers, and ranges. Arrays and structs are shared by reference, matching the
-documented semantics.
+pointers, ranges, optionals (`OptionalValue`), tuples (`TupleValue`), and
+closures (`Closure`). Arrays, structs, optionals, and tuples are shared by
+reference, matching the documented semantics.
 
 `Interpreter` uses lexical environments (`Env` chains) and exceptions for
 non-local control flow (`ReturnSignal`, `BreakSignal`, `ContinueSignal`). A
 runtime error is captured as a `RuntimeError` with a span and help text,
 reported through the shared `DiagnosticSink`, and mapped to exit code 2.
+
+Closures are captured by value: when a lambda is created, visible local
+bindings are copied into the `Closure` (globals are excluded and resolved at
+call time through `globalEnv_`). A `Closure` either points at a `LambdaExpr`
+body or at a named `FnDecl` (functions used as values), and calls reuse the
+call-depth guard. `match` evaluates arms in order using structural
+`valuesEqual`, with inclusive range patterns; comprehensions iterate a range,
+an array snapshot, or a string's code points. String indexing and slicing walk
+UTF-8 with `decodeUtf8`, while byte-oriented methods keep using byte search.
+Stepped slices require a positive step and reject anything else at runtime.
 
 Two details worth preserving when extending the runtime:
 

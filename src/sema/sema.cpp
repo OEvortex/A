@@ -16,7 +16,8 @@ bool isConversionBuiltin(const std::string& name) {
 }
 
 bool isMathBuiltin(const std::string& name) {
-  static const char* names[] = {"sqrt", "sin", "cos", "tan", "exp", "log", "floor", "ceil"};
+  static const char* names[] = {"sqrt", "sin",  "cos",   "tan",   "exp",  "log",
+                                "floor", "ceil", "round", "trunc", "log2", "log10"};
   for (const char* n : names) {
     if (name == n) return true;
   }
@@ -24,12 +25,47 @@ bool isMathBuiltin(const std::string& name) {
 }
 
 bool isKnownBuiltin(const std::string& name) {
-  if (name == "print" || name == "eprint" || name == "input" || name == "len" ||
-      name == "str" || name == "abs" || name == "min" || name == "max" ||
-      name == "pow") {
-    return true;
+  static const char* names[] = {
+      "print",    "eprint",   "input",     "len",      "str",      "abs",
+      "min",      "max",      "pow",       "flush",    "read_file", "write_file",
+      "append_file", "file_exists", "map",  "filter",   "reduce",   "any",
+      "all",      "sum",      "join",      "random",   "random_int", "atan2",
+      "Some"};
+  for (const char* n : names) {
+    if (name == n) return true;
   }
   return isConversionBuiltin(name) || isMathBuiltin(name);
+}
+
+TypePtr builtinConstantType(const std::string& name) {
+  if (name == "PI" || name == "E") return typeFloat(64);
+  struct IntConstant {
+    const char* name;
+    int bits;
+    bool isSigned;
+  };
+  static const IntConstant ints[] = {
+      {"I8_MIN", 8, true},   {"I8_MAX", 8, true},   {"I16_MIN", 16, true},
+      {"I16_MAX", 16, true}, {"I32_MIN", 32, true}, {"I32_MAX", 32, true},
+      {"I64_MIN", 64, true}, {"I64_MAX", 64, true}, {"U8_MAX", 8, false},
+      {"U16_MAX", 16, false}, {"U32_MAX", 32, false}};
+  for (const auto& entry : ints) {
+    if (name == entry.name) return typeInt(entry.bits, entry.isSigned);
+  }
+  struct FloatConstant {
+    const char* name;
+    int bits;
+  };
+  static const FloatConstant floats[] = {
+      {"F32_MIN", 32}, {"F32_MAX", 32}, {"F64_MIN", 64}, {"F64_MAX", 64}};
+  for (const auto& entry : floats) {
+    if (name == entry.name) return typeFloat(entry.bits);
+  }
+  return nullptr;
+}
+
+bool isBuiltinConstant(const std::string& name) {
+  return builtinConstantType(name) != nullptr;
 }
 
 }  // namespace
@@ -57,12 +93,14 @@ bool Sema::occursIn(TypePtr var, TypePtr type) {
   switch (type->kind) {
     case TypeKind::Array:
     case TypeKind::Range:
+    case TypeKind::Optional:
       return occursIn(var, type->elem);
+    case TypeKind::Tuple:
     case TypeKind::Function: {
       for (const auto& p : type->params) {
         if (occursIn(var, p)) return true;
       }
-      return occursIn(var, type->ret);
+      return type->kind == TypeKind::Function ? occursIn(var, type->ret) : false;
     }
     default:
       return false;
@@ -119,6 +157,7 @@ bool Sema::unify(TypePtr a, TypePtr b) {
     if (conflict) return false;
     b->constraint = merged;
     b->allowDefault = a->allowDefault || b->allowDefault;
+    b->allowUnresolved = a->allowUnresolved || b->allowUnresolved;
     a->link = b;
     return true;
   }
@@ -136,7 +175,15 @@ bool Sema::unify(TypePtr a, TypePtr b) {
       return a->structName == b->structName;
     case TypeKind::Array:
     case TypeKind::Range:
+    case TypeKind::Optional:
       return unify(a->elem, b->elem);
+    case TypeKind::Tuple: {
+      if (a->params.size() != b->params.size()) return false;
+      for (std::size_t i = 0; i < a->params.size(); ++i) {
+        if (!unify(a->params[i], b->params[i])) return false;
+      }
+      return true;
+    }
     case TypeKind::Function: {
       if (a->params.size() != b->params.size()) return false;
       for (std::size_t i = 0; i < a->params.size(); ++i) {
@@ -178,13 +225,32 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
   if (auto* array = dynamic_cast<ArrayTypeExpr*>(&expr)) {
     return typeArray(resolveTypeExpr(*array->element));
   }
+  if (auto* optional = dynamic_cast<OptionalTypeExpr*>(&expr)) {
+    return typeOptional(resolveTypeExpr(*optional->element));
+  }
+  if (auto* tuple = dynamic_cast<TupleTypeExpr*>(&expr)) {
+    std::vector<TypePtr> elements;
+    elements.reserve(tuple->elements.size());
+    for (auto& element : tuple->elements) {
+      elements.push_back(resolveTypeExpr(*element));
+    }
+    return typeTuple(std::move(elements));
+  }
+  if (auto* fn = dynamic_cast<FunctionTypeExpr*>(&expr)) {
+    std::vector<TypePtr> params;
+    params.reserve(fn->params.size());
+    for (auto& param : fn->params) params.push_back(resolveTypeExpr(*param));
+    TypePtr ret = fn->returnType ? resolveTypeExpr(*fn->returnType) : typeVoid();
+    return typeFunction(std::move(params), std::move(ret));
+  }
   auto* named = dynamic_cast<NamedTypeExpr*>(&expr);
   if (!named) return typeError();
   if (TypePtr builtin = builtinTypeByName(named->name)) return builtin;
   if (structs_.count(named->name)) return typeStruct(named->name);
   sink_.error(named->span, "Unknown type '" + named->name + "'.",
               "Type names are 'bool', 'char', 'String', 'void', the sized numeric types, "
-              "struct names, or '[T]' for arrays.");
+              "struct names, '[T]' for arrays, '(T, U)' for tuples, 'fn(T) -> R' for "
+              "functions, or 'T?' for optionals.");
   return typeError();
 }
 
@@ -484,6 +550,10 @@ void Sema::checkStatement(Stmt& stmt) {
     checkAssign(*node);
     return;
   }
+  if (auto* node = dynamic_cast<DestructureStmt*>(&stmt)) {
+    checkDestructure(*node);
+    return;
+  }
   if (auto* node = dynamic_cast<ExprStmt*>(&stmt)) {
     inferExpr(*node->expr);
     return;
@@ -568,6 +638,12 @@ void Sema::checkAssign(AssignStmt& stmt) {
   if (auto* ident = dynamic_cast<IdentExpr*>(stmt.target.get())) {
     VarSym* sym = lookupVar(ident->name);
     if (!sym) {
+      if (isBuiltinConstant(ident->name) || ident->name == "None") {
+        sink_.error(ident->span,
+                    "Cannot assign to the builtin constant '" + ident->name + "'.");
+        inferExpr(*stmt.value);
+        return;
+      }
       if (stmt.op != "=") {
         sink_.error(stmt.target->span,
                     "Undefined variable '" + ident->name + "' in compound assignment.");
@@ -618,6 +694,49 @@ void Sema::checkAssign(AssignStmt& stmt) {
   sink_.error(stmt.target->span,
               "Invalid assignment target.",
               "Only variables, struct fields, and array elements can be assigned to.");
+}
+
+void Sema::checkDestructure(DestructureStmt& stmt) {
+  TypePtr valueType = inferExpr(*stmt.value);
+  TypePtr resolved = resolveType(valueType);
+
+  if (resolved->kind == TypeKind::Error) return;
+  if (resolved->kind == TypeKind::Var) {
+    sink_.error(stmt.value->span, "Cannot infer the type being destructured.",
+                "Annotate the value or return a tuple from a function.");
+    return;
+  }
+  if (resolved->kind != TypeKind::Tuple) {
+    sink_.error(stmt.value->span,
+                "Cannot destructure " + typePhrase(resolved) + ".",
+                "Destructuring requires a tuple, e.g. (q, r) = divide(7, 2).");
+    return;
+  }
+  if (resolved->params.size() != stmt.names.size()) {
+    sink_.error(stmt.span,
+                "This tuple has " + std::to_string(resolved->params.size()) +
+                    " value(s), but the pattern binds " + std::to_string(stmt.names.size()) +
+                    ".");
+    return;
+  }
+
+  for (std::size_t i = 0; i < stmt.names.size(); ++i) {
+    const std::string& name = stmt.names[i];
+    if (name == "_") continue;
+    for (std::size_t j = 0; j < i; ++j) {
+      if (stmt.names[j] == name) {
+        sink_.error(stmt.nameSpans[i],
+                    "Duplicate binding '" + name + "' in destructuring.");
+        break;
+      }
+    }
+    TypePtr element = resolved->params[i];
+    if (resolveType(element)->kind == TypeKind::Void) {
+      sink_.error(stmt.nameSpans[i], "Cannot bind a void value.");
+      element = typeError();
+    }
+    declareVar(name, stmt.nameSpans[i], element, stmt.mutableBinding);
+  }
 }
 
 void Sema::checkIf(IfStmt& stmt) {
@@ -752,7 +871,12 @@ TypePtr Sema::inferExpr(Expr& expr) {
   if (auto* node = dynamic_cast<IndexExpr*>(&expr)) return inferIndex(*node);
   if (auto* node = dynamic_cast<SliceExpr*>(&expr)) return inferSlice(*node);
   if (auto* node = dynamic_cast<FieldExpr*>(&expr)) return inferField(*node);
+  if (auto* node = dynamic_cast<SafeNavExpr*>(&expr)) return inferSafeNav(*node);
   if (auto* node = dynamic_cast<ArrayLitExpr*>(&expr)) return inferArrayLiteral(*node);
+  if (auto* node = dynamic_cast<TupleExpr*>(&expr)) return inferTuple(*node);
+  if (auto* node = dynamic_cast<LambdaExpr*>(&expr)) return inferLambda(*node);
+  if (auto* node = dynamic_cast<MatchExpr*>(&expr)) return inferMatch(*node);
+  if (auto* node = dynamic_cast<ComprehensionExpr*>(&expr)) return inferComprehension(*node);
   if (auto* node = dynamic_cast<RangeExpr*>(&expr)) {
     TypePtr start = inferExpr(*node->start);
     TypePtr end = inferExpr(*node->end);
@@ -780,9 +904,17 @@ TypePtr Sema::inferStringLiteral(StringLitExpr& expr) {
 
 TypePtr Sema::inferIdent(IdentExpr& expr) {
   if (VarSym* sym = lookupVar(expr.name)) return sym->type;
-  if (functionsByName_.count(expr.name)) {
-    sink_.error(expr.span, "'" + expr.name + "' is a function, not a value.",
-                "Call it: " + expr.name + "(...).");
+  if (expr.name == "None") {
+    TypePtr element = freshVar(Constraint::None, expr.span, "the value type of 'None'");
+    element->allowUnresolved = true;
+    return typeOptional(element);
+  }
+  if (TypePtr constant = builtinConstantType(expr.name)) return constant;
+  if (auto fn = functionsByName_.find(expr.name); fn != functionsByName_.end()) {
+    auto sig = signatures_.find(fn->second);
+    if (sig != signatures_.end()) {
+      return typeFunction(sig->second.paramTypes, sig->second.retType);
+    }
     return typeError();
   }
   if (structsByName_.count(expr.name)) {
@@ -797,6 +929,15 @@ TypePtr Sema::inferIdent(IdentExpr& expr) {
 
 TypePtr Sema::inferUnary(UnaryExpr& expr) {
   TypePtr operand = inferExpr(*expr.operand);
+  if (expr.op == "!") {
+    TypePtr resolved = resolveType(operand);
+    if (resolved->kind == TypeKind::Error) return typeError();
+    if (resolved->kind == TypeKind::Optional) return resolved->elem;
+    sink_.error(expr.opSpan,
+                "'!' can only unwrap an optional value, found " + typePhrase(operand) + ".",
+                "Only values of type 'T?' can be unwrapped.");
+    return typeError();
+  }
   if (expr.op == "not") {
     if (!unify(operand, typeBool())) {
       sink_.error(expr.opSpan,
@@ -854,6 +995,21 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
     return typeBool();
   }
 
+  if (op == "??") {
+    TypePtr leftResolved = resolveType(lhs);
+    if (leftResolved->kind == TypeKind::Error) return rhs;
+    if (leftResolved->kind != TypeKind::Optional) {
+      sink_.error(expr.opSpan,
+                  "The left side of '\?\?' must be optional, found " + typePhrase(lhs) + ".",
+                  "Use '\?\?' with a value of type 'T?', e.g. maybeName ?? \"guest\".");
+      return typeError();
+    }
+    if (!unify(leftResolved->elem, rhs)) {
+      reportMismatch(rhs, leftResolved->elem, expr.rhs->span, "in the fallback of '\?\?'");
+    }
+    return leftResolved->elem;
+  }
+
   if (op == "..") {
     requireInteger(lhs, expr.lhs->span, "The range start");
     requireInteger(rhs, expr.rhs->span, "The range end");
@@ -885,6 +1041,25 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
       case TypeKind::Char:
       case TypeKind::Var:
         return typeBool();
+      case TypeKind::Optional: {
+        if (op != "==" && op != "!=") {
+          sink_.error(expr.opSpan, "Optionals can only be compared with '==' and '!='.");
+          return typeError();
+        }
+        TypePtr element = resolveType(type->elem);
+        bool comparable = element->kind == TypeKind::Optional || element->kind == TypeKind::Var ||
+                          element->kind == TypeKind::Int || element->kind == TypeKind::Float ||
+                          element->kind == TypeKind::String || element->kind == TypeKind::Char ||
+                          element->kind == TypeKind::Bool;
+        if (!comparable) {
+          sink_.error(expr.opSpan,
+                      "Values of type '" + typeName(type) + "' cannot be compared with '" + op +
+                          "'. Optionals can be compared only when their element is a "
+                          "primitive, String, char, bool, or another optional.");
+          return typeError();
+        }
+        return typeBool();
+      }
       case TypeKind::Bool:
         if (op == "==" || op == "!=") return typeBool();
         sink_.error(expr.opSpan, "Only '==' and '!=' can compare bool values.");
@@ -921,10 +1096,8 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
 TypePtr Sema::inferCall(CallExpr& expr) {
   if (auto* ident = dynamic_cast<IdentExpr*>(expr.callee.get())) {
     const std::string& name = ident->name;
-    if (lookupVar(name)) {
-      sink_.error(ident->span, "Variable '" + name + "' is not callable.",
-                  "Functions are called by name; values cannot be called in this version.");
-      return typeError();
+    if (VarSym* sym = lookupVar(name)) {
+      return checkFunctionValueCall(name, sym->type, expr);
     }
     auto structIt = structs_.find(name);
     if (structIt != structs_.end()) {
@@ -937,6 +1110,11 @@ TypePtr Sema::inferCall(CallExpr& expr) {
       return checkFunctionCall(sigIt->second, expr);
     }
     if (isKnownBuiltin(name)) return checkBuiltinCall(name, expr);
+    if (isBuiltinConstant(name) || name == "None") {
+      sink_.error(ident->span, "'" + name + "' is a constant, not a function.");
+      for (auto& arg : expr.args) inferExpr(*arg.value);
+      return typeError();
+    }
     sink_.error(ident->span, "Undefined function '" + name + "'.",
                 "Functions must be declared before they are called.");
     return typeError();
@@ -947,9 +1125,52 @@ TypePtr Sema::inferCall(CallExpr& expr) {
     return checkMethodCall(objectType, *field, expr);
   }
 
-  sink_.error(expr.callee->span, "This expression is not callable.",
-              "Only named functions, builtins, methods, and struct constructors can be called.");
+  TypePtr calleeType = inferExpr(*expr.callee);
+  TypePtr resolved = resolveType(calleeType);
+  if (resolved->kind == TypeKind::Function) {
+    return checkFunctionValueCall("this expression", calleeType, expr);
+  }
+  if (resolved->kind != TypeKind::Error) {
+    sink_.error(expr.callee->span,
+                "Values of type '" + typeName(resolved) + "' are not callable.",
+                "Only functions and lambdas can be called.");
+  }
+  for (auto& arg : expr.args) inferExpr(*arg.value);
   return typeError();
+}
+
+TypePtr Sema::checkFunctionValueCall(const std::string& name, TypePtr fnType, CallExpr& call) {
+  TypePtr resolved = resolveType(fnType);
+  if (resolved->kind == TypeKind::Error) {
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+  if (resolved->kind != TypeKind::Function) {
+    sink_.error(call.callee->span,
+                "'" + name + "' is a value of type '" + typeName(resolved) +
+                    "', not a function.",
+                "Only functions and lambdas can be called.");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+  for (auto& arg : call.args) {
+    if (!arg.name.empty()) {
+      sink_.error(arg.nameSpan, "Named arguments are not supported for function calls.");
+      return typeError();
+    }
+  }
+  if (call.args.size() != resolved->params.size()) {
+    sink_.error(call.span,
+                "This function expects " + std::to_string(resolved->params.size()) +
+                    " argument(s), found " + std::to_string(call.args.size()) + ".");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+  for (std::size_t i = 0; i < call.args.size(); ++i) {
+    checkArgAgainst(*call.args[i].value, resolved->params[i],
+                    "in argument " + std::to_string(i + 1) + " to '" + name + "'");
+  }
+  return resolved->ret;
 }
 
 TypePtr Sema::checkFunctionCall(const FnSig& sig, CallExpr& call) {
@@ -966,11 +1187,8 @@ TypePtr Sema::checkFunctionCall(const FnSig& sig, CallExpr& call) {
     return typeError();
   }
   for (std::size_t i = 0; i < call.args.size(); ++i) {
-    TypePtr argType = inferExpr(*call.args[i].value);
-    if (!unify(argType, sig.paramTypes[i])) {
-      reportMismatch(argType, sig.paramTypes[i], call.args[i].value->span,
-                     "in argument " + std::to_string(i + 1) + " to '" + sig.name + "'");
-    }
+    checkArgAgainst(*call.args[i].value, sig.paramTypes[i],
+                    "in argument " + std::to_string(i + 1) + " to '" + sig.name + "'");
   }
   return sig.retType;
 }
@@ -1069,6 +1287,19 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     if (structIt == structs_.end()) return typeError();
     auto methodIt = structIt->second.methods.find(method);
     if (methodIt == structIt->second.methods.end()) {
+      for (const auto& fieldEntry : structIt->second.fields) {
+        if (fieldEntry.first != method) continue;
+        TypePtr fieldType = resolveType(fieldEntry.second);
+        if (fieldType->kind == TypeKind::Function) {
+          return checkFunctionValueCall(method, fieldEntry.second, call);
+        }
+        sink_.error(field.fieldSpan,
+                    "Field '" + method + "' of '" + object->structName +
+                        "' is not callable.",
+                    "Only fields with a function type can be called.");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
       sink_.error(field.fieldSpan,
                   "Struct '" + object->structName + "' has no method named '" + method + "'.");
       for (auto& arg : call.args) inferExpr(*arg.value);
@@ -1085,11 +1316,8 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
       return typeError();
     }
     for (std::size_t i = 0; i < call.args.size(); ++i) {
-      TypePtr argType = inferExpr(*call.args[i].value);
-      if (!unify(argType, sig.paramTypes[i + 1])) {
-        reportMismatch(argType, sig.paramTypes[i + 1], call.args[i].value->span,
-                       "in argument " + std::to_string(i + 1) + " to method '" + method + "'");
-      }
+      checkArgAgainst(*call.args[i].value, sig.paramTypes[i + 1],
+                      "in argument " + std::to_string(i + 1) + " to method '" + method + "'");
     }
     return sig.retType;
   }
@@ -1117,9 +1345,114 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
       }
       return object->elem;
     }
+    if (method == "reverse") {
+      if (rejectNamed()) return typeError();
+      if (!call.args.empty()) {
+        sink_.error(call.span, "Method 'reverse' takes no arguments.");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+      }
+      return typeVoid();
+    }
+    if (method == "contains") {
+      if (rejectNamed()) return typeError();
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method 'contains' expects 1 argument, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr argType = inferExpr(*call.args[0].value);
+      if (!unify(argType, object->elem)) {
+        reportMismatch(argType, object->elem, call.args[0].value->span,
+                       "in argument 1 to 'contains'");
+      }
+      return typeBool();
+    }
+    if (method == "join") {
+      if (rejectNamed()) return typeError();
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method 'join' expects 1 argument (separator), found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr argType = inferExpr(*call.args[0].value);
+      if (!unify(argType, typeString())) {
+        reportMismatch(argType, typeString(), call.args[0].value->span,
+                       "in separator argument to 'join'");
+      }
+      return typeString();
+    }
+    if (method == "insert") {
+      if (rejectNamed()) return typeError();
+      if (call.args.size() != 2) {
+        sink_.error(call.span, "Method 'insert' expects 2 arguments (index, value), found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr indexType = inferExpr(*call.args[0].value);
+      requireInteger(indexType, call.args[0].value->span, "The index passed to 'insert'");
+      TypePtr valueType = inferExpr(*call.args[1].value);
+      if (!unify(valueType, object->elem)) {
+        reportMismatch(valueType, object->elem, call.args[1].value->span, "in 'insert'");
+      }
+      return typeVoid();
+    }
+    if (method == "remove_at") {
+      if (rejectNamed()) return typeError();
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method 'remove_at' expects 1 argument, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr indexType = inferExpr(*call.args[0].value);
+      requireInteger(indexType, call.args[0].value->span, "The index passed to 'remove_at'");
+      return object->elem;
+    }
+    if (method == "index_of") {
+      if (rejectNamed()) return typeError();
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method 'index_of' expects 1 argument, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr argType = inferExpr(*call.args[0].value);
+      if (!unify(argType, object->elem)) {
+        reportMismatch(argType, object->elem, call.args[0].value->span,
+                       "in argument 1 to 'index_of'");
+      }
+      return typeInt(64, true);
+    }
+    if (method == "sort") {
+      if (rejectNamed()) return typeError();
+      if (!call.args.empty()) {
+        sink_.error(call.span, "Method 'sort' takes no arguments.");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+      }
+      TypePtr element = resolveType(object->elem);
+      if (element->kind != TypeKind::Var && element->kind != TypeKind::Int &&
+          element->kind != TypeKind::Float && element->kind != TypeKind::String) {
+        sink_.error(field.fieldSpan,
+                    "'sort' requires an array of integers, floats, or strings, found " +
+                        typePhrase(object) + ".");
+      }
+      return typeVoid();
+    }
+    if (method == "first" || method == "last") {
+      if (rejectNamed()) return typeError();
+      if (!call.args.empty()) {
+        sink_.error(call.span, "Method '" + method + "' takes no arguments.");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+      }
+      return typeOptional(object->elem);
+    }
     sink_.error(field.fieldSpan,
                 "Array has no method named '" + method + "'.",
-                "Available array methods: push(value), pop().");
+                "Available array methods: push(v), pop(), insert(i, v), remove_at(i), "
+                "contains(v), index_of(v), sort(), reverse(), first(), last(), join(sep).");
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -1160,10 +1493,65 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
       }
       return method == "contains" ? typeBool() : typeArray(typeString());
     }
+    if (method == "replace") {
+      if (call.args.size() != 2) {
+        sink_.error(call.span, "Method 'replace' expects 2 arguments, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      for (std::size_t i = 0; i < 2; ++i) {
+        TypePtr argType = inferExpr(*call.args[i].value);
+        if (!unify(argType, typeString())) {
+          reportMismatch(argType, typeString(), call.args[i].value->span,
+                         "in argument " + std::to_string(i + 1) + " to 'replace'");
+        }
+      }
+      return typeString();
+    }
+    if (method == "starts_with" || method == "ends_with" || method == "find") {
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method '" + method + "' expects 1 argument, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr argType = inferExpr(*call.args[0].value);
+      if (!unify(argType, typeString())) {
+        reportMismatch(argType, typeString(), call.args[0].value->span,
+                       "in argument 1 to '" + method + "'");
+      }
+      return method == "find" ? typeInt(64, true) : typeBool();
+    }
+    if (method == "repeat") {
+      if (call.args.size() != 1) {
+        sink_.error(call.span, "Method 'repeat' expects 1 argument, found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      TypePtr argType = inferExpr(*call.args[0].value);
+      requireInteger(argType, call.args[0].value->span, "The count passed to 'repeat'");
+      return typeString();
+    }
+    if (method == "chars") {
+      if (!expectNoArgs()) return typeError();
+      return typeArray(typeChar());
+    }
+    if (method == "try_to_int") {
+      if (!expectNoArgs()) return typeError();
+      return typeOptional(typeInt(64, true));
+    }
+    if (method == "try_to_float") {
+      if (!expectNoArgs()) return typeError();
+      return typeOptional(typeFloat(64));
+    }
     sink_.error(field.fieldSpan,
                 "String has no method named '" + method + "'.",
-                "Available string methods: to_int(), to_float(), upper(), lower(), trim(), "
-                "contains(sub), split(sep).");
+                "Available string methods: to_int(), to_float(), try_to_int(), "
+                "try_to_float(), upper(), lower(), trim(), contains(sub), split(sep), "
+                "replace(sub, with), starts_with(prefix), ends_with(suffix), find(sub), "
+                "repeat(n), chars().");
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -1293,6 +1681,189 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     return typeFloat(64);
   }
 
+  if (name == "flush") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeVoid();
+  }
+
+  if (name == "read_file") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeString();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (!unify(type, typeString())) {
+      reportMismatch(type, typeString(), call.args[0].value->span, "in the path passed to 'read_file'");
+    }
+    return typeString();
+  }
+
+  if (name == "write_file" || name == "append_file") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+      TypePtr type = inferExpr(*call.args[i].value);
+      if (!unify(type, typeString())) {
+        reportMismatch(type, typeString(), call.args[i].value->span,
+                       "in argument " + std::to_string(i + 1) + " to '" + name + "'");
+      }
+    }
+    return typeVoid();
+  }
+
+  if (name == "file_exists") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeBool();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (!unify(type, typeString())) {
+      reportMismatch(type, typeString(), call.args[0].value->span,
+                     "in the path passed to 'file_exists'");
+    }
+    return typeBool();
+  }
+
+  if (name == "Some") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeOptional(typeError());
+    }
+    TypePtr value = inferExpr(*call.args[0].value);
+    if (resolveType(value)->kind == TypeKind::Void) {
+      sink_.error(call.args[0].value->span, "Cannot wrap a void value in 'Some'.");
+    }
+    return typeOptional(value);
+  }
+
+  if (name == "atan2") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeFloat(64);
+    }
+    requireNumeric(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The y argument of 'atan2'");
+    requireNumeric(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The x argument of 'atan2'");
+    return typeFloat(64);
+  }
+
+  if (name == "random") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeFloat(64);
+  }
+
+  if (name == "random_int") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The low bound of 'random_int'");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The high bound of 'random_int'");
+    return typeInt(64, true);
+  }
+
+  if (name == "map" || name == "filter" || name == "any" || name == "all") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr arrayType = inferExpr(*call.args[0].value);
+    TypePtr array = resolveType(arrayType);
+    if (array->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'" + name + "' expects an array as its first argument, found " +
+                      typePhrase(array) + ".");
+      inferExpr(*call.args[1].value);
+      return typeError();
+    }
+    if (name == "map") {
+      TypePtr mapped = freshVar(Constraint::None, call.span,
+                                "the element type produced by 'map'");
+      checkArgAgainst(*call.args[1].value, typeFunction({array->elem}, mapped),
+                      "in the function passed to 'map'");
+      return typeArray(mapped);
+    }
+    checkArgAgainst(*call.args[1].value, typeFunction({array->elem}, typeBool()),
+                    "in the function passed to '" + name + "'");
+    return name == "filter" ? typeArray(array->elem) : typeBool();
+  }
+
+  if (name == "reduce") {
+    if (call.args.size() != 3) {
+      arityError(3);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr arrayType = inferExpr(*call.args[0].value);
+    TypePtr array = resolveType(arrayType);
+    TypePtr accumulator = inferExpr(*call.args[1].value);
+    if (array->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'reduce' expects an array as its first argument, found " +
+                      typePhrase(array) + ".");
+      inferExpr(*call.args[2].value);
+      return typeError();
+    }
+    checkArgAgainst(*call.args[2].value, typeFunction({accumulator, array->elem}, accumulator),
+                    "in the function passed to 'reduce'");
+    return accumulator;
+  }
+
+  if (name == "sum") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr arrayType = inferExpr(*call.args[0].value);
+    TypePtr array = resolveType(arrayType);
+    if (array->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'sum' expects an array, found " + typePhrase(array) + ".");
+      return typeError();
+    }
+    return requireNumeric(array->elem, call.args[0].value->span, "The element type of 'sum'");
+  }
+
+  if (name == "join") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeString();
+    }
+    TypePtr arrayType = inferExpr(*call.args[0].value);
+    TypePtr array = resolveType(arrayType);
+    if (array->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'join' expects an array as its first argument, found " +
+                      typePhrase(array) + ".");
+    }
+    TypePtr separator = inferExpr(*call.args[1].value);
+    if (!unify(separator, typeString())) {
+      reportMismatch(separator, typeString(), call.args[1].value->span,
+                     "in the separator passed to 'join'");
+    }
+    return typeString();
+  }
+
   if (isMathBuiltin(name)) {
     if (call.args.size() != 1) {
       arityError(1);
@@ -1325,12 +1896,7 @@ TypePtr Sema::inferIndex(IndexExpr& expr) {
 
   TypePtr object = resolveType(objectType);
   if (object->kind == TypeKind::Array) return object->elem;
-  if (object->kind == TypeKind::String) {
-    sink_.error(expr.bracketSpan,
-                "Strings cannot be indexed by number.",
-                "Strings are UTF-8; iterate with 'for c in text:' to read characters.");
-    return typeChar();
-  }
+  if (object->kind == TypeKind::String) return typeChar();
   if (object->kind == TypeKind::Var) {
     sink_.error(expr.object->span, "Cannot infer the type being indexed.",
                 "Add a type annotation to the value.");
@@ -1351,15 +1917,14 @@ TypePtr Sema::inferSlice(SliceExpr& expr) {
     TypePtr endType = inferExpr(*expr.end);
     requireInteger(endType, expr.end->span, "The slice end");
   }
+  if (expr.step) {
+    TypePtr stepType = inferExpr(*expr.step);
+    requireInteger(stepType, expr.step->span, "The slice step");
+  }
 
   TypePtr object = resolveType(objectType);
   if (object->kind == TypeKind::Array) return object;
-  if (object->kind == TypeKind::String) {
-    sink_.error(expr.bracketSpan,
-                "Slicing strings is not supported yet.",
-                "Iterate with 'for c in text:' or use string methods.");
-    return typeString();
-  }
+  if (object->kind == TypeKind::String) return typeString();
   if (object->kind == TypeKind::Var) {
     sink_.error(expr.object->span, "Cannot infer the type being sliced.",
                 "Add a type annotation to the value.");
@@ -1382,6 +1947,13 @@ TypePtr Sema::inferField(FieldExpr& expr) {
     }
     sink_.error(expr.fieldSpan,
                 "Struct '" + object->structName + "' has no field named '" + expr.field + "'.");
+    return typeError();
+  }
+
+  if (object->kind == TypeKind::Optional) {
+    sink_.error(expr.fieldSpan,
+                "Cannot access field '" + expr.field + "' on " + typePhrase(object) + ".",
+                "Use '?.' to access fields of an optional value.");
     return typeError();
   }
 
@@ -1421,6 +1993,245 @@ TypePtr Sema::inferArrayLiteral(ArrayLitExpr& expr) {
     }
   }
   return typeArray(elementType);
+}
+
+TypePtr Sema::inferTuple(TupleExpr& expr) {
+  std::vector<TypePtr> elements;
+  elements.reserve(expr.elements.size());
+  for (auto& element : expr.elements) {
+    TypePtr type = inferExpr(*element);
+    if (resolveType(type)->kind == TypeKind::Void) {
+      sink_.error(element->span, "A tuple element cannot be a void value.");
+      type = typeError();
+    }
+    elements.push_back(type);
+  }
+  return typeTuple(std::move(elements));
+}
+
+TypePtr Sema::inferLambda(LambdaExpr& expr) {
+  std::vector<TypePtr> params;
+  params.reserve(expr.params.size());
+  for (auto& param : expr.params) {
+    TypePtr type;
+    if (param.type) {
+      type = resolveTypeExpr(*param.type);
+      if (resolveType(type)->kind == TypeKind::Void) {
+        sink_.error(param.span, "Lambda parameter '" + param.name + "' cannot have type void.");
+        type = typeError();
+      }
+    } else {
+      type = freshVar(Constraint::None, param.span,
+                      "the type of lambda parameter '" + param.name + "'");
+    }
+    params.push_back(type);
+  }
+
+  TypePtr ret = expr.returnType
+                    ? resolveTypeExpr(*expr.returnType)
+                    : freshVar(Constraint::None, expr.span, "the return type of a lambda");
+
+  pushScope();
+  for (std::size_t i = 0; i < expr.params.size(); ++i) {
+    declareVar(expr.params[i].name, expr.params[i].span, params[i], false, "parameter");
+  }
+  TypePtr bodyType = inferExpr(*expr.body);
+  if (resolveType(bodyType)->kind == TypeKind::Void) {
+    sink_.error(expr.body->span, "A lambda body must produce a value.");
+  } else if (!unify(bodyType, ret)) {
+    reportMismatch(bodyType, ret, expr.body->span, "in the lambda result");
+  }
+  popScope();
+
+  return typeFunction(std::move(params), std::move(ret));
+}
+
+void Sema::checkLambdaAgainst(LambdaExpr& expr, TypePtr expected) {
+  TypePtr fn = resolveType(expected);
+  if (fn->kind != TypeKind::Function) {
+    inferLambda(expr);
+    return;
+  }
+  if (expr.params.size() != fn->params.size()) {
+    sink_.error(expr.span,
+                "This lambda declares " + std::to_string(expr.params.size()) +
+                    " parameter(s), but the expected function type takes " +
+                    std::to_string(fn->params.size()) + ".");
+    inferLambda(expr);
+    return;
+  }
+
+  pushScope();
+  for (std::size_t i = 0; i < expr.params.size(); ++i) {
+    if (expr.params[i].type) {
+      TypePtr declared = resolveTypeExpr(*expr.params[i].type);
+      if (!unify(declared, fn->params[i])) {
+        reportMismatch(declared, fn->params[i], expr.params[i].span,
+                       "in parameter '" + expr.params[i].name + "' of the lambda");
+      }
+    }
+    declareVar(expr.params[i].name, expr.params[i].span, fn->params[i], false, "parameter");
+  }
+  TypePtr bodyType = inferExpr(*expr.body);
+  if (resolveType(bodyType)->kind == TypeKind::Void) {
+    sink_.error(expr.body->span, "A lambda body must produce a value.");
+  } else if (!unify(bodyType, fn->ret)) {
+    reportMismatch(bodyType, fn->ret, expr.body->span, "in the lambda result");
+  }
+  popScope();
+}
+
+void Sema::checkArgAgainst(Expr& expr, TypePtr expected, const std::string& context) {
+  if (auto* lambda = dynamic_cast<LambdaExpr*>(&expr)) {
+    checkLambdaAgainst(*lambda, expected);
+    return;
+  }
+  TypePtr actual = inferExpr(expr);
+  if (!unify(actual, expected)) {
+    reportMismatch(actual, expected, expr.span, context);
+  }
+}
+
+TypePtr Sema::inferSafeNav(SafeNavExpr& expr) {
+  TypePtr objectType = inferExpr(*expr.object);
+  TypePtr object = resolveType(objectType);
+
+  if (object->kind == TypeKind::Error) return typeError();
+  if (object->kind == TypeKind::Var) {
+    sink_.error(expr.fieldSpan,
+                "Cannot infer the type of the value before '?." + expr.field + "'.",
+                "Add a type annotation to the value.");
+    return typeError();
+  }
+  if (object->kind != TypeKind::Optional) {
+    sink_.error(expr.fieldSpan,
+                "The left side of '?.' must be optional, found " + typePhrase(object) + ".",
+                "Use '.' to access fields of a non-optional value.");
+    return typeError();
+  }
+  TypePtr inner = resolveType(object->elem);
+  if (inner->kind == TypeKind::Var) {
+    sink_.error(expr.fieldSpan,
+                "Cannot infer the optional's element type before '?." + expr.field + "'.",
+                "Add a type annotation to the value.");
+    return typeError();
+  }
+  if (inner->kind != TypeKind::Struct) {
+    sink_.error(expr.fieldSpan,
+                "'?.' can only access struct fields, but the optional holds " +
+                    typePhrase(inner) + ".");
+    return typeError();
+  }
+  auto structIt = structs_.find(inner->structName);
+  if (structIt == structs_.end()) return typeError();
+  for (const auto& field : structIt->second.fields) {
+    if (field.first != expr.field) continue;
+    if (resolveType(field.second)->kind == TypeKind::Optional) return field.second;
+    return typeOptional(field.second);
+  }
+  sink_.error(expr.fieldSpan,
+              "Struct '" + inner->structName + "' has no field named '" + expr.field + "'.");
+  return typeError();
+}
+
+void Sema::checkPattern(Pattern& pattern, TypePtr subjectType) {
+  if (pattern.kind == Pattern::Kind::Wildcard) return;
+
+  if (pattern.kind == Pattern::Kind::Literal) {
+    TypePtr valueType = inferExpr(*pattern.value);
+    if (!unify(valueType, subjectType)) {
+      sink_.error(pattern.span,
+                  "This pattern has type " + typeName(valueType) + ", but the match subject has "
+                  "type " + typeName(subjectType) + ".");
+    }
+    return;
+  }
+
+  TypePtr start = inferExpr(*pattern.rangeStart);
+  TypePtr end = inferExpr(*pattern.rangeEnd);
+  requireInteger(start, pattern.rangeStart->span, "The range pattern start");
+  requireInteger(end, pattern.rangeEnd->span, "The range pattern end");
+  if (!unify(start, end)) {
+    sink_.error(pattern.span, "Range pattern endpoints must have the same type, found " +
+                                  typeName(start) + " and " + typeName(end) + ".");
+    return;
+  }
+  if (!unify(start, subjectType)) {
+    sink_.error(pattern.span,
+                "This range pattern has type " + typeName(start) + ", but the match subject has "
+                "type " + typeName(subjectType) + ".");
+    return;
+  }
+}
+
+TypePtr Sema::inferMatch(MatchExpr& expr) {
+  TypePtr subject = inferExpr(*expr.subject);
+  TypePtr result;
+  bool sawResult = false;
+
+  for (auto& arm : expr.arms) {
+    checkPattern(arm.pattern, subject);
+    if (arm.guard) {
+      requireBool(inferExpr(*arm.guard), arm.guard->span, "A match guard");
+    }
+    TypePtr armType = inferExpr(*arm.result);
+    if (resolveType(armType)->kind == TypeKind::Void) {
+      sink_.error(arm.result->span, "A match arm must produce a value.");
+      armType = typeError();
+    }
+    if (!sawResult) {
+      result = armType;
+      sawResult = true;
+    } else if (!unify(result, armType)) {
+      sink_.error(arm.result->span,
+                  "All match arms must produce the same type, found " + typeName(result) +
+                      " and " + typeName(armType) + ".");
+    }
+  }
+
+  const MatchArm& last = expr.arms.back();
+  if (last.pattern.kind != Pattern::Kind::Wildcard || last.guard) {
+    sink_.error(expr.span,
+                "A match expression must end with an unguarded '_' arm.",
+                "Add '_ => ...' so every value is handled.");
+  }
+
+  return sawResult ? result : typeError();
+}
+
+TypePtr Sema::inferComprehension(ComprehensionExpr& expr) {
+  TypePtr iterableType = inferExpr(*expr.iterable);
+  TypePtr iterable = resolveType(iterableType);
+  TypePtr elementType;
+
+  if (iterable->kind == TypeKind::Var) {
+    sink_.error(expr.iterable->span,
+                "Cannot infer the type of the value being iterated over.",
+                "Annotate the variable, or iterate over an array, string, or range.");
+    elementType = typeError();
+  } else if (iterable->kind == TypeKind::Array || iterable->kind == TypeKind::Range) {
+    elementType = iterable->elem;
+  } else if (iterable->kind == TypeKind::String) {
+    elementType = typeChar();
+  } else {
+    sink_.error(expr.iterable->span,
+                "Cannot iterate over " + typePhrase(iterable) + ".",
+                "Comprehensions iterate over arrays, strings, and integer ranges ('0..10').");
+    elementType = typeError();
+  }
+
+  pushScope();
+  declareVar(expr.var, expr.varSpan, elementType, false, "loop variable");
+  if (expr.condition) {
+    requireBool(inferExpr(*expr.condition), expr.condition->span, "The comprehension condition");
+  }
+  TypePtr result = inferExpr(*expr.element);
+  if (resolveType(result)->kind == TypeKind::Void) {
+    sink_.error(expr.element->span, "A comprehension element must produce a value.");
+    result = typeError();
+  }
+  popScope();
+  return typeArray(result);
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1504,6 +2315,7 @@ void Sema::checkTypeVariables() {
       }
     }
     Span span = resolved->varSpan.valid() ? resolved->varSpan : info.span;
+    if (resolved->allowUnresolved) continue;
     sink_.error(span, "Cannot infer " + info.description + ".",
                 "Add an explicit type annotation.");
   }

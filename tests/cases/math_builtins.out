@@ -1,0 +1,13 @@
+round: 3.0 -3.0 2.0
+trunc: 2.0 -2.0
+log2: 3.0 log10: 3.0
+atan2: 0.0
+sqrt: 4.0 pow: 1024.0
+abs: 7 2.5 min: 3 max: 9.0
+PI: 3.141592653589793 E: 2.718281828459045
+I32: -2147483648 2147483647
+U8: 255 U32: 4294967295
+F64 max: true F64 min: true
+random in range: true
+random_int in range: true
+floor/ceil: 2.0 3.0

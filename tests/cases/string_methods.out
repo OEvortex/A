@@ -1,0 +1,11 @@
+trim: Hello, World
+upper: HELLO, WORLD
+replace:   Hello, A  
+starts: true ends: true
+find: 2 missing: -1
+repeat: ababab
+chars: [h, é, y]
+split: ["a", "b", "", "c"]
+try: Some(42) None
+try float: Some(3.5) None
+strict: 42 3.5

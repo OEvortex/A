@@ -3,6 +3,9 @@ build-*/
 cmake-build-*/
 *.o
 *.a
+# A language sources use the .a extension; keep sample and test programs.
+!examples/*.a
+!tests/**/*.a
 *.so
 *.dylib
 *.exe

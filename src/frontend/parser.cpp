@@ -57,11 +57,11 @@ std::unique_ptr<Program> Parser::parseProgram() {
   auto program = std::make_unique<Program>();
   while (!check(Tok::Eof)) {
     if (match(Tok::Newline) || match(Tok::Dedent)) continue;
-    if (check(Tok::Indent)) {
-      fail(cur().span, "Unexpected indentation.",
-           "Only blocks introduced by ':' may be indented.");
-    }
     try {
+      if (check(Tok::Indent)) {
+        fail(cur().span, "Unexpected indentation.",
+             "Only blocks introduced by ':' may be indented.");
+      }
       program->statements.push_back(parseStatement());
     } catch (ParseError&) {
       synchronize();
@@ -114,6 +114,10 @@ StmtPtr Parser::parseStatement() {
 
 void Parser::expectNewline() {
   if (check(Tok::Eof)) return;
+  // Block-shaped expressions (match) consume their closing newline, so a
+  // dedent or a just-closed block already ends the statement.
+  if (check(Tok::Dedent)) return;
+  if (pos_ > 0 && tokens_[pos_ - 1].kind == Tok::Dedent) return;
   expect(Tok::Newline, "end of line");
 }
 
@@ -155,9 +159,19 @@ StmtPtr Parser::parseFnDecl() {
     decl->returnType = parseTypeExpr();
   }
 
-  expect(Tok::Colon, "':' after the function signature");
-
-  if (match(Tok::Eq)) {
+  // Allow either ':' or direct '=' (expression body) without requiring ':'
+  if (match(Tok::Colon)) {
+    if (match(Tok::Eq)) {
+      auto value = parseExpression();
+      auto ret = std::make_unique<ReturnStmt>();
+      ret->span = spanOf(value);
+      ret->value = std::move(value);
+      expectNewline();
+      decl->body.push_back(std::move(ret));
+    } else {
+      decl->body = parseSuite();
+    }
+  } else if (match(Tok::Eq)) {
     auto value = parseExpression();
     auto ret = std::make_unique<ReturnStmt>();
     ret->span = spanOf(value);
@@ -165,7 +179,7 @@ StmtPtr Parser::parseFnDecl() {
     expectNewline();
     decl->body.push_back(std::move(ret));
   } else {
-    decl->body = parseSuite();
+    fail(cur().span, "Expected ':' or '=' after function signature.");
   }
 
   decl->span = Span::join(start, tokens_[pos_ - 1].span);
@@ -230,6 +244,9 @@ StmtPtr Parser::parseStructDecl() {
 StmtPtr Parser::parseVarDecl() {
   Span start = cur().span;
   expect(Tok::KwVar, "'var'");
+  if (check(Tok::LParen)) {
+    return parseDestructureDecl(/*mutableBinding=*/true, start);
+  }
   const Token& nameTok = expect(Tok::Ident, "a variable name");
 
   auto decl = std::make_unique<LetStmt>();
@@ -264,6 +281,48 @@ StmtPtr Parser::parseTypedDeclaration() {
   decl->init = std::move(init);
   decl->mutableBinding = false;
   return decl;
+}
+
+StmtPtr Parser::parseDestructureDecl(bool mutableBinding, Span start) {
+  expect(Tok::LParen, "'('");
+  auto stmt = std::make_unique<DestructureStmt>();
+  while (true) {
+    const Token& nameTok = expect(Tok::Ident, "a binding name or '_'");
+    stmt->names.push_back(nameTok.lexeme);
+    stmt->nameSpans.push_back(nameTok.span);
+    if (!match(Tok::Comma)) break;
+    if (check(Tok::RParen)) break;
+  }
+  expect(Tok::RParen, "')' after the destructuring targets");
+  expect(Tok::Eq, "'=' (variables must be initialized)");
+  stmt->value = parseExpression();
+  expectNewline();
+  stmt->mutableBinding = mutableBinding;
+  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  return stmt;
+}
+
+StmtPtr Parser::buildDestructure(ExprPtr target, ExprPtr value, bool mutableBinding,
+                                 Span span) {
+  auto* tuple = dynamic_cast<TupleExpr*>(target.get());
+  if (!tuple) {
+    fail(spanOf(target), "Only a tuple target may be destructured.");
+  }
+  auto stmt = std::make_unique<DestructureStmt>();
+  stmt->span = span;
+  stmt->mutableBinding = mutableBinding;
+  for (auto& element : tuple->elements) {
+    auto* ident = dynamic_cast<IdentExpr*>(element.get());
+    if (!ident) {
+      fail(spanOf(element),
+           "Destructuring targets must be names or '_'.",
+           "Write (a, b) = ... with plain names.");
+    }
+    stmt->names.push_back(ident->name);
+    stmt->nameSpans.push_back(element->span);
+  }
+  stmt->value = std::move(value);
+  return stmt;
 }
 
 StmtPtr Parser::parseIf() {
@@ -377,6 +436,15 @@ StmtPtr Parser::parseSimpleStatement() {
     const Token& opTok = advance();
     auto value = parseExpression();
     expectNewline();
+    if (dynamic_cast<TupleExpr*>(target.get()) != nullptr) {
+      if (opTok.kind != Tok::Eq) {
+        fail(opTok.span, "Destructuring only supports '='.",
+             "Use separate statements to update the bound names.");
+      }
+      return buildDestructure(std::move(target), std::move(value),
+                              /*mutableBinding=*/false,
+                              Span::join(start, tokens_[pos_ - 1].span));
+    }
     auto stmt = std::make_unique<AssignStmt>();
     stmt->span = Span::join(start, tokens_[pos_ - 1].span);
     stmt->op = opName(opTok.kind);
@@ -393,20 +461,66 @@ StmtPtr Parser::parseSimpleStatement() {
 }
 
 TypeExprPtr Parser::parseTypeExpr() {
+  TypeExprPtr type;
   if (check(Tok::LBracket)) {
     Span start = cur().span;
     advance();
     auto elem = parseTypeExpr();
     expect(Tok::RBracket, "']' after the element type");
-    auto type = std::make_unique<ArrayTypeExpr>();
-    type->span = Span::join(start, tokens_[pos_ - 1].span);
-    type->element = std::move(elem);
-    return type;
+    auto array = std::make_unique<ArrayTypeExpr>();
+    array->span = Span::join(start, tokens_[pos_ - 1].span);
+    array->element = std::move(elem);
+    type = std::move(array);
+  } else if (check(Tok::LParen)) {
+    Span start = cur().span;
+    advance();
+    auto first = parseTypeExpr();
+    if (match(Tok::Comma)) {
+      auto tuple = std::make_unique<TupleTypeExpr>();
+      tuple->elements.push_back(std::move(first));
+      while (!check(Tok::RParen)) {
+        tuple->elements.push_back(parseTypeExpr());
+        if (!match(Tok::Comma)) break;
+      }
+      expect(Tok::RParen, "')' after the tuple element types");
+      tuple->span = Span::join(start, tokens_[pos_ - 1].span);
+      type = std::move(tuple);
+    } else {
+      expect(Tok::RParen, "')' after the type");
+      first->span = Span::join(start, tokens_[pos_ - 1].span);
+      type = std::move(first);
+    }
+  } else if (check(Tok::KwFn)) {
+    Span start = cur().span;
+    advance();
+    expect(Tok::LParen, "'(' after 'fn' in a function type");
+    auto fn = std::make_unique<FunctionTypeExpr>();
+    if (!check(Tok::RParen)) {
+      while (true) {
+        fn->params.push_back(parseTypeExpr());
+        if (!match(Tok::Comma)) break;
+        if (check(Tok::RParen)) break;
+      }
+    }
+    expect(Tok::RParen, "')' after the function type parameters");
+    expect(Tok::Arrow, "'->' before the function return type");
+    fn->returnType = parseTypeExpr();
+    fn->span = Span::join(start, tokens_[pos_ - 1].span);
+    type = std::move(fn);
+  } else {
+    const Token& nameTok = expect(Tok::Ident, "a type name");
+    auto named = std::make_unique<NamedTypeExpr>();
+    named->span = nameTok.span;
+    named->name = nameTok.lexeme;
+    type = std::move(named);
   }
-  const Token& nameTok = expect(Tok::Ident, "a type name");
-  auto type = std::make_unique<NamedTypeExpr>();
-  type->span = nameTok.span;
-  type->name = nameTok.lexeme;
+
+  while (match(Tok::Question)) {
+    auto optional = std::make_unique<OptionalTypeExpr>();
+    optional->span = Span::join(type->span, tokens_[pos_ - 1].span);
+    optional->element = std::move(type);
+    type = std::move(optional);
+  }
   return type;
 }
 
@@ -414,21 +528,23 @@ TypeExprPtr Parser::parseTypeExpr() {
 
 int Parser::binaryPrecedence(Tok kind) {
   switch (kind) {
-    case Tok::KwOr: return 1;
-    case Tok::KwAnd: return 2;
+    case Tok::Pipe: return 1;
+    case Tok::QuestionQuestion: return 2;
+    case Tok::KwOr: return 3;
+    case Tok::KwAnd: return 4;
     case Tok::EqEq:
     case Tok::NotEq:
     case Tok::Lt:
     case Tok::Gt:
     case Tok::Le:
-    case Tok::Ge: return 4;
-    case Tok::DotDot: return 5;
+    case Tok::Ge: return 6;
+    case Tok::DotDot: return 7;
     case Tok::Plus:
-    case Tok::Minus: return 6;
+    case Tok::Minus: return 8;
     case Tok::Star:
     case Tok::Slash:
-    case Tok::Percent: return 7;
-    case Tok::StarStar: return 9;
+    case Tok::Percent: return 9;
+    case Tok::StarStar: return 11;
     default: return -1;
   }
 }
@@ -446,6 +562,8 @@ const char* Parser::opName(Tok kind) {
     case Tok::Le: return "<=";
     case Tok::Ge: return ">=";
     case Tok::DotDot: return "..";
+    case Tok::QuestionQuestion: return "??";
+    case Tok::Pipe: return "|>";
     case Tok::Plus: return "+";
     case Tok::Minus: return "-";
     case Tok::Star: return "*";
@@ -485,6 +603,20 @@ ExprPtr Parser::parseExpression(int minPrec) {
     const Token& opTok = advance();
     int nextMin = isRightAssociative(kind) ? prec : prec + 1;
     auto right = parseExpression(nextMin);
+    if (kind == Tok::Pipe) {
+      Span leftSpan = left->span;
+      auto* call = dynamic_cast<CallExpr*>(right.get());
+      if (!call || dynamic_cast<IdentExpr*>(call->callee.get()) == nullptr) {
+        fail(opTok.span, "The right side of '|>' must be a call to a plain function.",
+             "Write value |> name(args); the value becomes the first argument.");
+      }
+      CallArg piped;
+      piped.value = std::move(left);
+      call->args.insert(call->args.begin(), std::move(piped));
+      call->span = Span::join(leftSpan, call->span);
+      left = std::move(right);
+      continue;
+    }
     auto binary = std::make_unique<BinaryExpr>();
     binary->span = Span::join(left->span, right->span);
     binary->opSpan = opTok.span;
@@ -499,7 +631,7 @@ ExprPtr Parser::parseExpression(int minPrec) {
 ExprPtr Parser::parsePrefix() {
   if (check(Tok::KwNot)) {
     const Token& opTok = advance();
-    auto operand = parseExpression(3);
+    auto operand = parseExpression(5);
     auto expr = std::make_unique<UnaryExpr>();
     expr->span = Span::join(opTok.span, operand->span);
     expr->opSpan = opTok.span;
@@ -509,7 +641,7 @@ ExprPtr Parser::parsePrefix() {
   }
   if (check(Tok::Minus)) {
     const Token& opTok = advance();
-    auto operand = parseExpression(8);
+    auto operand = parseExpression(10);
     auto expr = std::make_unique<UnaryExpr>();
     expr->span = Span::join(opTok.span, operand->span);
     expr->opSpan = opTok.span;
@@ -534,6 +666,27 @@ ExprPtr Parser::parsePostfix() {
       expr = std::move(field);
       continue;
     }
+    if (check(Tok::QuestionDot)) {
+      advance();
+      const Token& fieldTok = expect(Tok::Ident, "a field name after '?.'");
+      auto nav = std::make_unique<SafeNavExpr>();
+      nav->span = Span::join(expr->span, fieldTok.span);
+      nav->fieldSpan = fieldTok.span;
+      nav->field = fieldTok.lexeme;
+      nav->object = std::move(expr);
+      expr = std::move(nav);
+      continue;
+    }
+    if (check(Tok::Bang)) {
+      const Token& opTok = advance();
+      auto unwrap = std::make_unique<UnaryExpr>();
+      unwrap->span = Span::join(expr->span, opTok.span);
+      unwrap->opSpan = opTok.span;
+      unwrap->op = "!";
+      unwrap->operand = std::move(expr);
+      expr = std::move(unwrap);
+      continue;
+    }
     if (check(Tok::LParen)) {
       auto args = parseCallArgs();
       auto call = std::make_unique<CallExpr>();
@@ -556,26 +709,41 @@ ExprPtr Parser::parseCallOrIndexPostfix(ExprPtr base) {
   Span start = cur().span;
   expect(Tok::LBracket, "'['");
 
-  if (match(Tok::DotDot)) {
-    auto slice = std::make_unique<SliceExpr>();
-    slice->object = std::move(base);
-    if (!check(Tok::RBracket)) slice->end = parseExpression(6);
+  auto parseSliceTail = [&](std::unique_ptr<SliceExpr> slice) -> ExprPtr {
+    if (!check(Tok::RBracket)) {
+      if (check(Tok::DotDot)) {
+        fail(cur().span, "Expected a slice end before '..'.",
+             "Write start..end..step, e.g. items[0..10..2].");
+      }
+      slice->end = parseExpression(8);
+      if (match(Tok::DotDot)) {
+        if (check(Tok::RBracket)) {
+          fail(cur().span, "Expected a slice step after '..'.");
+        }
+        slice->step = parseExpression(8);
+        if (check(Tok::DotDot)) {
+          fail(cur().span, "A slice takes at most a start, end, and step.");
+        }
+      }
+    }
     expect(Tok::RBracket, "']' after the slice");
     slice->bracketSpan = Span::join(start, tokens_[pos_ - 1].span);
     slice->span = Span::join(slice->object->span, tokens_[pos_ - 1].span);
     return slice;
+  };
+
+  if (match(Tok::DotDot)) {
+    auto slice = std::make_unique<SliceExpr>();
+    slice->object = std::move(base);
+    return parseSliceTail(std::move(slice));
   }
 
-  auto first = parseExpression(6);
+  auto first = parseExpression(8);
   if (match(Tok::DotDot)) {
     auto slice = std::make_unique<SliceExpr>();
     slice->object = std::move(base);
     slice->start = std::move(first);
-    if (!check(Tok::RBracket)) slice->end = parseExpression(6);
-    expect(Tok::RBracket, "']' after the slice");
-    slice->bracketSpan = Span::join(start, tokens_[pos_ - 1].span);
-    slice->span = Span::join(slice->object->span, tokens_[pos_ - 1].span);
-    return slice;
+    return parseSliceTail(std::move(slice));
   }
 
   expect(Tok::RBracket, "']' after the index");
@@ -664,21 +832,70 @@ ExprPtr Parser::parsePrimary() {
       expr->name = "self";
       return expr;
     }
+    case Tok::KwNone: {
+      advance();
+      auto expr = std::make_unique<IdentExpr>();
+      expr->span = token.span;
+      expr->name = "None";
+      return expr;
+    }
+    case Tok::KwFn:
+      return parseLambda();
+    case Tok::KwMatch:
+      return parseMatch();
     case Tok::LParen: {
       Span start = token.span;
       advance();
-      auto expr = parseExpression();
-      expect(Tok::RParen, "')' after the expression");
-      expr->span = Span::join(start, tokens_[pos_ - 1].span);
-      return expr;
+      if (check(Tok::RParen)) {
+        fail(cur().span, "Empty tuples are not supported.");
+      }
+      auto first = parseExpression();
+      if (!match(Tok::Comma)) {
+        expect(Tok::RParen, "')' after the expression");
+        first->span = Span::join(start, tokens_[pos_ - 1].span);
+        return first;
+      }
+      auto tuple = std::make_unique<TupleExpr>();
+      tuple->elements.push_back(std::move(first));
+      while (!check(Tok::RParen)) {
+        tuple->elements.push_back(parseExpression());
+        if (!match(Tok::Comma)) break;
+      }
+      expect(Tok::RParen, "')' after the tuple elements");
+      tuple->span = Span::join(start, tokens_[pos_ - 1].span);
+      return tuple;
     }
     case Tok::LBracket: {
       Span start = token.span;
       advance();
+      if (check(Tok::RBracket)) {
+        advance();
+        auto array = std::make_unique<ArrayLitExpr>();
+        array->span = Span::join(start, tokens_[pos_ - 1].span);
+        return array;
+      }
+      auto first = parseExpression();
+      if (check(Tok::KwFor)) {
+        advance();
+        const Token& varTok = expect(Tok::Ident, "a loop variable name");
+        expect(Tok::KwIn, "'in' after the loop variable");
+        auto comprehension = std::make_unique<ComprehensionExpr>();
+        comprehension->var = varTok.lexeme;
+        comprehension->varSpan = varTok.span;
+        comprehension->element = std::move(first);
+        comprehension->iterable = parseExpression();
+        if (match(Tok::KwIf)) {
+          comprehension->condition = parseExpression();
+        }
+        expect(Tok::RBracket, "']' after the comprehension");
+        comprehension->span = Span::join(start, tokens_[pos_ - 1].span);
+        return comprehension;
+      }
       auto array = std::make_unique<ArrayLitExpr>();
-      while (!check(Tok::RBracket)) {
+      array->elements.push_back(std::move(first));
+      while (match(Tok::Comma)) {
+        if (check(Tok::RBracket)) break;
         array->elements.push_back(parseExpression());
-        if (!match(Tok::Comma)) break;
       }
       expect(Tok::RBracket, "']' after the array elements");
       array->span = Span::join(start, tokens_[pos_ - 1].span);
@@ -687,6 +904,93 @@ ExprPtr Parser::parsePrimary() {
     default:
       fail(token.span, "Expected an expression, found " + describeToken(token) + ".");
   }
+}
+
+ExprPtr Parser::parseLambda() {
+  Span start = cur().span;
+  expect(Tok::KwFn, "'fn'");
+  expect(Tok::LParen, "'(' after 'fn' in a lambda");
+  auto lambda = std::make_unique<LambdaExpr>();
+  if (!check(Tok::RParen)) {
+    while (true) {
+      lambda->params.push_back(parseParam());
+      if (!match(Tok::Comma)) break;
+      if (check(Tok::RParen)) break;
+    }
+  }
+  expect(Tok::RParen, "')' after the lambda parameters");
+  if (match(Tok::Arrow)) {
+    lambda->returnType = parseTypeExpr();
+  }
+  expect(Tok::FatArrow, "'=>' before the lambda body");
+  lambda->body = parseExpression();
+  lambda->span = Span::join(start, lambda->body->span);
+  return lambda;
+}
+
+Pattern Parser::parsePattern() {
+  Pattern pattern;
+  const Token& startTok = cur();
+  pattern.span = startTok.span;
+  if (check(Tok::Ident) && startTok.lexeme == "_") {
+    advance();
+    pattern.kind = Pattern::Kind::Wildcard;
+    return pattern;
+  }
+  auto expr = parseExpression();
+  if (auto* binary = dynamic_cast<BinaryExpr*>(expr.get()); binary && binary->op == "..") {
+    pattern.kind = Pattern::Kind::Range;
+    pattern.rangeStart = std::move(binary->lhs);
+    pattern.rangeEnd = std::move(binary->rhs);
+    pattern.span = expr->span;
+    return pattern;
+  }
+  bool literal = dynamic_cast<IntLitExpr*>(expr.get()) ||
+                 dynamic_cast<FloatLitExpr*>(expr.get()) ||
+                 dynamic_cast<StringLitExpr*>(expr.get()) ||
+                 dynamic_cast<CharLitExpr*>(expr.get()) ||
+                 dynamic_cast<BoolLitExpr*>(expr.get());
+  if (auto* unary = dynamic_cast<UnaryExpr*>(expr.get());
+      unary && unary->op == "-") {
+    literal = dynamic_cast<IntLitExpr*>(unary->operand.get()) ||
+              dynamic_cast<FloatLitExpr*>(unary->operand.get());
+  }
+  if (!literal) {
+    fail(expr->span, "Match patterns must be literals, integer ranges, or '_'.",
+         "Ranges are inclusive, e.g. 400..499.");
+  }
+  pattern.kind = Pattern::Kind::Literal;
+  pattern.span = expr->span;
+  pattern.value = std::move(expr);
+  return pattern;
+}
+
+ExprPtr Parser::parseMatch() {
+  Span start = cur().span;
+  expect(Tok::KwMatch, "'match'");
+  auto matchExpr = std::make_unique<MatchExpr>();
+  matchExpr->subject = parseExpression();
+  expect(Tok::Colon, "':' after the match subject");
+  expectNewline();
+  expect(Tok::Indent, "an indented block of match arms");
+  while (!check(Tok::Dedent) && !check(Tok::Eof)) {
+    if (match(Tok::Newline)) continue;
+    MatchArm arm;
+    arm.pattern = parsePattern();
+    if (match(Tok::KwIf)) {
+      arm.guard = parseExpression();
+    }
+    expect(Tok::FatArrow, "'=>' after the match pattern");
+    arm.result = parseExpression();
+    expectNewline();
+    matchExpr->arms.push_back(std::move(arm));
+  }
+  expect(Tok::Dedent, "the end of the match block");
+  if (matchExpr->arms.empty()) {
+    fail(start, "A match expression needs at least one arm.");
+  }
+  matchExpr->span = Span::join(start, tokens_[pos_ - 1].span);
+  return matchExpr;
 }
 
 ExprPtr Parser::parseInlineExpression() {
@@ -737,6 +1041,13 @@ std::string Parser::decodeEscapes(const std::string& raw, Span span) {
 std::vector<StringPart> Parser::parseStringParts(const Token& token) {
   const std::string& raw = token.strValue;
   std::vector<StringPart> parts;
+  if (token.rawString) {
+    StringPart part;
+    part.isExpr = false;
+    part.text = raw;
+    if (!part.text.empty()) parts.push_back(std::move(part));
+    return parts;
+  }
   std::string literal;
   std::size_t i = 0;
 

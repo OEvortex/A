@@ -1,0 +1,9 @@
+missing: None
+fallback: 0
+present: Some(41)
+unwrapped: 42
+safe: Some("Ada") Some("London")
+other: Some("UK")
+nested: 5
+eq: true true false
+flag: None true

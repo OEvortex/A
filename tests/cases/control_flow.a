@@ -1,0 +1,15 @@
+var i = 0
+while i < 3:
+    print(i)
+    i += 1
+
+for j in 0..4:
+    if j == 2:
+        continue
+    print("j{j}")
+
+loop:
+    i += 1
+    if i == 5:
+        break
+print("i={i}")

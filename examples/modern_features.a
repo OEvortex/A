@@ -1,0 +1,30 @@
+# Advanced & simple syntax demo in A
+
+# 1. Ultra-clean single line expression functions (no ':' or 'return' needed)
+fn square(x) = x * x
+fn add(a, b) = a + b
+fn is_even(n) = n % 2 == 0
+
+# 2. Hex and Binary numeric literals
+hex_val = 0xFF
+bin_val = 0b1010_1011
+
+print("Hex 0xFF:", hex_val)
+print("Bin 0b1010_1011:", bin_val)
+print("square(9):", square(9))
+print("add(10, 20):", add(10, 20))
+print("is_even(42):", is_even(42))
+
+# 3. Python-style negative array indexing and slicing
+items = [10, 20, 30, 40, 50]
+print("items[-1]:", items[-1])
+print("items[-2]:", items[-2])
+print("slice items[-3..]:", items[-3..])
+
+# 4. Ergonomic collection methods: reverse(), contains(), join()
+var words = ["A", "is", "simpler", "than", "Python"]
+print("contains('simpler'):", words.contains("simpler"))
+print("join words:", words.join(" "))
+
+words.reverse()
+print("reversed join:", words.join(" "))

@@ -1,0 +1,13 @@
+text = "  Hello, World  "
+print("trim:", text.trim())
+print("upper:", text.trim().upper())
+print("replace:", text.replace("World", "A"))
+print("starts:", text.starts_with("  He"), "ends:", text.ends_with("  "))
+print("find:", "banana".find("na"), "missing:", "banana".find("zz"))
+print("repeat:", "ab".repeat(3))
+print("chars:", "héy".chars())
+print("split:", "a,b,,c".split(","))
+
+print("try:", "42".try_to_int(), "nope".try_to_int())
+print("try float:", "3.5".try_to_float(), "x".try_to_float())
+print("strict:", "42".to_int(), "3.5".to_float())

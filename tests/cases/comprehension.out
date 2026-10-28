@@ -1,0 +1,5 @@
+range: [0, 1, 4, 9, 16]
+array: [2, 4]
+string: [a, b, c]
+filtered chars: [h, e, o]
+nested: [[1, 2, 3], [2, 4, 6], [3, 6, 9]]
