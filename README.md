@@ -38,12 +38,13 @@ Native code generation (LLVM) is the next milestone and is not part of v0.3.
 
 ### Performance
 
-The v0.3 interpreter is 10×–330× slower than optimized C++ on compute-only
-measurements (2.3×–7.6× end-to-end) and is now faster than CPython on every
-reference suite. The first optimization phase — tagged AST dispatch, enum
-operators, flat inline scope maps, loop-scope reuse, and cached call-site
-resolution — is implemented; the measured before/after and the phased plan to
-native parity (slot frames, bytecode VM, typed IR, LLVM backend) are in
+The interpreter has moved from 40×–1,460× slower than optimized C++ to
+2.6×–6.4× slower end-to-end, and now beats CPython on every reference suite by
+2.1×–4.8×. Tagged AST dispatch, enum operators, inline scope maps, loop-scope
+reuse, flag-based returns, Sema-resolved call targets, and inline call arguments
+are implemented. A further round of AST tuning will not close the remaining gap
+to C++: that needs slot frames, a bytecode VM, and a native backend. Measured
+before/after and the phased plan are in
 [`docs/performance`](docs/performance/README.md). Compare all three languages:
 
 ```sh

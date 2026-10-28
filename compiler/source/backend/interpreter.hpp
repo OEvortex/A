@@ -157,8 +157,10 @@ class Interpreter {
       return index < kInline ? *inline_[index] : overflow_[index - kInline];
     }
 
+    // `deque` never invalidates references on insertion, so a Binding* handed
+    // out by find() stays valid even if the same scope gains a name later.
     std::array<std::optional<Entry>, kInline> inline_;
-    std::vector<Entry> overflow_;
+    std::deque<Entry> overflow_;
     std::size_t size_ = 0;
   };
 

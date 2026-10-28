@@ -97,6 +97,53 @@ What is still missing is the rest of the plan: unboxed 16-byte values (P2),
 slot-resolved frames (P3), a register bytecode VM (P4), and native codegen (P5).
 Those, not more AST-interpreter tuning, are required for C++ parity.
 
+### 1.4 P2 results — call path, returns, and builtin specialization (2026-10-28)
+
+The second phase removed the remaining per-call costs that P1 left behind. Same
+machine and harness, best of 7.
+
+| Benchmark | after P1 | after P2 | speedup | compute vs CPython |
+| --- | ---: | ---: | ---: | ---: |
+| `arithmetic/sum` | 23.2 ms | **18.2 ms** | 1.3× | 1.5× faster |
+| `collections/pipeline` | 4.4 ms | **4.9 ms** | 0.9× | 1.5× slower |
+| `memory/strings` | 35.5 ms | **22.9 ms** | 1.6× | 1.3× slower |
+| `numerical/sqrt` | 21.1 ms | **14.0 ms** | 1.5× | 1.2× slower |
+
+End-to-end (whole process, best of 7): A 22.2 ms, 8.9 ms, 26.9 ms, 18.1 ms
+against CPython 65.6 ms, 42.2 ms, 56.1 ms, 51.0 ms — **3.0×, 4.8×, 2.1×, 2.8×
+faster**. Against C++ `-O2` A remains 2.6×–6.4× behind end-to-end.
+
+Changes, in order of measured effect:
+
+| Change | arithmetic | memory | numerical | collections |
+| --- | ---: | ---: | ---: | ---: |
+| before P2 | 27.0 | 38.5 | 26.5 | 8.7 |
+| `return` is a flag, not a thrown signal | 19.5 | 25.7 | 17.4 | 8.0 |
+| Sema-resolved builtin ids (no name walk per call) | — | 26.9 | 19.2 | 8.5 |
+| in-place `name += expr` fast path | 18.8 | 26.8 | 16.8 | 8.9 |
+| lazy inline frame bindings (`optional` + stable `deque`) | 18.9 | 24.7 | 17.4 | 8.3 |
+
+The single largest item was **`return` implemented as a C++ exception**. Every
+call to a function with an explicit `return` unwound the stack: a 100k-call
+microbenchmark took 1,178 ms before and 46 ms after (25×). This is the classic
+reason production interpreters avoid non-local exits for normal control flow.
+
+The second item was **specializing builtin calls at type-check time**, the same
+idea as CPython's specialized call opcodes: `Sema` records that a callee is a
+builtin and which one, so `str`, `len`, `sqrt`, `f64`, `i64`, `round`, and
+friends skip the scope walk and the string-comparison chain in `callBuiltin`.
+`Sema` now also stores the resolved `FnDecl`/`StructDecl` pointer on the call
+site, so declared function calls go straight to `callFunction`.
+
+Also new: `ArgList` (inline storage for up to four call arguments) replaces a
+heap `std::vector<Value>` per call; `join` reserves its output and appends
+strings directly; comprehensions reserve their result; `codepointCount` counts
+UTF-8 lead bytes instead of decoding; `sum` has an integer fast path.
+
+What still dominates: the 40-byte boxed `Value`, a frame `BindingMap` per call,
+and one `switch` plus a call per AST node. P3 (slot frames) and P4 (bytecode VM)
+remain the path to C++ parity.
+
 Reproduce with:
 
 ```sh
@@ -128,15 +175,20 @@ worst offenders; the remaining budget is consumed by:
 4. **Operator dispatch.** P1 added a `BinOp` enum set by the parser, so hot
    arithmetic no longer compares operator strings or calls `substr` for
    compound assignments. The checks themselves are now a switch.
-5. **No unboxing or specialization.** The type checker knows every expression's
-   type, but the interpreter re-derives it dynamically and keeps all locals in
-   generic cells.
-6. **Whole-program work per invocation.** Each `a run` re-lexes, re-parses, and
-   re-typechecks the source (part of the 3.7 ms startup). This is small next to
+5. **Little specialization.** The type checker knows every expression's type and
+   now records builtin and function targets on the call site, but locals are
+   still generic cells and nothing is unboxed at run time.
+6. **A frame per call.** A function call builds an `Env` with a four-slot
+   `BindingMap` (lazily constructed, but still destroyed per call), binds
+   parameters by name, and tears it down. Wren and Lua instead address locals as
+   fixed frame slots; that is P3.
+7. **Whole-program work per invocation.** Each `a run` re-lexes, re-parses, and
+   re-typechecks the source (part of the 3.5 ms startup). This is small next to
    the compute gap but blocks competitive startup for compiled binaries.
 
-The `memory` benchmark has the narrowest compute gap (9.8×) because C++ there is
-allocation-bound (`std::to_string`, string vector, join), not dispatch-bound.
+The `memory` benchmark has the narrowest compute gap (~1.3×) because C++ there
+is allocation-bound (`std::to_chars`, string vector, join), not dispatch-bound,
+so there is less interpreter overhead to remove.
 
 ---
 
@@ -224,6 +276,10 @@ Exit criteria met: `arithmetic` 6.5×, `collections` 3.2×, `memory` 4.1×,
 `numerical` 7.3×; all tests green.
 
 ### P2 — Value and allocation model (4–6 weeks, 1.3–2×)
+
+Status: partially done. The call path, return signalling, and builtin dispatch
+work from this phase is implemented (see §1.4). The value-model change below is
+still open.
 
 - Replace `std::variant` with a 16-byte tagged value: inline `int64`/`double`/
   `bool`/`char32`, and an index/pointer for heap kinds. No atomic refcounts in

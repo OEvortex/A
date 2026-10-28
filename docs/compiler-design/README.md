@@ -213,9 +213,16 @@ Known hot-path costs, in order of impact:
 - no cross-node constant folding or specialization despite `Sema` knowing every
   type.
 
-Already removed in the P1 pass: RTTI `dynamic_cast` dispatch, string comparison
-for operator dispatch, per-iteration scope/hash-table allocation in `for` and
-comprehensions, and repeated call-site resolution.
+Already removed: RTTI `dynamic_cast` dispatch, string comparison for operator
+dispatch, per-iteration scope/hash-table allocation in `for` and comprehensions,
+repeated call-site resolution, per-call heap argument vectors, and
+exception-based `return`.
+
+Control flow now uses flags rather than C++ exceptions: `return` sets
+`returning_`/`returnValue_`, which statement lists and loops test. Only `break`
+and `continue` still throw signals, and those stay off hot paths. `Sema` records
+the resolved `FnDecl`/`StructDecl`/`BuiltinId` on each call site, mirroring
+CPython's specialized call opcodes.
 
 ## Adding a feature
 
