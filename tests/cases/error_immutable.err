@@ -1,0 +1,2 @@
+Cannot assign to immutable binding 'x'.
+Declare the variable with 'var x = ...'

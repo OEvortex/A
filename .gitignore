@@ -1,0 +1,11 @@
+build/
+build-*/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+compile_commands.json
+.cache/
+Plan.md
