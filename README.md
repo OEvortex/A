@@ -7,6 +7,7 @@
     <a href="#-benchmarks">Benchmarks</a> •
     <a href="#-quickstart">Quickstart</a> •
     <a href="#-language-tour">Language Tour</a> •
+    <a href="#-tooling">Tooling</a> •
     <a href="#-editor-support">Editor Support</a> •
     <a href="#-key-features">Features</a> •
     <a href="docs/">Docs</a>
@@ -40,7 +41,7 @@ print("Length squared: {point.length_squared()}")  # 25.0
 * **🏛️ Classes, Inheritance & Metaclasses**: Clean object-oriented programming with `class Child(Parent):` and declarative `metaclass Meta: pass`.
 * **🛠️ 25+ First-Class Operators**: Rich operator support including arithmetic (`+ - * / % **`), bitwise (`& | ^ ~ << >>`), containment (`in`, `not in`), functional pipelines (`|>`), and safe null-coalescing (`??`, `?.`).
 * **🔒 Static Type Safety & Inference**: Unification-based global type inference with checked arithmetic, zero undefined behavior, and deterministic cleanup via `defer`.
-* **🧠 First-Class Editor Tooling**: A dependency-free language server (`a-lsp`) and VS Code extension with live diagnostics, go-to-definition, references, hover, completion, document symbols, and syntax highlighting.
+* **🧰 Production Tooling**: An AST formatter (`a fmt`), documentation generator (`a doc`), dependency-free language server (`a-lsp`), and VS Code extension with live diagnostics, navigation, completion, formatting, rename, folding, and syntax highlighting.
 
 ---
 
@@ -83,6 +84,10 @@ cmake --build build -j
 # 3. Compile to optimized standalone native binary:
 ./build/a build program.a -o my_app
 ./my_app
+
+# 4. Format and document it:
+./build/a fmt -w program.a
+./build/a doc -o docs/program.md program.a
 ```
 
 ---
@@ -158,17 +163,63 @@ user_theme = user?.settings?.theme ?? "dark"
 │   │   ├── backend/
 │   │   │   ├── interpreter.cpp # High-speed tagged development interpreter
 │   │   │   └── native/         # Native AOT codegen hitting C++ parity
-│   │   └── cli/                # Command line interface (`a run`, `a build`)
+│   │   ├── tooling/            # AST formatter, doc generator, shared printers
+│   │   └── cli/                # Command line interface (`a run`, `a fmt`, `a doc`)
 ├── runtime/                    # Values, memory models, UTF-8 strings, and file I/O
 ├── stdlib/                     # Standard library modules (math, fs, io, net)
 ├── benchmarks/                 # Verification suites with cross-language equivalents
 ├── examples/                   # Curated code examples
 ├── docs/                       # Language spec, type system, compiler design, performance
 ├── tools/
-│   ├── language-server/        # a-lsp: diagnostics, goto, hover, completion
+│   ├── formatter/              # a fmt documentation
+│   ├── documentation/          # a doc documentation
+│   ├── language-server/        # a-lsp: diagnostics, navigation, formatting, rename
 │   └── vscode-a/               # VS Code extension (grammar + LSP client)
 └── tests/                      # Automated golden test suite
 ```
+
+---
+
+## 🧰 Tooling
+
+The toolchain ships with first-party developer tools built on the same lexer,
+parser, and AST as the compiler.
+
+### Formatter: `a fmt`
+
+An AST-based formatter that normalises indentation, spacing, declarations, and
+expressions while preserving comments, literal spelling, and semantics.
+
+```bash
+a fmt program.a             # print formatted source
+a fmt --check program.a     # CI check: exit 1 when changes are needed
+a fmt -w program.a          # rewrite in place
+a fmt -w --indent 2 app.a   # choose indentation width
+```
+
+Formatting is idempotent, and a file with lexer/parser errors is never
+rewritten. See [`tools/formatter/README.md`](tools/formatter/README.md).
+
+### Documentation generator: `a doc`
+
+Generates API documentation from `##` doc comments attached to
+declarations, with Markdown and structured JSON output.
+
+```a
+## Adds two numbers.
+fn add(a: i32, b: i32) -> i32:
+    return a + b
+```
+
+```bash
+a doc geometry.a                    # Markdown to stdout
+a doc -o docs/geometry.md geometry.a
+a doc --json geometry.a             # machine-readable API model
+```
+
+Functions, classes/structs, enums, type aliases, fields, methods, variants,
+constants, and variables are included. See
+[`tools/documentation/README.md`](tools/documentation/README.md).
 
 ---
 
@@ -191,6 +242,10 @@ with no third-party dependencies.
 | **Completion** | Keywords, builtins, visible bindings, module members, and struct/enum members after `.` |
 | **Document symbols** | Outline of functions, structs, fields, methods, enums, variants, and top-level bindings |
 | **Workspace symbols** | `Ctrl+T` / `Cmd+T` search across open A documents |
+| **Formatting** | Full-document formatting through the same AST formatter as `a fmt` |
+| **Rename** | Rename a symbol across its declaration and every resolved reference |
+| **Document highlights** | Highlight every occurrence of the symbol under the cursor |
+| **Folding** | Collapse function, class, loop, match, and conditional bodies |
 
 Build it with the rest of the toolchain:
 
@@ -210,6 +265,8 @@ cmake --build build --target a-lsp -j
 - `#` line comments, bracket matching, auto-closing pairs, and indentation rules
 - Diagnostics, go to definition (`F12`), references (`Shift+F12`), hover,
   completion, document outline, and workspace symbols
+- Format Document (`Shift+Alt+F`), Rename Symbol (`F2`), document
+  highlights, and folding ranges
 
 Try it in development:
 
@@ -224,8 +281,8 @@ cd tools/vscode-a
 npx --yes @vscode/vsce package
 
 # Use whichever CLI you have installed:
-code --install-extension a-language-0.1.0.vsix
-code-insiders --install-extension a-language-0.1.0.vsix
+code --install-extension a-language-0.2.0.vsix
+code-insiders --install-extension a-language-0.2.0.vsix
 ```
 
 The extension finds `a-lsp` in this order:
@@ -256,8 +313,8 @@ URIs. Set `A_LSP_LOG=1` for lifecycle logging on stderr.
 
 ## 🧪 Testing
 
-Run the full test suite (language integration tests plus the language server
-protocol smoke test):
+Run the full test suite (language integration tests, tooling tests, formatter
+and doc-generator CLI tests, plus the language server protocol smoke test):
 
 ```bash
 ctest --test-dir build --output-on-failure
@@ -267,6 +324,8 @@ Or run the pieces directly:
 
 ```bash
 tests/integration/run_tests.sh build/a
+./build/a-tooling-tests
+tests/tooling/run_cli_tests.sh build/a
 python3 tools/language-server/smoke_test.py build/a-lsp
 ```
 

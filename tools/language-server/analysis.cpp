@@ -621,7 +621,11 @@ std::string typeExprText(const TypeExpr* type) {
     return "[" + typeExprText(array->element.get()) + "]";
   }
   if (const auto* optional = dynamic_cast<const OptionalTypeExpr*>(type)) {
-    return typeExprText(optional->element.get()) + "?";
+    const std::string inner = typeExprText(optional->element.get());
+    if (dynamic_cast<const OptionalTypeExpr*>(optional->element.get()) != nullptr) {
+      return "(" + inner + ")?";
+    }
+    return inner + "?";
   }
   if (const auto* tuple = dynamic_cast<const TupleTypeExpr*>(type)) {
     std::string text = "(";

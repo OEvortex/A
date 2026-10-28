@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <filesystem>
 #include <cstdlib>
+#include <unistd.h>
+#include <sys/wait.h>
 
 namespace a {
 namespace {
@@ -970,6 +972,46 @@ bool buildLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
   }
 
   return true;
+}
+
+int runLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
+                  std::istream& in, std::ostream& out, std::ostream& err) {
+  (void)in;
+  std::string tmpBase = "/tmp/a_llvm_run_" + std::to_string(getpid()) + "_" + std::to_string(rand());
+  if (!buildLLVMModule(graph, sema, tmpBase, err)) {
+    return 1;
+  }
+
+  // Execute directly and stream stdout/stderr
+  std::string runCmd = tmpBase + " 2>/tmp/a_llvm_err.txt";
+  FILE* pipe = popen(runCmd.c_str(), "r");
+  if (!pipe) {
+    err << "error: failed to execute LLVM binary\n";
+    std::filesystem::remove(tmpBase);
+    std::filesystem::remove(tmpBase + ".s");
+    std::filesystem::remove(tmpBase + ".ll");
+    return 2;
+  }
+
+  char buf[256];
+  while (fgets(buf, sizeof(buf), pipe)) {
+    out << buf;
+  }
+  int status = pclose(pipe);
+
+  std::ifstream errFile("/tmp/a_llvm_err.txt");
+  if (errFile) {
+    std::string errLine;
+    while (std::getline(errFile, errLine)) {
+      err << errLine << "\n";
+    }
+  }
+  std::filesystem::remove("/tmp/a_llvm_err.txt");
+  std::filesystem::remove(tmpBase);
+  std::filesystem::remove(tmpBase + ".s");
+  std::filesystem::remove(tmpBase + ".ll");
+
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 2;
 }
 
 }  // namespace a

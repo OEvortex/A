@@ -25,6 +25,8 @@ enum class TypeKind {
   Enum,
   Function,
   Module,
+  Map,
+  Set,
   Var,
 };
 
@@ -106,6 +108,19 @@ inline TypePtr typeResult(TypePtr value, TypePtr error) {
   auto type = makeType(TypeKind::Result);
   type->elem = std::move(value);
   type->errorType = std::move(error);
+  return type;
+}
+
+inline TypePtr typeMap(TypePtr key, TypePtr value) {
+  auto type = makeType(TypeKind::Map);
+  type->elem = std::move(key);
+  type->params = {std::move(value)};
+  return type;
+}
+
+inline TypePtr typeSet(TypePtr elem) {
+  auto type = makeType(TypeKind::Set);
+  type->elem = std::move(elem);
   return type;
 }
 
@@ -202,6 +217,8 @@ inline std::string typeName(const TypePtr& type) {
     case TypeKind::Range: return "range<" + typeName(t->elem) + ">";
     case TypeKind::Optional: return typeName(t->elem) + "?";
     case TypeKind::Result: return "Result<" + typeName(t->elem) + ", " + typeName(t->errorType) + ">";
+    case TypeKind::Map: return "map<" + typeName(t->elem) + ", " + typeName(t->params[0]) + ">";
+    case TypeKind::Set: return "set<" + typeName(t->elem) + ">";
     case TypeKind::Tuple: {
       std::string s = "(";
       for (std::size_t i = 0; i < t->params.size(); ++i) {

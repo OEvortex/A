@@ -1312,6 +1312,42 @@ ExprPtr Parser::parsePrimary() {
       array->span = Span::join(start, previousSpan());
       return array;
     }
+    case Tok::LBrace: {
+      Span start = token.span;
+      advance();
+      if (check(Tok::RBrace)) {
+        advance();
+        // Empty set literal: {}
+        auto set = std::make_unique<SetLitExpr>();
+        set->span = Span::join(start, previousSpan());
+        return set;
+      }
+      auto firstKey = parseExpression();
+      if (match(Tok::Colon)) {
+        // Map literal: {key: value, ...}
+        auto map = std::make_unique<MapLitExpr>();
+        auto firstVal = parseExpression();
+        map->entries.push_back({std::move(firstKey), std::move(firstVal)});
+        while (match(Tok::Comma)) {
+          if (check(Tok::RBrace)) break;
+          map->entries.push_back({parseExpression(), parseExpression()});
+          expect(Tok::Colon, "':' after map key");
+        }
+        expect(Tok::RBrace, "'}' after map entries");
+        map->span = Span::join(start, previousSpan());
+        return map;
+      }
+      // Set literal: {1, 2, 3}
+      auto set = std::make_unique<SetLitExpr>();
+      set->elements.push_back(std::move(firstKey));
+      while (match(Tok::Comma)) {
+        if (check(Tok::RBrace)) break;
+        set->elements.push_back(parseExpression());
+      }
+      expect(Tok::RBrace, "'}' after set elements");
+      set->span = Span::join(start, previousSpan());
+      return set;
+    }
     default:
       fail(token.span, "Expected an expression, found " + describeToken(token) + ".");
   }

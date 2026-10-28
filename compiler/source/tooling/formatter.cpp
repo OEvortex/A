@@ -535,6 +535,8 @@ class Formatter {
         const auto& tryExpr = static_cast<const TryExpr&>(expr);
         return postfixWrap(exprText(*tryExpr.operand, 17, indent) + "?", parentPrecedence, 17);
       }
+      default:
+        break;
     }
     return {};
   }

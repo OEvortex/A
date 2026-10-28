@@ -19,4 +19,5 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-exec "${A_BIN}" run "$@"
+# Default to LLVM high-performance backend
+exec "${A_BIN}" run --backend=llvm "$@"

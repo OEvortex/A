@@ -9,6 +9,7 @@ namespace a {
 struct DriverConfig {
   bool checkOnly = false;
   bool useColor = false;
+  std::string backend = "llvm";          // "llvm" (default), "native", or "interpreter"
   std::vector<std::string> modulePaths;  // -I search directories
   std::string stdlibRoot;                // --stdlib; auto-detected when empty
 };

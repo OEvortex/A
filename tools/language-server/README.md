@@ -12,9 +12,13 @@ It reuses the compiler front end (`lexer`, `parser`, `module loader`, and
 | `textDocument/publishDiagnostics` | lex, parse, and type-check diagnostics |
 | `textDocument/definition` | variables, parameters, functions, structs, fields, methods, enum variants, imported modules |
 | `textDocument/references` | all uses of the symbol under the cursor, including imported modules |
-| `textDocument/hover` | declaration signature/type for symbols and builtins |
+| `textDocument/hover` | declaration signature/type for symbols and builtins, plus attached `##` documentation |
 | `textDocument/completion` | keywords, builtins, visible locals, module members, struct/enum members after `.` |
 | `textDocument/documentSymbol` | functions, structs/classes, fields, methods, enums, variants, and top-level bindings |
+| `textDocument/formatting` | full-document formatting through the same AST formatter as `a fmt` |
+| `textDocument/rename` | symbol rename across declaration and all references |
+| `textDocument/documentHighlight` | every occurrence of the symbol under the cursor |
+| `textDocument/foldingRange` | foldable function, class, loop, match, and conditional bodies |
 | `workspace/symbol` | top-level symbols in open A documents |
 
 The server is single-threaded, speaks JSON-RPC over stdin/stdout, and has no
@@ -61,7 +65,9 @@ Set `A_LSP_LOG=1` to write lifecycle messages to stderr.
   the VS Code extension debounces changes for 250 ms.
 - Type inference results are not shown on hover yet; annotations and declared
   signatures are. The type checker does not expose per-expression types.
-- Rename, formatting, code actions, and semantic tokens are not implemented.
-  Highlighting is provided by the editor grammar.
+- Code actions, range formatting, and semantic tokens are not implemented.
+  Syntax highlighting is provided by the editor grammar.
+- Rename operates on resolved identifiers; module aliases and names that the
+  front end cannot resolve are not renamed.
 - Member completion falls back to all known struct members when the receiver
   type cannot be inferred.

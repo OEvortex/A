@@ -57,7 +57,7 @@ struct Options {
   std::string command;
   std::string path;
   std::string outputPath;
-  std::string backend = "native";
+  std::string backend = "llvm";
   bool emitLLVM = false;
   std::vector<std::string> modulePaths;
   std::string stdlibRoot;
@@ -229,6 +229,7 @@ int main(int argc, char** argv) {
   a::DriverConfig config;
   config.checkOnly = options.command == "check";
   config.useColor = options.useColor;
+  config.backend = options.backend;
   config.modulePaths = options.modulePaths;
   config.stdlibRoot = options.stdlibRoot;
 

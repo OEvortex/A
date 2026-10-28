@@ -12,10 +12,14 @@ Syntax highlighting, diagnostics, and language intelligence for the
 - Go to definition with `F12` / `Ctrl`-click for locals, parameters, functions,
   structs, fields, methods, enum variants, and imported modules.
 - Find all references (`Shift+F12`).
-- Hover signatures and builtin documentation.
+- Hover signatures, builtin documentation, and `##` declaration docs.
 - Completion for keywords, builtins, visible bindings, module members, and
   struct/enum members after `.`.
 - Document outline and workspace symbol search (`Ctrl+T`).
+- Format Document (`Shift+Alt+F`) through `a fmt` semantics.
+- Rename Symbol (`F2`) across declarations and references.
+- Document highlights for the symbol under the cursor.
+- Folding ranges for functions, classes, loops, matches, and conditionals.
 - Bracket matching, auto-closing pairs, comments (`#`), and indentation rules.
 
 Language intelligence is provided by `a-lsp` from this repository. The
@@ -37,7 +41,7 @@ over stdio.
    ```sh
    cd tools/vscode-a
    npx @vscode/vsce package
-   code --install-extension a-language-0.1.0.vsix
+   code --install-extension a-language-0.2.0.vsix
    ```
 
 3. Open any `.a` file. Syntax highlighting works immediately. If `a-lsp` is
@@ -78,5 +82,6 @@ the compiler's normal module resolution.
   by 250 ms before sending them.
 - Static highlighting is deliberate: it works without the server and does not
   depend on compiler internals.
-- This extension does not implement formatting or rename yet; those requests
-  are intentionally not advertised by the server.
+- Formatting, rename, highlights, and folding are served by `a-lsp`; rebuilding
+  the server is enough to enable them. Use **A: Restart Language Server**
+  after an upgrade.

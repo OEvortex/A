@@ -298,6 +298,18 @@ struct SliceExpr : Expr {
   Span bracketSpan;
 };
 
+struct MapLitExpr : Expr {
+  MapLitExpr() : Expr(ExprKind::MapLit) {}
+  std::vector<std::pair<ExprPtr, ExprPtr>> entries;  // key -> value
+  Span bracketSpan;
+};
+
+struct SetLitExpr : Expr {
+  SetLitExpr() : Expr(ExprKind::SetLit) {}
+  std::vector<ExprPtr> elements;
+  Span bracketSpan;
+};
+
 struct FieldExpr : Expr {
   FieldExpr() : Expr(ExprKind::Field) {}
   ExprPtr object;

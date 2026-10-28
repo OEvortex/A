@@ -144,6 +144,8 @@ endif()
 add_executable(a-tooling-tests tests/tooling/tooling_tests.cpp)
 target_link_libraries(a-tooling-tests PRIVATE a_tooling)
 add_test(NAME tooling-tests COMMAND a-tooling-tests)
+add_test(NAME tooling-cli
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/run_cli_tests.sh $<TARGET_FILE:a>)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

@@ -18,6 +18,12 @@ struct FnDecl;
 
 using ArrayPtr = std::shared_ptr<std::vector<Value>>;
 
+struct MapObj;
+using MapPtr = std::shared_ptr<MapObj>;
+
+struct SetObj;
+using SetPtr = std::shared_ptr<SetObj>;
+
 struct StructObj;
 using StructPtr = std::shared_ptr<StructObj>;
 
@@ -53,6 +59,14 @@ struct Value {
                 ArrayPtr, StructPtr, RangeValue, OptionalPtr, ResultPtr, TuplePtr, ClosurePtr, ModulePtr,
                NativeFunctionPtr, EnumPtr>
       data;
+};
+
+struct MapObj {
+  std::vector<std::pair<Value, Value>> entries;  // key -> value
+};
+
+struct SetObj {
+  std::vector<Value> elements;
 };
 
 struct StructObj {

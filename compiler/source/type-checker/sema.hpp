@@ -163,6 +163,8 @@ class Sema {
   TypePtr inferField(FieldExpr& expr);
   TypePtr inferSafeNav(SafeNavExpr& expr);
   TypePtr inferArrayLiteral(ArrayLitExpr& expr);
+  TypePtr inferMapLiteral(MapLitExpr& expr);
+  TypePtr inferSetLiteral(SetLitExpr& expr);
   TypePtr inferStringLiteral(StringLitExpr& expr);
   TypePtr inferTuple(TupleExpr& expr);
   TypePtr inferLambda(LambdaExpr& expr);

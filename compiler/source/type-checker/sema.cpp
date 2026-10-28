@@ -1394,6 +1394,8 @@ TypePtr Sema::inferExpr(Expr& expr) {
   if (auto* node = dynamic_cast<FieldExpr*>(&expr)) return inferField(*node);
   if (auto* node = dynamic_cast<SafeNavExpr*>(&expr)) return inferSafeNav(*node);
   if (auto* node = dynamic_cast<ArrayLitExpr*>(&expr)) return inferArrayLiteral(*node);
+  if (auto* node = dynamic_cast<MapLitExpr*>(&expr)) return inferMapLiteral(*node);
+  if (auto* node = dynamic_cast<SetLitExpr*>(&expr)) return inferSetLiteral(*node);
   if (auto* node = dynamic_cast<TupleExpr*>(&expr)) return inferTuple(*node);
   if (auto* node = dynamic_cast<LambdaExpr*>(&expr)) return inferLambda(*node);
   if (auto* node = dynamic_cast<MatchExpr*>(&expr)) return inferMatch(*node);
@@ -2902,6 +2904,53 @@ TypePtr Sema::inferArrayLiteral(ArrayLitExpr& expr) {
     }
   }
   return typeArray(elementType);
+}
+
+TypePtr Sema::inferMapLiteral(MapLitExpr& expr) {
+  if (expr.entries.empty()) {
+    TypePtr keyType = freshVar(Constraint::None, expr.span, "the key type of an empty map");
+    TypePtr valueType = freshVar(Constraint::None, expr.span, "the value type of an empty map");
+    return typeMap(keyType, valueType);
+  }
+
+  TypePtr keyType = inferExpr(*expr.entries[0].first);
+  TypePtr valueType = inferExpr(*expr.entries[0].second);
+  for (std::size_t i = 1; i < expr.entries.size(); ++i) {
+    TypePtr nextKey = inferExpr(*expr.entries[i].first);
+    TypePtr nextValue = inferExpr(*expr.entries[i].second);
+    if (!unify(keyType, nextKey)) {
+      sink_.error(expr.entries[i].first->span,
+                  "All map keys must have the same type, found " + typeName(keyType) +
+                      " and " + typeName(nextKey) + ".");
+      return typeError();
+    }
+    if (!unify(valueType, nextValue)) {
+      sink_.error(expr.entries[i].second->span,
+                  "All map values must have the same type, found " + typeName(valueType) +
+                      " and " + typeName(nextValue) + ".");
+      return typeError();
+    }
+  }
+  return typeMap(keyType, valueType);
+}
+
+TypePtr Sema::inferSetLiteral(SetLitExpr& expr) {
+  if (expr.elements.empty()) {
+    TypePtr elementType = freshVar(Constraint::None, expr.span, "the element type of an empty set");
+    return typeSet(elementType);
+  }
+
+  TypePtr elementType = inferExpr(*expr.elements[0]);
+  for (std::size_t i = 1; i < expr.elements.size(); ++i) {
+    TypePtr nextType = inferExpr(*expr.elements[i]);
+    if (!unify(elementType, nextType)) {
+      sink_.error(expr.elements[i]->span,
+                  "All set elements must have the same type, found " + typeName(elementType) +
+                      " and " + typeName(nextType) + ".");
+      return typeError();
+    }
+  }
+  return typeSet(elementType);
 }
 
 TypePtr Sema::inferTuple(TupleExpr& expr) {
