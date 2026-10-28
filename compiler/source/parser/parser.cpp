@@ -80,10 +80,13 @@ StmtPtr Parser::parseStatement() {
     case Tok::KwMetaclass:
       return parseStructDecl();
     case Tok::KwPass: {
+      Span passSpan = cur().span;
       advance();
       expectNewline();
       auto passExpr = std::make_unique<ExprStmt>();
+      passExpr->span = passSpan;
       passExpr->expr = std::make_unique<IntLitExpr>();
+      passExpr->expr->span = passSpan;
       return passExpr;
     }
      case Tok::KwEnum:

@@ -12,6 +12,16 @@
 namespace a {
 namespace {
 
+std::string extractString(const StringLitExpr& s) {
+  std::string result;
+  for (const auto& p : s.parts) {
+    if (!p.isExpr) {
+      result += p.text;
+    }
+  }
+  return result;
+}
+
 // ============================================================================
 // LLVM IR Textual Emitter
 // ============================================================================
@@ -63,7 +73,6 @@ class LLVMEmitter {
   }
 
   void collectStringLiterals() {
-    // Collect strings from AST
     for (const auto& mod : graph_.modules) {
       if (!mod.program) continue;
       for (const auto& stmt : mod.program->statements) {
@@ -86,9 +95,11 @@ class LLVMEmitter {
       for (const auto& s : fn.body) collectFromStmt(*s);
     } else if (stmt.kind == StmtKind::If) {
       const auto& ifs = static_cast<const IfStmt&>(stmt);
-      if (ifs.cond) collectFromExpr(*ifs.cond);
-      for (const auto& s : ifs.thenArm) collectFromStmt(*s);
-      for (const auto& s : ifs.elseArm) collectFromStmt(*s);
+      for (const auto& br : ifs.branches) {
+        if (br.cond) collectFromExpr(*br.cond);
+        for (const auto& s : br.body) collectFromStmt(*s);
+      }
+      for (const auto& s : ifs.elseBody) collectFromStmt(*s);
     } else if (stmt.kind == StmtKind::While) {
       const auto& wh = static_cast<const WhileStmt&>(stmt);
       if (wh.cond) collectFromExpr(*wh.cond);
@@ -102,7 +113,7 @@ class LLVMEmitter {
 
   void collectFromExpr(const Expr& expr) {
     if (expr.kind == ExprKind::StringLit) {
-      const auto& s = static_cast<const StringLitExpr&>(expr).value;
+      std::string s = extractString(static_cast<const StringLitExpr&>(expr));
       if (strTable_.find(s) == strTable_.end()) {
         std::string name = "@.str." + std::to_string(strCounter_++);
         strTable_[s] = name;
@@ -127,9 +138,7 @@ class LLVMEmitter {
     // Format strings for standard runtime printing
     out_ << "@.fmt_int = private unnamed_addr constant [6 x i8] c\"%lld\\0A\\00\", align 1\n";
     out_ << "@.fmt_float = private unnamed_addr constant [6 x i8] c\"%.2f\\0A\\00\", align 1\n";
-    out_ << "@.fmt_str = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n";
-    out_ << "@.fmt_true = private unnamed_addr constant [6 x i8] c\"true\\0A\\00\", align 1\n";
-    out_ << "@.fmt_false = private unnamed_addr constant [7 x i8] c\"false\\0A\\00\", align 1\n\n";
+    out_ << "@.fmt_str = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n\n";
   }
 
   void emitStringConstants() {
@@ -175,7 +184,7 @@ class LLVMEmitter {
     out_ << ") {\n";
     out_ << "entry:\n";
 
-    // Allocate stack space for parameters
+    // Stack space for parameters
     for (const auto& param : fn.params) {
       std::string ptr = nextTemp();
       out_ << "  " << ptr << " = alloca i64, align 8\n";
@@ -240,24 +249,33 @@ class LLVMEmitter {
       }
       case StmtKind::If: {
         const auto& ifStmt = static_cast<const IfStmt&>(stmt);
-        std::string condVal = emitExpr(*ifStmt.cond);
-        std::string cmp = nextTemp();
-        out_ << "  " << cmp << " = icmp ne i64 " << condVal << ", 0\n";
-
-        std::string thenLbl = nextLabel("if.then");
-        std::string elseLbl = nextLabel("if.else");
+        if (ifStmt.branches.empty()) break;
         std::string endLbl = nextLabel("if.end");
 
-        out_ << "  br i1 " << cmp << ", label %" << thenLbl << ", label %" 
-             << (!ifStmt.elseArm.empty() ? elseLbl : endLbl) << "\n\n";
+        for (std::size_t i = 0; i < ifStmt.branches.size(); ++i) {
+          const auto& br = ifStmt.branches[i];
+          std::string condVal = emitExpr(*br.cond);
+          std::string cmp = nextTemp();
+          out_ << "  " << cmp << " = icmp ne i64 " << condVal << ", 0\n";
 
-        out_ << thenLbl << ":\n";
-        for (const auto& s : ifStmt.thenArm) emitStmt(*s);
-        out_ << "  br label %" << endLbl << "\n\n";
+          std::string thenLbl = nextLabel("if.then");
+          std::string nextArmLbl = (i + 1 < ifStmt.branches.size())
+                                       ? nextLabel("if.branch")
+                                       : (!ifStmt.elseBody.empty() ? nextLabel("if.else") : endLbl);
 
-        if (!ifStmt.elseArm.empty()) {
-          out_ << elseLbl << ":\n";
-          for (const auto& s : ifStmt.elseArm) emitStmt(*s);
+          out_ << "  br i1 " << cmp << ", label %" << thenLbl << ", label %" << nextArmLbl << "\n\n";
+
+          out_ << thenLbl << ":\n";
+          for (const auto& s : br.body) emitStmt(*s);
+          out_ << "  br label %" << endLbl << "\n\n";
+
+          if (i + 1 < ifStmt.branches.size() || !ifStmt.elseBody.empty()) {
+            out_ << nextArmLbl << ":\n";
+          }
+        }
+
+        if (!ifStmt.elseBody.empty()) {
+          for (const auto& s : ifStmt.elseBody) emitStmt(*s);
           out_ << "  br label %" << endLbl << "\n\n";
         }
 
@@ -401,13 +419,9 @@ class LLVMEmitter {
           std::string cmp = nextTemp();
           out_ << "  " << cmp << " = icmp sge i64 " << l << ", " << r << "\n";
           out_ << "  " << res << " = zext i1 " << cmp << " to i64\n";
-        } else if (bin.op == "and") {
+        } else if (bin.op == "and" || bin.op == "&") {
           out_ << "  " << res << " = and i64 " << l << ", " << r << "\n";
-        } else if (bin.op == "or") {
-          out_ << "  " << res << " = or i64 " << l << ", " << r << "\n";
-        } else if (bin.op == "&") {
-          out_ << "  " << res << " = and i64 " << l << ", " << r << "\n";
-        } else if (bin.op == "|") {
+        } else if (bin.op == "or" || bin.op == "|") {
           out_ << "  " << res << " = or i64 " << l << ", " << r << "\n";
         } else if (bin.op == "^") {
           out_ << "  " << res << " = xor i64 " << l << ", " << r << "\n";
@@ -443,7 +457,7 @@ class LLVMEmitter {
             if (!call.args.empty()) {
               const auto& argExpr = *call.args[0].value;
               if (argExpr.kind == ExprKind::StringLit) {
-                std::string s = static_cast<const StringLitExpr&>(argExpr).value;
+                std::string s = extractString(static_cast<const StringLitExpr&>(argExpr));
                 std::string strSym = strTable_[s];
                 std::string callRes = nextTemp();
                 out_ << "  " << callRes << " = call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr " << strSym << ")\n";
@@ -575,7 +589,7 @@ class X86Emitter {
 
   void collectFromExpr(const Expr& expr) {
     if (expr.kind == ExprKind::StringLit) {
-      const auto& s = static_cast<const StringLitExpr&>(expr).value;
+      std::string s = extractString(static_cast<const StringLitExpr&>(expr));
       if (strTable_.find(s) == strTable_.end()) {
         strTable_[s] = ".Lstr_" + std::to_string(strCounter_++);
       }
@@ -652,19 +666,31 @@ class X86Emitter {
       }
       case StmtKind::If: {
         const auto& ifStmt = static_cast<const IfStmt&>(stmt);
-        emitExpr(*ifStmt.cond);
-        out_ << "  cmp rax, 0\n";
-        std::string elseLbl = nextLabel("else");
+        if (ifStmt.branches.empty()) break;
         std::string endLbl = nextLabel("endif");
-        out_ << "  je " << (!ifStmt.elseArm.empty() ? elseLbl : endLbl) << "\n";
 
-        for (const auto& s : ifStmt.thenArm) emitStmt(*s);
-        out_ << "  jmp " << endLbl << "\n";
+        for (std::size_t i = 0; i < ifStmt.branches.size(); ++i) {
+          const auto& br = ifStmt.branches[i];
+          emitExpr(*br.cond);
+          out_ << "  cmp rax, 0\n";
 
-        if (!ifStmt.elseArm.empty()) {
-          out_ << elseLbl << ":\n";
-          for (const auto& s : ifStmt.elseArm) emitStmt(*s);
+          std::string nextArmLbl = (i + 1 < ifStmt.branches.size())
+                                       ? nextLabel("elif")
+                                       : (!ifStmt.elseBody.empty() ? nextLabel("else") : endLbl);
+          out_ << "  je " << nextArmLbl << "\n";
+
+          for (const auto& s : br.body) emitStmt(*s);
+          out_ << "  jmp " << endLbl << "\n";
+
+          if (i + 1 < ifStmt.branches.size() || !ifStmt.elseBody.empty()) {
+            out_ << nextArmLbl << ":\n";
+          }
         }
+
+        if (!ifStmt.elseBody.empty()) {
+          for (const auto& s : ifStmt.elseBody) emitStmt(*s);
+        }
+
         out_ << endLbl << ":\n";
         break;
       }
@@ -833,8 +859,9 @@ class X86Emitter {
             if (!call.args.empty()) {
               const auto& argExpr = *call.args[0].value;
               if (argExpr.kind == ExprKind::StringLit) {
-                std::string s = static_cast<const StringLitExpr&>(argExpr).value;
-                out_ << "  lea rdi, " << strTable_[s] << "[rip]\n";
+                std::string s = extractString(static_cast<const StringLitExpr&>(argExpr));
+                out_ << "  lea rdi, .Lfmt_str[rip]\n";
+                out_ << "  lea rsi, " << strTable_[s] << "[rip]\n";
                 out_ << "  mov rax, 0\n";
                 out_ << "  call printf@PLT\n";
                 return;

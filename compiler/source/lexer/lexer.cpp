@@ -219,7 +219,22 @@ void Lexer::add(Tok kind, std::size_t start, int startLine, int startCol) {
 }
 
 void Lexer::skipComment() {
+  std::size_t start = pos_;
+  int startLine = line_;
+  int startCol = col_;
   while (!atEnd() && peek() != '\n') advance();
+
+  Comment comment;
+  comment.span = makeSpan(start, startLine, startCol);
+  comment.text = text_.substr(start, pos_ - start);
+  comment.doc = comment.text.rfind("##", 0) == 0;
+  if (!tokens_.empty()) {
+    const Token& previous = tokens_.back();
+    comment.trailing = previous.kind != Tok::Newline && previous.kind != Tok::Indent &&
+                       previous.kind != Tok::Dedent && previous.kind != Tok::Eof &&
+                       previous.span.endLine == startLine;
+  }
+  comments_.push_back(std::move(comment));
 }
 
 void Lexer::emitNewline() {

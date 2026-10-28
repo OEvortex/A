@@ -18,6 +18,11 @@ class Lexer {
 
   std::vector<Token> tokenize();
 
+  // Comments encountered while tokenizing, in source order. Valid after
+  // tokenize() has run.
+  const std::vector<Comment>& comments() const { return comments_; }
+  std::vector<Comment> takeComments() { return std::move(comments_); }
+
  private:
   bool atEnd() const { return pos_ >= text_.size(); }
   char peek(std::size_t ahead = 0) const;
@@ -66,6 +71,7 @@ class Lexer {
   int bracketDepth_ = 0;
   std::vector<int> indentStack_{0};
   std::vector<Token> tokens_;
+  std::vector<Comment> comments_;
 };
 
 }  // namespace a

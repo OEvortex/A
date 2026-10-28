@@ -107,6 +107,17 @@ enum class Tok {
   Ge,
 };
 
+// A `#` line comment captured during lexing. Comments are kept out of the
+// parser token stream but preserved here so tooling (formatter, documentation
+// generator, language server) can reason about them without re-scanning the
+// source.
+struct Comment {
+  Span span;
+  std::string text;      // includes the leading '#' characters
+  bool trailing = false; // true when code precedes the comment on the same line
+  bool doc = false;      // true for '##' documentation comments
+};
+
 struct Token {
   Tok kind = Tok::Eof;
   std::string lexeme;
