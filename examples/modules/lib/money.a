@@ -1,0 +1,14 @@
+var symbol = "$"
+
+struct Money:
+    cents: i64
+
+    fn format(self) -> String:
+        whole = self.cents / 100
+        part = self.cents % 100
+        if part < 10:
+            return symbol + str(whole) + ".0" + str(part)
+        return symbol + str(whole) + "." + str(part)
+
+fn of(dollars: i64, cents: i64) -> Money:
+    return Money(dollars * 100 + cents)

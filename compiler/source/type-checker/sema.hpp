@@ -1,24 +1,46 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "a/common/diagnostics.hpp"
-#include "a/frontend/ast.hpp"
-#include "a/sema/types.hpp"
+#include "collections/transparent_map.hpp"
+#include "diagnostics/diagnostics.hpp"
+#include "ast/ast.hpp"
+#include "name-resolution/module_loader.hpp"
+#include "type-checker/types.hpp"
 
 namespace a {
 
+// Per-module exported symbols, keyed by their short names.
+struct ModuleExports {
+  std::string name;
+  StringMap<const FnDecl*> functions;
+  StringMap<const StructDecl*> structs;
+  StringMap<TypePtr> values;
+  StringMap<std::string> structAliases;  // local alias -> qualified
+  StringMap<std::string> enums;  // name -> qualified enum name
+};
+
+struct EnumInfo {
+  std::string name;  // qualified
+  StringMap<std::int64_t> values;
+};
+
 struct SemaResult {
-  std::unordered_map<std::string, const FnDecl*> functions;
-  std::unordered_map<std::string, const StructDecl*> structs;
+  StringMap<const FnDecl*> functions;  // qualified names
+  StringMap<const StructDecl*> structs;  // qualified names
+  StringMap<EnumInfo> enums;  // qualified names
+  std::vector<ModuleExports> modules;
+  std::unordered_map<const FnDecl*, int> fnModule;
+  std::unordered_map<const StructDecl*, int> structModule;
 };
 
 class Sema {
  public:
-  Sema(Program& program, DiagnosticSink& sink);
+  Sema(ModuleGraph& graph, DiagnosticSink& sink);
 
   SemaResult analyze();
 
@@ -26,6 +48,7 @@ class Sema {
   struct VarSym {
     TypePtr type;
     bool mutableBinding = false;
+    bool constant = false;
   };
 
   struct FnSig {
@@ -39,7 +62,7 @@ class Sema {
     std::string name;
     const StructDecl* decl = nullptr;
     std::vector<std::pair<std::string, TypePtr>> fields;
-    std::unordered_map<std::string, FnSig> methods;
+    StringMap<FnSig> methods;
   };
 
   struct VarInfo {
@@ -53,6 +76,37 @@ class Sema {
     Span span;
     TypePtr type;
   };
+
+  struct ModuleAlias {
+    bool native = false;
+    int moduleId = -1;
+    std::string nativeName;
+  };
+
+  struct FromBinding {
+    enum class Kind { Value, Function, Struct };
+    Kind kind = Kind::Value;
+    bool native = false;
+    std::string nativeName;  // builtin implementing a native member
+    const FnDecl* fn = nullptr;
+    const StructDecl* decl = nullptr;
+    std::string structName;  // qualified struct name
+    TypePtr type;
+    int moduleId = -1;
+    Span span;
+  };
+
+  // program-level
+  void analyzeModule(Module& module);
+  void registerImports(Module& module);
+  void buildModuleExports(Module& module);
+  std::string qualified(const std::string& name) const;
+  std::string qualifiedFor(int moduleId, const std::string& name) const;
+  ModuleExports& exportsFor(int moduleId);
+  TypePtr moduleMemberType(const ModuleAlias& alias, const std::string& member, Span span,
+                           bool report);
+  TypePtr moduleMemberCall(const ModuleAlias& alias, const std::string& member, CallExpr& call);
+  ModuleAlias* findAlias(const std::string& name);
 
   // types
   TypePtr freshVar(Constraint constraint, Span span, std::string description,
@@ -69,10 +123,11 @@ class Sema {
   void popScope();
   VarSym* lookupVar(const std::string& name);
   void declareVar(const std::string& name, Span span, TypePtr type, bool mutableBinding,
-                  const char* what = "variable");
+                  const char* what = "variable", bool constant = false);
 
   // declarations
   void registerStructLayout(StructDecl& decl);
+  void registerEnum(EnumDecl& decl);
   void registerFunctionSignature(FnDecl& decl);
   void registerMethodSignatures(StructDecl& decl);
   void checkFunctionBody(FnDecl& decl, const FnSig& sig);
@@ -86,6 +141,7 @@ class Sema {
   void checkDestructure(DestructureStmt& stmt);
   void checkIf(IfStmt& stmt);
   void checkWhile(WhileStmt& stmt);
+  void checkDoWhile(DoWhileStmt& stmt);
   void checkFor(ForStmt& stmt);
   void checkLoop(LoopStmt& stmt);
   void checkReturn(ReturnStmt& stmt);
@@ -132,14 +188,23 @@ class Sema {
   bool blockReturns(const std::vector<StmtPtr>& body);
   bool statementReturns(const Stmt& stmt);
 
-  Program& program_;
+  ModuleGraph& graph_;
   DiagnosticSink& sink_;
+  std::vector<ModuleExports> moduleExports_;
+  int currentModule_ = -1;
 
-  std::vector<std::unordered_map<std::string, VarSym>> scopes_;
-  std::unordered_map<std::string, const FnDecl*> functionsByName_;
-  std::unordered_map<std::string, const StructDecl*> structsByName_;
+  StringMap<ModuleAlias> moduleAliases_;
+  StringMap<FromBinding> fromBindings_;
+  StringMap<std::string> structAliases_;  // local alias -> qualified name
+
+  std::vector<StringMap<VarSym>> scopes_;
+  StringMap<const FnDecl*> functionsByName_;
+  StringMap<const StructDecl*> structsByName_;
+  StringMap<EnumInfo> enums_;
   std::unordered_map<const FnDecl*, FnSig> signatures_;
-  std::unordered_map<std::string, StructSym> structs_;
+  StringMap<StructSym> structs_;
+  std::unordered_map<const FnDecl*, int> fnModules_;
+  std::unordered_map<const StructDecl*, int> structModules_;
   std::vector<VarInfo> typeVariables_;
   std::vector<DeclaredVarInfo> declaredVariables_;
   std::vector<std::pair<const FnDecl*, TypePtr>> checkedFunctions_;

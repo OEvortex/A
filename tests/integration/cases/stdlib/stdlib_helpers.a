@@ -1,0 +1,27 @@
+import test
+from core import assert_eq
+from fs import create_dir, write_file, read_file, file_exists, list_dir, rename, remove_file, remove_dir, current_dir
+from time import now, sleep
+
+test.check("addition", 1 + 1 == 2)
+test.equal("double", 6, 3 * 2)
+test.require(true, "always true")
+assert_eq(test.summary(), 0)
+
+create_dir("sandbox")
+write_file("sandbox/a.txt", "alpha")
+write_file("sandbox/b.txt", "beta")
+print(file_exists("sandbox/a.txt"))
+rename("sandbox/b.txt", "sandbox/c.txt")
+print(read_file("sandbox/a.txt"))
+print(list_dir("sandbox"))
+remove_file("sandbox/a.txt")
+remove_file("sandbox/c.txt")
+remove_dir("sandbox")
+print(file_exists("sandbox"))
+print(len(current_dir()) > 0)
+
+var start = now()
+sleep(2)
+print(now() >= start)
+test.report()

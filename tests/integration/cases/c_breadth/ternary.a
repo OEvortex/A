@@ -1,0 +1,9 @@
+fn main() -> void:
+    var score = 72
+    print(score >= 60 ? "pass" : "fail")
+    print(score > 90 ? 1 : score > 60 ? 2 : 3)
+    var a = 1
+    var b = 0
+    print(a != 0 ? a : b)
+    print(a > 100 ? b : a + 10)
+main()

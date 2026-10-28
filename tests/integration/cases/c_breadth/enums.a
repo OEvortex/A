@@ -1,0 +1,28 @@
+enum Color:
+    Red
+    Green = 5
+    Blue
+    Yellow = -2
+    Purple
+
+const ANSWER = 42
+
+fn describe(c: Color) -> String:
+    return match c:
+        Color.Red => "red"
+        Color.Green => "green"
+        Color.Blue => "blue"
+        _ => "other"
+
+fn main() -> void:
+    print(Color.Red)
+    print(Color.Green)
+    print(Color.Blue)
+    print(Color.Yellow)
+    print(Color.Purple)
+    print(ANSWER)
+    print(describe(Color.Green))
+    print(describe(Color.Purple))
+    var c: Color = Color.Blue
+    print(c + 1)
+main()

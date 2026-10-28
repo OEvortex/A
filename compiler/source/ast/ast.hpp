@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "a/common/span.hpp"
+#include "lexer/span.hpp"
 
 namespace a {
 
@@ -25,6 +25,7 @@ struct TypeExpr {
 };
 
 struct NamedTypeExpr : TypeExpr {
+  std::vector<std::string> qualifiers;  // module alias qualifiers: 'u' in 'u.Point'
   std::string name;
 };
 
@@ -146,6 +147,13 @@ struct ArrayLitExpr : Expr {
 struct RangeExpr : Expr {
   ExprPtr start;
   ExprPtr end;
+  ExprPtr step;  // may be null (defaults to 1)
+};
+
+struct TernaryExpr : Expr {
+  ExprPtr cond;
+  ExprPtr thenValue;
+  ExprPtr elseValue;
 };
 
 struct TupleExpr : Expr {
@@ -198,6 +206,7 @@ struct LetStmt : Stmt {
   Span nameSpan;
   TypeExprPtr type;  // may be null
   bool mutableBinding = false;
+  bool constantBinding = false;
   ExprPtr init;
 };
 
@@ -230,6 +239,33 @@ struct DeferStmt : Stmt {
   StmtPtr body;
 };
 
+// `import "lib/util.a"`, `import "lib/util.a" as u`, or `import math`.
+struct ImportStmt : Stmt {
+  std::string path;        // quoted path, empty for native/bare imports
+  std::string alias;       // explicit alias, or empty
+  std::string bareName;    // identifier for bare imports
+  bool quoted = false;
+  bool nativeModule = false;  // resolved to a built-in native module
+  int moduleId = -1;          // resolved module id
+  Span targetSpan;
+};
+
+// `from "lib/util.a" import add, Vec as Point`.
+struct FromImportStmt : Stmt {
+  struct Item {
+    std::string name;
+    std::string alias;
+    Span span;
+  };
+  std::string path;
+  std::string bareName;
+  bool quoted = false;
+  bool nativeModule = false;
+  int moduleId = -1;
+  std::vector<Item> items;
+  Span targetSpan;
+};
+
 struct IfStmt : Stmt {
   struct Branch {
     ExprPtr cond;
@@ -242,6 +278,11 @@ struct IfStmt : Stmt {
 struct WhileStmt : Stmt {
   ExprPtr cond;
   std::vector<StmtPtr> body;
+};
+
+struct DoWhileStmt : Stmt {
+  std::vector<StmtPtr> body;
+  ExprPtr cond;
 };
 
 struct ForStmt : Stmt {
@@ -274,6 +315,18 @@ struct StructDecl : Stmt {
   Span nameSpan;
   std::vector<FieldDecl> fields;
   std::vector<std::unique_ptr<FnDecl>> methods;
+};
+
+struct EnumVariant {
+  std::string name;
+  Span span;
+  ExprPtr value;  // may be null (auto-incremented from the previous variant)
+};
+
+struct EnumDecl : Stmt {
+  std::string name;
+  Span nameSpan;
+  std::vector<EnumVariant> variants;
 };
 
 struct Program {

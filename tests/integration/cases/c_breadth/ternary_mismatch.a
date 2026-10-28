@@ -1,0 +1,5 @@
+fn main() -> void:
+    var flag = true
+    var x = flag ? 1 : "no"
+    print(x)
+main()

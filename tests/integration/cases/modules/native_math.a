@@ -1,0 +1,8 @@
+import math
+from math import sqrt, PI, floor
+
+print(math.sqrt(16.0))
+print(floor(3.7))
+print(sqrt(9.0))
+print(PI > 3.0)
+print(math.pow(2.0, 10.0))

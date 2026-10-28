@@ -1,0 +1,3 @@
+print("init")
+var value = 41
+value = value + 1

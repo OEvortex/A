@@ -1,0 +1,3 @@
+import "lib/does_not_exist.a"
+
+print("unreachable")

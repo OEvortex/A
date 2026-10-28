@@ -1,7 +1,9 @@
-#include "a/sema/sema.hpp"
+#include "type-checker/sema.hpp"
 
 #include <algorithm>
 #include <utility>
+
+#include "name-resolution/native_modules.hpp"
 
 namespace a {
 namespace {
@@ -28,7 +30,9 @@ bool isKnownBuiltin(const std::string& name) {
   static const char* names[] = {
       "print",    "eprint",   "input",     "len",      "str",      "abs",
       "min",      "max",      "pow",       "flush",    "read_file", "write_file",
-      "append_file", "file_exists", "map",  "filter",   "reduce",   "any",
+      "append_file", "file_exists", "list_dir", "remove_file", "create_dir",
+      "remove_dir", "rename", "current_dir", "now", "sleep", "panic", "assert",
+      "assert_eq", "map",  "filter",   "reduce",   "any",
       "all",      "sum",      "join",      "random",   "random_int", "atan2",
       "Some"};
   for (const char* n : names) {
@@ -70,7 +74,120 @@ bool isBuiltinConstant(const std::string& name) {
 
 }  // namespace
 
-Sema::Sema(Program& program, DiagnosticSink& sink) : program_(program), sink_(sink) {}
+Sema::Sema(ModuleGraph& graph, DiagnosticSink& sink) : graph_(graph), sink_(sink) {
+  moduleExports_.resize(graph_.modules.size());
+}
+
+std::string Sema::qualified(const std::string& name) const {
+  return qualifiedFor(currentModule_, name);
+}
+
+std::string Sema::qualifiedFor(int moduleId, const std::string& name) const {
+  return graph_.at(moduleId).name + "::" + name;
+}
+
+ModuleExports& Sema::exportsFor(int moduleId) {
+  return moduleExports_[static_cast<std::size_t>(moduleId)];
+}
+
+Sema::ModuleAlias* Sema::findAlias(const std::string& name) {
+  auto found = moduleAliases_.find(name);
+  return found == moduleAliases_.end() ? nullptr : &found->second;
+}
+
+TypePtr Sema::moduleMemberType(const ModuleAlias& alias, const std::string& member, Span span,
+                               bool report) {
+  if (alias.native) {
+    if (const std::string* fn = nativeFunction(alias.nativeName, member)) {
+      (void)fn;
+      if (report) {
+        sink_.error(span,
+                    "Native function '" + alias.nativeName + "." + member +
+                        "' can only be called directly.",
+                    "Wrap it in a lambda to pass it as a value, e.g. x => " + alias.nativeName +
+                        "." + member + "(x).");
+      }
+      return typeError();
+    }
+    if (const std::string* constant = nativeConstant(alias.nativeName, member)) {
+      if (TypePtr type = builtinConstantType(*constant)) return type;
+    }
+    if (report) {
+      sink_.error(span, "Module '" + alias.nativeName + "' has no member '" + member + "'.");
+    }
+    return typeError();
+  }
+
+  ModuleExports& exports = exportsFor(alias.moduleId);
+  if (auto fn = exports.functions.find(member); fn != exports.functions.end()) {
+    auto sig = signatures_.find(fn->second);
+    if (sig != signatures_.end()) {
+      return typeFunction(sig->second.paramTypes, sig->second.retType);
+    }
+    return typeError();
+  }
+  if (exports.structs.count(member)) {
+    if (report) {
+      sink_.error(span, "'" + exports.name + "." + member + "' is a struct type, not a value.",
+                  "Construct it: " + exports.name + "." + member + "(...).");
+    }
+    return typeError();
+  }
+  if (auto en = exports.enums.find(member); en != exports.enums.end()) {
+    return typeEnum(en->second);
+  }
+  if (auto value = exports.values.find(member); value != exports.values.end()) {
+    return value->second;
+  }
+  if (report) {
+    sink_.error(span, "Module '" + exports.name + "' has no member '" + member + "'.");
+  }
+  return typeError();
+}
+
+TypePtr Sema::moduleMemberCall(const ModuleAlias& alias, const std::string& member,
+                               CallExpr& call) {
+  if (alias.native) {
+    if (const std::string* fn = nativeFunction(alias.nativeName, member)) {
+      return checkBuiltinCall(*fn, call);
+    }
+    if (nativeConstant(alias.nativeName, member)) {
+      sink_.error(call.callee->span,
+                  "'" + alias.nativeName + "." + member + "' is a constant, not a function.");
+      for (auto& arg : call.args) inferExpr(*arg.value);
+      return typeError();
+    }
+    sink_.error(call.callee->span,
+                "Module '" + alias.nativeName + "' has no function '" + member + "'.");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+
+  ModuleExports& exports = exportsFor(alias.moduleId);
+  if (auto fn = exports.functions.find(member); fn != exports.functions.end()) {
+    auto sig = signatures_.find(fn->second);
+    if (sig == signatures_.end()) {
+      for (auto& arg : call.args) inferExpr(*arg.value);
+      return typeError();
+    }
+    return checkFunctionCall(sig->second, call);
+  }
+  if (exports.structs.count(member)) {
+    auto sym = structs_.find(qualifiedFor(alias.moduleId, member));
+    if (sym == structs_.end()) return typeError();
+    return checkStructConstruction(sym->second, call);
+  }
+  if (exports.values.count(member)) {
+    sink_.error(call.callee->span,
+                "'" + exports.name + "." + member + "' is a value, not a function.");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+  sink_.error(call.callee->span,
+              "Module '" + exports.name + "' has no function '" + member + "'.");
+  for (auto& arg : call.args) inferExpr(*arg.value);
+  return typeError();
+}
 
 // ------------------------------------------------------------------ types
 
@@ -245,12 +362,36 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
   }
   auto* named = dynamic_cast<NamedTypeExpr*>(&expr);
   if (!named) return typeError();
-  if (TypePtr builtin = builtinTypeByName(named->name)) return builtin;
-  if (structs_.count(named->name)) return typeStruct(named->name);
-  sink_.error(named->span, "Unknown type '" + named->name + "'.",
-              "Type names are 'bool', 'char', 'String', 'void', the sized numeric types, "
-              "struct names, '[T]' for arrays, '(T, U)' for tuples, 'fn(T) -> R' for "
-              "functions, or 'T?' for optionals.");
+  if (named->qualifiers.empty()) {
+    if (TypePtr builtin = builtinTypeByName(named->name)) return builtin;
+    const std::string q = qualified(named->name);
+    if (structs_.count(q)) return typeStruct(q);
+    if (enums_.count(q)) return typeInt(32, true);  // enums are i32-backed
+    if (auto alias = structAliases_.find(named->name); alias != structAliases_.end()) {
+      return typeStruct(alias->second);
+    }
+    sink_.error(named->span, "Unknown type '" + named->name + "'.",
+                "Type names are 'bool', 'char', 'String', 'void', the sized numeric types, "
+                "struct names, '[T]' for arrays, '(T, U)' for tuples, 'fn(T) -> R' for "
+                "functions, or 'T?' for optionals.");
+    return typeError();
+  }
+
+  const std::string qualifier = named->qualifiers.back();
+  ModuleAlias* alias = findAlias(qualifier);
+  if (!alias) {
+    sink_.error(named->span, "Unknown module alias '" + qualifier + "'.");
+    return typeError();
+  }
+  if (alias->native) {
+    sink_.error(named->span, "Native modules do not declare types.");
+    return typeError();
+  }
+  const std::string q = qualifiedFor(alias->moduleId, named->name);
+  if (structs_.count(q)) return typeStruct(q);
+  if (enums_.count(q)) return typeInt(32, true);  // enums are i32-backed
+  sink_.error(named->span, "Module '" + graph_.at(alias->moduleId).name + "' has no type named '" +
+                               named->name + "'.");
   return typeError();
 }
 
@@ -271,7 +412,7 @@ Sema::VarSym* Sema::lookupVar(const std::string& name) {
 }
 
 void Sema::declareVar(const std::string& name, Span span, TypePtr type, bool mutableBinding,
-                      const char* what) {
+                      const char* what, bool constant) {
   if (scopes_.empty()) return;
   auto& scope = scopes_.back();
   if (scope.count(name)) {
@@ -280,16 +421,20 @@ void Sema::declareVar(const std::string& name, Span span, TypePtr type, bool mut
     return;
   }
   if (scopes_.size() == 1) {
-    if (functionsByName_.count(name)) {
+    if (functionsByName_.count(qualified(name))) {
       sink_.error(span, "Name '" + name + "' is already declared as a function.");
       return;
     }
-    if (structsByName_.count(name)) {
+    if (structsByName_.count(qualified(name))) {
       sink_.error(span, "Name '" + name + "' is already declared as a struct.");
       return;
     }
+    if (enums_.count(qualified(name))) {
+      sink_.error(span, "Name '" + name + "' is already declared as an enum.");
+      return;
+    }
   }
-  scope[name] = VarSym{std::move(type), mutableBinding};
+  scope[name] = VarSym{std::move(type), mutableBinding, constant};
   DeclaredVarInfo info;
   info.name = name;
   info.span = span;
@@ -300,8 +445,9 @@ void Sema::declareVar(const std::string& name, Span span, TypePtr type, bool mut
 // ------------------------------------------------------------ declarations
 
 void Sema::registerStructLayout(StructDecl& decl) {
-  StructSym& sym = structs_[decl.name];
-  sym.name = decl.name;
+  const std::string q = qualified(decl.name);
+  StructSym& sym = structs_[q];
+  sym.name = q;
   sym.decl = &decl;
 
   for (FieldDecl& field : decl.fields) {
@@ -319,6 +465,46 @@ void Sema::registerStructLayout(StructDecl& decl) {
   }
 }
 
+void Sema::registerEnum(EnumDecl& decl) {
+  const std::string q = qualified(decl.name);
+  EnumInfo& info = enums_[q];
+  info.name = q;
+
+  std::int64_t next = 0;
+  for (EnumVariant& variant : decl.variants) {
+    if (info.values.count(variant.name)) {
+      sink_.error(variant.span, "Duplicate variant '" + variant.name + "' in enum '" +
+                                    decl.name + "'.");
+      continue;
+    }
+    if (variant.value) {
+      std::int64_t value = 0;
+      bool ok = false;
+      if (auto* literal = dynamic_cast<IntLitExpr*>(variant.value.get())) {
+        value = literal->value;
+        ok = true;
+      } else if (auto* unary = dynamic_cast<UnaryExpr*>(variant.value.get());
+                 unary && unary->op == "-") {
+        if (auto* literal = dynamic_cast<IntLitExpr*>(unary->operand.get())) {
+          value = -literal->value;
+          ok = true;
+        }
+      }
+      if (!ok) {
+        sink_.error(variant.value->span,
+                    "Enum variant values must be integer literals.",
+                    "Write " + variant.name + " = 5.");
+        continue;
+      }
+      info.values[variant.name] = value;
+      next = value + 1;
+    } else {
+      info.values[variant.name] = next;
+      ++next;
+    }
+  }
+}
+
 void Sema::registerFunctionSignature(FnDecl& decl) {
   FnSig sig;
   makeSignatureTypes(decl, nullptr, sig);
@@ -326,11 +512,13 @@ void Sema::registerFunctionSignature(FnDecl& decl) {
 }
 
 void Sema::registerMethodSignatures(StructDecl& decl) {
-  StructSym& sym = structs_[decl.name];
-  TypePtr selfType = typeStruct(decl.name);
+  const std::string q = qualified(decl.name);
+  StructSym& sym = structs_[q];
+  TypePtr selfType = typeStruct(q);
 
   for (auto& methodPtr : decl.methods) {
     FnDecl& method = *methodPtr;
+    fnModules_[&method] = currentModule_;
     if (method.params.empty() || method.params.front().name != "self") {
       sink_.error(method.nameSpan,
                   "Method '" + method.name + "' must declare 'self' as its first parameter.",
@@ -458,34 +646,182 @@ void Sema::checkStructMethodBodies(StructDecl& decl) {
 
 // ---------------------------------------------------------------- analyze
 
+void Sema::registerImports(Module& module) {
+  auto aliasStem = [](const std::string& path) {
+    std::size_t slash = path.find_last_of("/\\");
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    std::size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) name = name.substr(0, dot);
+    return name;
+  };
+
+  for (auto& statement : module.program->statements) {
+    if (auto* import = dynamic_cast<ImportStmt*>(statement.get())) {
+      std::string alias = import->alias;
+      if (alias.empty()) alias = import->quoted ? aliasStem(import->path) : import->bareName;
+      if (alias.empty()) continue;
+
+      ModuleAlias entry;
+      entry.native = import->nativeModule;
+      entry.moduleId = import->moduleId;
+      entry.nativeName = import->bareName;
+      if (!entry.native && entry.moduleId < 0) continue;
+
+      if (moduleAliases_.count(alias)) {
+        sink_.error(import->span, "Duplicate import alias '" + alias + "'.");
+        continue;
+      }
+      moduleAliases_[alias] = entry;
+      continue;
+    }
+
+    if (auto* from = dynamic_cast<FromImportStmt*>(statement.get())) {
+      for (auto& item : from->items) {
+        FromBinding binding;
+        binding.span = item.span;
+        binding.moduleId = from->moduleId;
+
+        if (from->nativeModule) {
+          binding.native = true;
+          if (const std::string* fn = nativeFunction(from->bareName, item.name)) {
+            binding.kind = FromBinding::Kind::Function;
+            binding.nativeName = *fn;
+          } else if (const std::string* constant = nativeConstant(from->bareName, item.name)) {
+            binding.kind = FromBinding::Kind::Value;
+            binding.nativeName = *constant;
+            binding.type = builtinConstantType(*constant);
+            if (!binding.type) {
+              sink_.error(item.span, "Unsupported native constant '" + item.name + "'.");
+              continue;
+            }
+          } else {
+            sink_.error(item.span,
+                        "Module '" + from->bareName + "' has no member '" + item.name + "'.");
+            continue;
+          }
+        } else if (from->moduleId >= 0) {
+          ModuleExports& exports = exportsFor(from->moduleId);
+          if (auto fn = exports.functions.find(item.name); fn != exports.functions.end()) {
+            binding.kind = FromBinding::Kind::Function;
+            binding.fn = fn->second;
+            auto sig = signatures_.find(binding.fn);
+            if (sig != signatures_.end()) {
+              binding.type = typeFunction(sig->second.paramTypes, sig->second.retType);
+            }
+          } else if (auto st = exports.structs.find(item.name); st != exports.structs.end()) {
+            binding.kind = FromBinding::Kind::Struct;
+            binding.decl = st->second;
+            binding.structName = qualifiedFor(from->moduleId, item.name);
+            binding.type = typeStruct(binding.structName);
+          } else if (auto value = exports.values.find(item.name); value != exports.values.end()) {
+            binding.kind = FromBinding::Kind::Value;
+            binding.type = value->second;
+          } else {
+            sink_.error(item.span, "Module '" + exports.name + "' has no exported member '" +
+                                       item.name + "'.");
+            continue;
+          }
+        } else {
+          continue;
+        }
+
+        if (fromBindings_.count(item.alias)) {
+          sink_.error(item.span, "Duplicate imported name '" + item.alias + "'.");
+          continue;
+        }
+        if (binding.kind == FromBinding::Kind::Struct) {
+          structAliases_[item.alias] = binding.structName;
+        }
+        fromBindings_[item.alias] = std::move(binding);
+      }
+    }
+  }
+}
+
+void Sema::buildModuleExports(Module& module) {
+  ModuleExports& exports = exportsFor(module.id);
+  if (!scopes_.empty()) {
+    for (const auto& entry : scopes_.front()) {
+      exports.values[entry.first] = entry.second.type;
+    }
+  }
+  exports.structAliases = structAliases_;
+}
+
 SemaResult Sema::analyze() {
+  for (int id : graph_.order) analyzeModule(graph_.at(id));
+
+  SemaResult result;
+  result.functions = functionsByName_;
+  result.structs = structsByName_;
+  result.enums = enums_;
+  result.modules = moduleExports_;
+  result.fnModule = fnModules_;
+  result.structModule = structModules_;
+  return result;
+}
+
+void Sema::analyzeModule(Module& module) {
+  currentModule_ = module.id;
+  scopes_.clear();
   scopes_.push_back({});
+  moduleAliases_.clear();
+  fromBindings_.clear();
+  structAliases_.clear();
+  loopDepth_ = 0;
+  deferDepth_ = 0;
+  currentFunction_ = nullptr;
+  currentReturnType_ = nullptr;
+  sawReturn_ = false;
+  typeVariables_.clear();
+  declaredVariables_.clear();
+  checkedFunctions_.clear();
+
+  registerImports(module);
+
+  ModuleExports& exports = exportsFor(module.id);
+  exports.name = module.name;
+  auto& statements = module.program->statements;
 
   // Pass 1: collect declaration names so duplicates and collisions are clear.
-  for (auto& stmt : program_.statements) {
+  for (auto& stmt : statements) {
     if (auto* decl = dynamic_cast<StructDecl*>(stmt.get())) {
-      if (structsByName_.count(decl->name) || functionsByName_.count(decl->name)) {
+      const std::string q = qualified(decl->name);
+      if (structsByName_.count(q) || functionsByName_.count(q)) {
         sink_.error(decl->nameSpan, "Duplicate declaration of '" + decl->name + "'.");
         continue;
       }
       StructSym sym;
-      sym.name = decl->name;
+      sym.name = q;
       sym.decl = decl;
-      structs_[decl->name] = std::move(sym);
-      structsByName_[decl->name] = decl;
+      structs_[q] = std::move(sym);
+      structsByName_[q] = decl;
+      structModules_[decl] = currentModule_;
+      exports.structs[decl->name] = decl;
+    } else if (auto* en = dynamic_cast<EnumDecl*>(stmt.get())) {
+      const std::string q = qualified(en->name);
+      if (functionsByName_.count(q) || structsByName_.count(q) || enums_.count(q)) {
+        sink_.error(en->nameSpan, "Duplicate declaration of '" + en->name + "'.");
+        continue;
+      }
+      exports.enums[en->name] = q;
+      registerEnum(*en);
     } else if (auto* fn = dynamic_cast<FnDecl*>(stmt.get())) {
-      if (functionsByName_.count(fn->name) || structsByName_.count(fn->name)) {
+      const std::string q = qualified(fn->name);
+      if (functionsByName_.count(q) || structsByName_.count(q)) {
         sink_.error(fn->nameSpan, "Duplicate declaration of '" + fn->name + "'.");
         continue;
       }
-      functionsByName_[fn->name] = fn;
+      functionsByName_[q] = fn;
+      fnModules_[fn] = currentModule_;
+      exports.functions[fn->name] = fn;
     }
   }
 
   // Pass 2: resolve struct layouts and method signatures.
-  for (auto& stmt : program_.statements) {
+  for (auto& stmt : statements) {
     if (auto* decl = dynamic_cast<StructDecl*>(stmt.get())) {
-      auto found = structsByName_.find(decl->name);
+      auto found = structsByName_.find(qualified(decl->name));
       if (found == structsByName_.end() || found->second != decl) continue;
       registerStructLayout(*decl);
       registerMethodSignatures(*decl);
@@ -493,31 +829,35 @@ SemaResult Sema::analyze() {
   }
 
   // Pass 3: function signatures.
-  for (auto& stmt : program_.statements) {
+  for (auto& stmt : statements) {
     if (auto* decl = dynamic_cast<FnDecl*>(stmt.get())) {
-      auto found = functionsByName_.find(decl->name);
+      auto found = functionsByName_.find(qualified(decl->name));
       if (found == functionsByName_.end() || found->second != decl) continue;
       registerFunctionSignature(*decl);
     }
   }
 
   // Pass 4: top-level statements (global variables and executable code).
-  for (auto& stmt : program_.statements) {
-    if (dynamic_cast<FnDecl*>(stmt.get()) || dynamic_cast<StructDecl*>(stmt.get())) continue;
+  for (auto& stmt : statements) {
+    if (dynamic_cast<FnDecl*>(stmt.get()) || dynamic_cast<StructDecl*>(stmt.get()) ||
+        dynamic_cast<EnumDecl*>(stmt.get()) ||
+        dynamic_cast<ImportStmt*>(stmt.get()) || dynamic_cast<FromImportStmt*>(stmt.get())) {
+      continue;
+    }
     checkStatement(*stmt);
   }
 
   // Pass 5: function and method bodies.
-  for (auto& stmt : program_.statements) {
+  for (auto& stmt : statements) {
     if (auto* decl = dynamic_cast<StructDecl*>(stmt.get())) {
-      auto found = structsByName_.find(decl->name);
+      auto found = structsByName_.find(qualified(decl->name));
       if (found == structsByName_.end() || found->second != decl) continue;
       checkStructMethodBodies(*decl);
     }
   }
-  for (auto& stmt : program_.statements) {
+  for (auto& stmt : statements) {
     if (auto* decl = dynamic_cast<FnDecl*>(stmt.get())) {
-      auto found = functionsByName_.find(decl->name);
+      auto found = functionsByName_.find(qualified(decl->name));
       if (found == functionsByName_.end() || found->second != decl) continue;
       auto sig = signatures_.find(decl);
       if (sig == signatures_.end()) continue;
@@ -529,10 +869,7 @@ SemaResult Sema::analyze() {
   checkDeclaredVariables();
   checkReturnPaths();
 
-  SemaResult result;
-  result.functions = functionsByName_;
-  result.structs = structsByName_;
-  return result;
+  buildModuleExports(module);
 }
 
 // ------------------------------------------------------------- statement checks
@@ -564,6 +901,10 @@ void Sema::checkStatement(Stmt& stmt) {
   }
   if (auto* node = dynamic_cast<WhileStmt*>(&stmt)) {
     checkWhile(*node);
+    return;
+  }
+  if (auto* node = dynamic_cast<DoWhileStmt*>(&stmt)) {
+    checkDoWhile(*node);
     return;
   }
   if (auto* node = dynamic_cast<ForStmt*>(&stmt)) {
@@ -608,11 +949,22 @@ void Sema::checkStatement(Stmt& stmt) {
     sink_.error(node->nameSpan, "Structs can only be declared at the top level.");
     return;
   }
+  if (auto* node = dynamic_cast<EnumDecl*>(&stmt)) {
+    sink_.error(node->nameSpan, "Enums can only be declared at the top level.");
+    return;
+  }
+  if (auto* node = dynamic_cast<ImportStmt*>(&stmt)) {
+    sink_.error(node->span, "Imports are only allowed at module top level.");
+    return;
+  }
+  if (auto* node = dynamic_cast<FromImportStmt*>(&stmt)) {
+    sink_.error(node->span, "Imports are only allowed at module top level.");
+    return;
+  }
 }
 
 void Sema::checkLet(LetStmt& stmt) {
   TypePtr initType = inferExpr(*stmt.init);
-
   TypePtr variableType = initType;
   if (stmt.type) {
     TypePtr declared = resolveTypeExpr(*stmt.type);
@@ -631,7 +983,8 @@ void Sema::checkLet(LetStmt& stmt) {
     variableType = typeError();
   }
 
-  declareVar(stmt.name, stmt.nameSpan, variableType, stmt.mutableBinding);
+  declareVar(stmt.name, stmt.nameSpan, variableType, stmt.mutableBinding,
+             stmt.constantBinding ? "constant" : "variable", stmt.constantBinding);
 }
 
 void Sema::checkAssign(AssignStmt& stmt) {
@@ -660,9 +1013,13 @@ void Sema::checkAssign(AssignStmt& stmt) {
     }
 
     if (!sym->mutableBinding) {
-      sink_.error(ident->span, "Cannot assign to immutable binding '" + ident->name + "'.",
-                  "Declare the variable with 'var " + ident->name +
-                      " = ...' to make it mutable.");
+      if (sym->constant) {
+        sink_.error(ident->span, "Cannot assign to constant '" + ident->name + "'.");
+      } else {
+        sink_.error(ident->span, "Cannot assign to immutable binding '" + ident->name + "'.",
+                    "Declare the variable with 'var " + ident->name +
+                        " = ...' to make it mutable.");
+      }
     }
 
     TypePtr valueType = inferExpr(*stmt.value);
@@ -764,8 +1121,17 @@ void Sema::checkWhile(WhileStmt& stmt) {
   --loopDepth_;
 }
 
-void Sema::checkFor(ForStmt& stmt) {
-  TypePtr iterableType = inferExpr(*stmt.iterable);
+void Sema::checkDoWhile(DoWhileStmt& stmt) {
+  ++loopDepth_;
+  pushScope();
+  checkStatements(stmt.body);
+  popScope();
+  --loopDepth_;
+  TypePtr condType = inferExpr(*stmt.cond);
+  requireBool(condType, stmt.cond->span, "The 'while' condition");
+}
+
+void Sema::checkFor(ForStmt& stmt) {  TypePtr iterableType = inferExpr(*stmt.iterable);
   TypePtr resolved = resolveType(iterableType);
   TypePtr elementType;
 
@@ -886,7 +1252,30 @@ TypePtr Sema::inferExpr(Expr& expr) {
       sink_.error(node->span, "Range endpoints must have the same integer type, found " +
                                   typeName(start) + " and " + typeName(end) + ".");
     }
+    if (node->step) {
+      TypePtr step = inferExpr(*node->step);
+      requireInteger(step, node->step->span, "The range step");
+      if (!unify(step, start)) {
+        reportMismatch(step, start, node->step->span, "in the range step");
+      }
+    }
     return typeRange(start);
+  }
+  if (auto* node = dynamic_cast<TernaryExpr*>(&expr)) {
+    requireBool(inferExpr(*node->cond), node->cond->span, "The condition of '\?:'");
+    TypePtr thenType = inferExpr(*node->thenValue);
+    TypePtr elseType = inferExpr(*node->elseValue);
+    if (!unify(thenType, elseType)) {
+      sink_.error(node->span,
+                  "Both branches of '\?:' must have the same type, found " + typeName(thenType) +
+                      " and " + typeName(elseType) + ".");
+      return typeError();
+    }
+    if (resolveType(thenType)->kind == TypeKind::Void) {
+      sink_.error(node->span, "The branches of '\?:' cannot produce void.");
+      return typeError();
+    }
+    return thenType;
   }
   return typeError();
 }
@@ -909,15 +1298,44 @@ TypePtr Sema::inferIdent(IdentExpr& expr) {
     element->allowUnresolved = true;
     return typeOptional(element);
   }
+  if (auto imported = fromBindings_.find(expr.name); imported != fromBindings_.end()) {
+    FromBinding& binding = imported->second;
+    switch (binding.kind) {
+      case FromBinding::Kind::Function:
+        if (binding.native) {
+          sink_.error(expr.span,
+                      "Native function '" + expr.name + "' can only be called directly.",
+                      "Wrap it in a lambda to pass it as a value, e.g. x => " + expr.name + "(x).");
+          return typeError();
+        }
+        if (binding.type) return binding.type;
+        return typeError();
+      case FromBinding::Kind::Struct:
+        sink_.error(expr.span, "'" + expr.name + "' is a struct type, not a value.",
+                    "Construct it: " + expr.name + "(...).");
+        return typeError();
+      case FromBinding::Kind::Value:
+        return binding.type ? binding.type : typeError();
+    }
+  }
+  if (auto alias = moduleAliases_.find(expr.name); alias != moduleAliases_.end()) {
+    return alias->second.native ? typeNativeModule(alias->second.nativeName)
+                                : typeModule(alias->second.moduleId);
+  }
+  {
+    const std::string enumQ = qualified(expr.name);
+    if (enums_.count(enumQ)) return typeEnum(enumQ);
+  }
   if (TypePtr constant = builtinConstantType(expr.name)) return constant;
-  if (auto fn = functionsByName_.find(expr.name); fn != functionsByName_.end()) {
+  const std::string q = qualified(expr.name);
+  if (auto fn = functionsByName_.find(q); fn != functionsByName_.end()) {
     auto sig = signatures_.find(fn->second);
     if (sig != signatures_.end()) {
       return typeFunction(sig->second.paramTypes, sig->second.retType);
     }
     return typeError();
   }
-  if (structsByName_.count(expr.name)) {
+  if (structsByName_.count(q)) {
     sink_.error(expr.span, "'" + expr.name + "' is a struct type, not a value.",
                 "Construct it: " + expr.name + "(...).");
     return typeError();
@@ -948,6 +1366,16 @@ TypePtr Sema::inferUnary(UnaryExpr& expr) {
   }
 
   TypePtr resolved = resolveType(operand);
+  if (expr.op == "~") {
+    if (resolved->kind == TypeKind::Int) return operand;
+    if (resolved->kind == TypeKind::Var && constrainVar(operand, Constraint::Integer)) {
+      return operand;
+    }
+    sink_.error(expr.opSpan,
+                "Operator '~' cannot be applied to " + typePhrase(operand) + ".",
+                "'~' requires an integer operand.");
+    return typeError();
+  }
   if (resolved->kind == TypeKind::Int || resolved->kind == TypeKind::Float) {
     return operand;
   }
@@ -1019,6 +1447,18 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
       return typeError();
     }
     return typeRange(lhs);
+  }
+
+  if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+    requireInteger(lhs, expr.lhs->span, "The left operand of '" + op + "'");
+    requireInteger(rhs, expr.rhs->span, "The right operand of '" + op + "'");
+    if (!unify(lhs, rhs)) {
+      sink_.error(expr.opSpan, "Operator '" + op + "' requires both operands to have the same "
+                               "integer type, found " + typePhrase(lhs) + " and " +
+                                   typePhrase(rhs) + ".");
+      return typeError();
+    }
+    return lhs;
   }
 
   const bool comparison = op == "==" || op == "!=" || op == "<" || op == ">" ||
@@ -1099,11 +1539,39 @@ TypePtr Sema::inferCall(CallExpr& expr) {
     if (VarSym* sym = lookupVar(name)) {
       return checkFunctionValueCall(name, sym->type, expr);
     }
-    auto structIt = structs_.find(name);
+    if (auto imported = fromBindings_.find(name); imported != fromBindings_.end()) {
+      FromBinding& binding = imported->second;
+      if (binding.kind == FromBinding::Kind::Struct) {
+        auto sym = structs_.find(binding.structName);
+        if (sym == structs_.end()) return typeError();
+        return checkStructConstruction(sym->second, expr);
+      }
+      if (binding.kind == FromBinding::Kind::Function && !binding.native) {
+        auto sigIt = signatures_.find(binding.fn);
+        if (sigIt == signatures_.end()) return typeError();
+        return checkFunctionCall(sigIt->second, expr);
+      }
+      if (binding.kind == FromBinding::Kind::Function && binding.native) {
+        return checkBuiltinCall(binding.nativeName, expr);
+      }
+      if (!binding.type) {
+        for (auto& arg : expr.args) inferExpr(*arg.value);
+        return typeError();
+      }
+      return checkFunctionValueCall(name, binding.type, expr);
+    }
+    if (moduleAliases_.count(name)) {
+      sink_.error(ident->span, "'" + name + "' is a module, not a function.",
+                  "Call a member instead, e.g. " + name + ".function(...).");
+      for (auto& arg : expr.args) inferExpr(*arg.value);
+      return typeError();
+    }
+    const std::string q = qualified(name);
+    auto structIt = structs_.find(q);
     if (structIt != structs_.end()) {
       return checkStructConstruction(structIt->second, expr);
     }
-    auto fnIt = functionsByName_.find(name);
+    auto fnIt = functionsByName_.find(q);
     if (fnIt != functionsByName_.end()) {
       auto sigIt = signatures_.find(fnIt->second);
       if (sigIt == signatures_.end()) return typeError();
@@ -1122,6 +1590,14 @@ TypePtr Sema::inferCall(CallExpr& expr) {
 
   if (auto* field = dynamic_cast<FieldExpr*>(expr.callee.get())) {
     TypePtr objectType = inferExpr(*field->object);
+    TypePtr object = resolveType(objectType);
+    if (object->kind == TypeKind::Module) {
+      ModuleAlias alias;
+      alias.native = object->moduleId < 0;
+      alias.moduleId = object->moduleId;
+      alias.nativeName = object->structName;
+      return moduleMemberCall(alias, field->field, expr);
+    }
     return checkMethodCall(objectType, *field, expr);
   }
 
@@ -1732,6 +2208,130 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     return typeBool();
   }
 
+  if (name == "list_dir") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeArray(typeString());
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (!unify(type, typeString())) {
+      reportMismatch(type, typeString(), call.args[0].value->span,
+                     "in the path passed to 'list_dir'");
+    }
+    return typeArray(typeString());
+  }
+
+  if (name == "remove_file" || name == "create_dir" || name == "remove_dir") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (!unify(type, typeString())) {
+      reportMismatch(type, typeString(), call.args[0].value->span,
+                     "in the path passed to '" + name + "'");
+    }
+    return typeVoid();
+  }
+
+  if (name == "rename") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+      TypePtr type = inferExpr(*call.args[i].value);
+      if (!unify(type, typeString())) {
+        reportMismatch(type, typeString(), call.args[i].value->span,
+                       "in argument " + std::to_string(i + 1) + " to 'rename'");
+      }
+    }
+    return typeVoid();
+  }
+
+  if (name == "current_dir") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeString();
+  }
+
+  if (name == "now") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeInt(64, true);
+  }
+
+  if (name == "sleep") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The duration passed to 'sleep'");
+    return typeVoid();
+  }
+
+  if (name == "panic") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (!unify(type, typeString())) {
+      reportMismatch(type, typeString(), call.args[0].value->span,
+                     "in the message passed to 'panic'");
+    }
+    return typeVoid();
+  }
+
+  if (name == "assert") {
+    if (call.args.empty() || call.args.size() > 2) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    requireBool(inferExpr(*call.args[0].value), call.args[0].value->span,
+                "The condition of 'assert'");
+    if (call.args.size() == 2) {
+      TypePtr type = inferExpr(*call.args[1].value);
+      if (!unify(type, typeString())) {
+        reportMismatch(type, typeString(), call.args[1].value->span,
+                       "in the message passed to 'assert'");
+      }
+    }
+    return typeVoid();
+  }
+
+  if (name == "assert_eq") {
+    if (call.args.size() < 2 || call.args.size() > 3) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    TypePtr left = inferExpr(*call.args[0].value);
+    TypePtr right = inferExpr(*call.args[1].value);
+    if (!unify(left, right)) {
+      reportMismatch(right, left, call.args[1].value->span, "in the second argument of 'assert_eq'");
+    }
+    if (call.args.size() == 3) {
+      TypePtr type = inferExpr(*call.args[2].value);
+      if (!unify(type, typeString())) {
+        reportMismatch(type, typeString(), call.args[2].value->span,
+                       "in the message passed to 'assert_eq'");
+      }
+    }
+    return typeVoid();
+  }
+
   if (name == "Some") {
     if (call.args.size() != 1) {
       arityError(1);
@@ -1938,6 +2538,24 @@ TypePtr Sema::inferSlice(SliceExpr& expr) {
 TypePtr Sema::inferField(FieldExpr& expr) {
   TypePtr objectType = inferExpr(*expr.object);
   TypePtr object = resolveType(objectType);
+
+  if (object->kind == TypeKind::Module) {
+    ModuleAlias alias;
+    alias.native = object->moduleId < 0;
+    alias.moduleId = object->moduleId;
+    alias.nativeName = object->structName;
+    return moduleMemberType(alias, expr.field, expr.fieldSpan, true);
+  }
+
+  if (object->kind == TypeKind::Enum) {
+    auto enumIt = enums_.find(object->structName);
+    if (enumIt == enums_.end()) return typeError();
+    if (enumIt->second.values.count(expr.field)) return typeInt(32, true);
+    sink_.error(expr.fieldSpan,
+                "Enum '" + shortName(object->structName) + "' has no variant named '" +
+                    expr.field + "'.");
+    return typeError();
+  }
 
   if (object->kind == TypeKind::Struct) {
     auto structIt = structs_.find(object->structName);
@@ -2259,6 +2877,13 @@ TypePtr Sema::requireNumeric(TypePtr type, Span span, const std::string& what) {
 
 bool Sema::checkCompoundOp(const std::string& op, TypePtr targetType, Span span) {
   TypePtr type = resolveType(targetType);
+  if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+    if (type->kind == TypeKind::Int) return true;
+    if (type->kind == TypeKind::Var && constrainVar(targetType, Constraint::Integer)) return true;
+    sink_.error(span, "Operator '" + op + "=' requires an integer target, found " +
+                          typePhrase(type) + ".");
+    return false;
+  }
   if (type->kind == TypeKind::Var) {
     if (constrainVar(targetType, Constraint::Numeric)) return true;
     sink_.error(span, "Operator '" + op + "=' is not defined for " + typePhrase(type) + ".");

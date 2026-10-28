@@ -2,12 +2,15 @@
 
 #include <iosfwd>
 #include <string>
+#include <vector>
 
 namespace a {
 
 struct DriverConfig {
   bool checkOnly = false;
   bool useColor = false;
+  std::vector<std::string> modulePaths;  // -I search directories
+  std::string stdlibRoot;                // --stdlib; auto-detected when empty
 };
 
 // Compiles and, unless `checkOnly` is set, executes the named file.

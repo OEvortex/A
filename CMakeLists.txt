@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Alang VERSION 0.2.0 LANGUAGES CXX)
+project(Alang VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,13 +10,26 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(A_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(A_ENABLE_LTO "Enable link-time optimization in Release builds" ON)
+
+if(A_ENABLE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT a_ipo_supported OUTPUT a_ipo_error)
+  if(a_ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  else()
+    message(STATUS "LTO unavailable: ${a_ipo_error}")
+  endif()
+endif()
 
 # ---------------------------------------------------------------- interface
 
 add_library(a_project_options INTERFACE)
 target_include_directories(a_project_options INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/compiler/source>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/runtime>
+  $<INSTALL_INTERFACE:include/a/compiler>
+  $<INSTALL_INTERFACE:include/a/runtime>)
 
 if(MSVC)
   target_compile_options(a_project_options INTERFACE /W4)
@@ -32,55 +45,77 @@ endif()
 
 # ------------------------------------------------------------------ modules
 
-add_library(a_common STATIC
-  src/common/source.cpp
-  src/common/diagnostics.cpp
+add_library(a_diagnostics STATIC
+  compiler/source/diagnostics/diagnostics.cpp
 )
-target_link_libraries(a_common PUBLIC a_project_options)
+target_link_libraries(a_diagnostics PUBLIC a_project_options)
 
-add_library(a_frontend STATIC
-  src/frontend/lexer.cpp
-  src/frontend/parser.cpp
+add_library(a_lexer STATIC
+  compiler/source/lexer/source.cpp
+  compiler/source/lexer/lexer.cpp
 )
-target_link_libraries(a_frontend PUBLIC a_common)
+target_link_libraries(a_lexer PUBLIC a_diagnostics)
 
-add_library(a_sema STATIC
-  src/sema/sema.cpp
+add_library(a_parser STATIC
+  compiler/source/parser/parser.cpp
 )
-target_link_libraries(a_sema PUBLIC a_frontend)
+target_link_libraries(a_parser PUBLIC a_lexer)
+
+add_library(a_name_resolution STATIC
+  compiler/source/name-resolution/module_loader.cpp
+)
+target_link_libraries(a_name_resolution PUBLIC a_parser)
+
+add_library(a_type_checker STATIC
+  compiler/source/type-checker/sema.cpp
+)
+target_link_libraries(a_type_checker PUBLIC a_name_resolution)
 
 add_library(a_runtime STATIC
-  src/runtime/interpreter.cpp
+  runtime/strings/utf8.cpp
+  runtime/strings/format.cpp
+  runtime/io/file_io.cpp
 )
-target_link_libraries(a_runtime PUBLIC a_sema)
+target_link_libraries(a_runtime PUBLIC a_project_options)
+
+add_library(a_backend STATIC
+  compiler/source/backend/interpreter.cpp
+)
+target_link_libraries(a_backend PUBLIC a_type_checker a_runtime)
 
 add_library(a_driver STATIC
-  src/driver/driver.cpp
+  compiler/source/driver/driver.cpp
 )
-target_link_libraries(a_driver PUBLIC a_runtime)
+target_link_libraries(a_driver PUBLIC a_backend)
 
 # Namespaced aliases keep embedding projects decoupled from target names.
-add_library(a::common ALIAS a_common)
-add_library(a::frontend ALIAS a_frontend)
-add_library(a::sema ALIAS a_sema)
+add_library(a::diagnostics ALIAS a_diagnostics)
+add_library(a::lexer ALIAS a_lexer)
+add_library(a::parser ALIAS a_parser)
+add_library(a::name_resolution ALIAS a_name_resolution)
+add_library(a::type_checker ALIAS a_type_checker)
 add_library(a::runtime ALIAS a_runtime)
+add_library(a::backend ALIAS a_backend)
 add_library(a::driver ALIAS a_driver)
 
 # ---------------------------------------------------------------------- cli
 
-add_executable(a src/cli/main.cpp)
+add_executable(a compiler/source/cli/main.cpp)
 target_link_libraries(a PRIVATE a_driver)
 
 # ---------------------------------------------------------------- packaging
 
 include(GNUInstallDirs)
 install(TARGETS a RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/a DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY compiler/source/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a/compiler
+  FILES_MATCHING PATTERN "*.hpp")
+install(DIRECTORY runtime/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a/runtime
+  FILES_MATCHING PATTERN "*.hpp")
 
 # --------------------------------------------------------------------- tests
 
 enable_testing()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_tests.sh")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh")
   add_test(NAME language-suite
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_tests.sh $<TARGET_FILE:a>)
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh $<TARGET_FILE:a>)
 endif()

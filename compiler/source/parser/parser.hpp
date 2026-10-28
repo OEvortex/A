@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
-#include "a/common/diagnostics.hpp"
-#include "a/common/token.hpp"
-#include "a/frontend/ast.hpp"
+#include "diagnostics/diagnostics.hpp"
+#include "lexer/token.hpp"
+#include "ast/ast.hpp"
 
 namespace a {
 
@@ -37,9 +37,12 @@ class Parser {
   StmtPtr parseStatement();
   StmtPtr parseFnDecl();
   StmtPtr parseStructDecl();
+  StmtPtr parseEnumDecl();
   StmtPtr parseVarDecl();
+  StmtPtr parseConstDecl();
   StmtPtr parseIf();
   StmtPtr parseWhile();
+  StmtPtr parseDoWhile();
   StmtPtr parseFor();
   StmtPtr parseLoop();
   StmtPtr parseReturn();
@@ -47,6 +50,7 @@ class Parser {
   StmtPtr parseContinue();
   StmtPtr parseDefer();
   StmtPtr parseImport();
+  StmtPtr parseFromImport();
   StmtPtr parseTypedDeclaration();
   StmtPtr parseSimpleStatement();
 

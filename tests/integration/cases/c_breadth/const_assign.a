@@ -1,0 +1,5 @@
+const LIMIT = 3
+
+fn main() -> void:
+    LIMIT = 4
+main()

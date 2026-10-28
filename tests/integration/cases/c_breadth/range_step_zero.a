@@ -1,0 +1,4 @@
+fn main() -> void:
+    for i in 0..5..0:
+        print(i)
+main()

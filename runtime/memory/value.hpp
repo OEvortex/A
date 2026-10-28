@@ -8,6 +8,8 @@
 #include <variant>
 #include <vector>
 
+#include "collections/transparent_map.hpp"
+
 namespace a {
 
 struct Value;
@@ -28,20 +30,44 @@ using TuplePtr = std::shared_ptr<TupleValue>;
 struct Closure;
 using ClosurePtr = std::shared_ptr<Closure>;
 
+struct ModuleObj;
+using ModulePtr = std::shared_ptr<ModuleObj>;
+
+struct NativeFunction;
+using NativeFunctionPtr = std::shared_ptr<NativeFunction>;
+
+struct EnumObj;
+using EnumPtr = std::shared_ptr<EnumObj>;
+
 struct RangeValue {
   std::int64_t start = 0;
   std::int64_t end = 0;
+  std::int64_t step = 1;
 };
 
 struct Value {
   std::variant<std::monostate, bool, std::int64_t, double, char32_t, std::string,
-               ArrayPtr, StructPtr, RangeValue, OptionalPtr, TuplePtr, ClosurePtr>
+               ArrayPtr, StructPtr, RangeValue, OptionalPtr, TuplePtr, ClosurePtr, ModulePtr,
+               NativeFunctionPtr, EnumPtr>
       data;
 };
 
 struct StructObj {
   std::string typeName;
   std::vector<std::pair<std::string, Value>> fields;
+};
+
+struct ModuleObj {
+  int id = -1;
+  std::string nativeName;  // set for native modules
+};
+
+struct NativeFunction {
+  std::string builtinName;
+};
+
+struct EnumObj {
+  std::string name;  // qualified enum name, e.g. "color::Color"
 };
 
 struct OptionalValue {
@@ -56,10 +82,8 @@ struct TupleValue {
 struct Closure {
   const LambdaExpr* decl = nullptr;  // lambda body, or null for a named function
   const FnDecl* fn = nullptr;        // named function referenced as a value
-  std::unordered_map<std::string, Value> captured;
+  int moduleId = -1;                 // module whose globals the closure sees
+  StringMap<Value> captured;
 };
-
-std::string formatValue(const Value& value, bool quoteStrings);
-std::string utf8Encode(char32_t codepoint);
 
 }  // namespace a

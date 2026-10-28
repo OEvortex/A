@@ -1,8 +1,9 @@
-#include "a/frontend/parser.hpp"
+#include "parser/parser.hpp"
 
+#include <cctype>
 #include <utility>
 
-#include "a/frontend/lexer.hpp"
+#include "lexer/lexer.hpp"
 
 namespace a {
 namespace {
@@ -76,12 +77,18 @@ StmtPtr Parser::parseStatement() {
       return parseFnDecl();
     case Tok::KwStruct:
       return parseStructDecl();
+    case Tok::KwEnum:
+      return parseEnumDecl();
     case Tok::KwVar:
       return parseVarDecl();
+    case Tok::KwConst:
+      return parseConstDecl();
     case Tok::KwIf:
       return parseIf();
     case Tok::KwWhile:
       return parseWhile();
+    case Tok::KwDo:
+      return parseDoWhile();
     case Tok::KwFor:
       return parseFor();
     case Tok::KwLoop:
@@ -96,6 +103,8 @@ StmtPtr Parser::parseStatement() {
       return parseDefer();
     case Tok::KwImport:
       return parseImport();
+    case Tok::KwFrom:
+      return parseFromImport();
     case Tok::KwElif:
     case Tok::KwElse:
       fail(cur().span, std::string("Unexpected ") + tokName(cur().kind) + ".",
@@ -264,6 +273,60 @@ StmtPtr Parser::parseVarDecl() {
   return decl;
 }
 
+StmtPtr Parser::parseConstDecl() {
+  Span start = cur().span;
+  expect(Tok::KwConst, "'const'");
+  const Token& nameTok = expect(Tok::Ident, "a constant name");
+
+  auto decl = std::make_unique<LetStmt>();
+  decl->name = nameTok.lexeme;
+  decl->nameSpan = nameTok.span;
+  decl->mutableBinding = false;
+  decl->constantBinding = true;
+
+  if (match(Tok::Colon)) {
+    decl->type = parseTypeExpr();
+  }
+  expect(Tok::Eq, "'=' (constants must be initialized)");
+  decl->init = parseExpression();
+  expectNewline();
+  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  return decl;
+}
+
+StmtPtr Parser::parseEnumDecl() {
+  Span start = cur().span;
+  expect(Tok::KwEnum, "'enum'");
+  const Token& nameTok = expect(Tok::Ident, "an enum name");
+
+  auto decl = std::make_unique<EnumDecl>();
+  decl->name = nameTok.lexeme;
+  decl->nameSpan = nameTok.span;
+
+  expect(Tok::Colon, "':' after the enum name");
+  expectNewline();
+  expect(Tok::Indent, "an indented enum body");
+  while (!check(Tok::Dedent) && !check(Tok::Eof)) {
+    if (match(Tok::Newline)) continue;
+    const Token& variantTok = expect(Tok::Ident, "an enum variant name");
+    EnumVariant variant;
+    variant.name = variantTok.lexeme;
+    variant.span = variantTok.span;
+    if (match(Tok::Eq)) {
+      variant.value = parseExpression();
+    }
+    expectNewline();
+    decl->variants.push_back(std::move(variant));
+  }
+  expect(Tok::Dedent, "the end of the enum body");
+  if (decl->variants.empty()) {
+    fail(start, "An enum needs at least one variant.");
+  }
+
+  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  return decl;
+}
+
 StmtPtr Parser::parseTypedDeclaration() {
   Span start = cur().span;
   const Token& nameTok = advance();
@@ -360,6 +423,19 @@ StmtPtr Parser::parseWhile() {
   return stmt;
 }
 
+StmtPtr Parser::parseDoWhile() {
+  Span start = cur().span;
+  expect(Tok::KwDo, "'do'");
+  expect(Tok::Colon, "':' after 'do'");
+  auto stmt = std::make_unique<DoWhileStmt>();
+  stmt->body = parseSuite();
+  expect(Tok::KwWhile, "'while' after the 'do' block");
+  stmt->cond = parseExpression();
+  expectNewline();
+  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  return stmt;
+}
+
 StmtPtr Parser::parseFor() {
   Span start = cur().span;
   expect(Tok::KwFor, "'for'");
@@ -425,8 +501,72 @@ StmtPtr Parser::parseDefer() {
 }
 
 StmtPtr Parser::parseImport() {
-  fail(cur().span, "Imports are not supported yet.",
-       "This version compiles a single source file. Modules arrive in a later milestone.");
+  Span start = cur().span;
+  expect(Tok::KwImport, "'import'");
+
+  auto stmt = std::make_unique<ImportStmt>();
+  if (check(Tok::String)) {
+    const Token& pathTok = advance();
+    stmt->quoted = true;
+    stmt->path = decodeEscapes(pathTok.strValue, pathTok.span);
+    stmt->targetSpan = pathTok.span;
+  } else if (check(Tok::Ident)) {
+    const Token& nameTok = advance();
+    stmt->bareName = nameTok.lexeme;
+    stmt->targetSpan = nameTok.span;
+  } else {
+    fail(cur().span, "Expected a module path or name after 'import'.",
+         "Write import \"lib/util.a\" for a file module or import math for a native module.");
+  }
+
+  if (match(Tok::KwAs)) {
+    const Token& aliasTok = expect(Tok::Ident, "an alias after 'as'");
+    stmt->alias = aliasTok.lexeme;
+  }
+
+  expectNewline();
+  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  return stmt;
+}
+
+StmtPtr Parser::parseFromImport() {
+  Span start = cur().span;
+  expect(Tok::KwFrom, "'from'");
+
+  auto stmt = std::make_unique<FromImportStmt>();
+  if (check(Tok::String)) {
+    const Token& pathTok = advance();
+    stmt->quoted = true;
+    stmt->path = decodeEscapes(pathTok.strValue, pathTok.span);
+    stmt->targetSpan = pathTok.span;
+  } else if (check(Tok::Ident)) {
+    const Token& nameTok = advance();
+    stmt->bareName = nameTok.lexeme;
+    stmt->targetSpan = nameTok.span;
+  } else {
+    fail(cur().span, "Expected a module path or name after 'from'.",
+         "Write from \"lib/util.a\" import add.");
+  }
+
+  expect(Tok::KwImport, "'import' after the module path");
+
+  while (true) {
+    const Token& nameTok = expect(Tok::Ident, "a name to import");
+    FromImportStmt::Item item;
+    item.name = nameTok.lexeme;
+    item.alias = item.name;
+    item.span = nameTok.span;
+    if (match(Tok::KwAs)) {
+      item.alias = expect(Tok::Ident, "an alias after 'as'").lexeme;
+    }
+    stmt->items.push_back(std::move(item));
+    if (!match(Tok::Comma)) break;
+    if (check(Tok::Newline) || check(Tok::Eof)) break;
+  }
+
+  expectNewline();
+  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  return stmt;
 }
 
 StmtPtr Parser::parseSimpleStatement() {
@@ -511,7 +651,14 @@ TypeExprPtr Parser::parseTypeExpr() {
     const Token& nameTok = expect(Tok::Ident, "a type name");
     auto named = std::make_unique<NamedTypeExpr>();
     named->span = nameTok.span;
-    named->name = nameTok.lexeme;
+    std::string name = nameTok.lexeme;
+    while (match(Tok::Dot)) {
+      named->qualifiers.push_back(name);
+      const Token& part = expect(Tok::Ident, "a type name after '.'");
+      name = part.lexeme;
+    }
+    named->name = std::move(name);
+    named->span = Span::join(named->span, tokens_[pos_ - 1].span);
     type = std::move(named);
   }
 
@@ -529,27 +676,35 @@ TypeExprPtr Parser::parseTypeExpr() {
 int Parser::binaryPrecedence(Tok kind) {
   switch (kind) {
     case Tok::Pipe: return 1;
-    case Tok::QuestionQuestion: return 2;
-    case Tok::KwOr: return 3;
-    case Tok::KwAnd: return 4;
+    case Tok::Question: return 2;
+    case Tok::QuestionQuestion: return 3;
+    case Tok::KwOr: return 4;
+    case Tok::KwAnd: return 5;
     case Tok::EqEq:
     case Tok::NotEq:
     case Tok::Lt:
     case Tok::Gt:
     case Tok::Le:
-    case Tok::Ge: return 6;
-    case Tok::DotDot: return 7;
+    case Tok::Ge: return 7;
+    case Tok::DotDot: return 8;
+    case Tok::Bar: return 9;
+    case Tok::Caret: return 10;
+    case Tok::Amp: return 11;
+    case Tok::Shl:
+    case Tok::Shr: return 12;
     case Tok::Plus:
-    case Tok::Minus: return 8;
+    case Tok::Minus: return 13;
     case Tok::Star:
     case Tok::Slash:
-    case Tok::Percent: return 9;
-    case Tok::StarStar: return 11;
+    case Tok::Percent: return 14;
+    case Tok::StarStar: return 16;
     default: return -1;
   }
 }
 
-bool Parser::isRightAssociative(Tok kind) { return kind == Tok::StarStar; }
+bool Parser::isRightAssociative(Tok kind) {
+  return kind == Tok::StarStar || kind == Tok::Question;
+}
 
 const char* Parser::opName(Tok kind) {
   switch (kind) {
@@ -570,12 +725,23 @@ const char* Parser::opName(Tok kind) {
     case Tok::Slash: return "/";
     case Tok::Percent: return "%";
     case Tok::StarStar: return "**";
+    case Tok::Amp: return "&";
+    case Tok::Bar: return "|";
+    case Tok::Caret: return "^";
+    case Tok::Tilde: return "~";
+    case Tok::Shl: return "<<";
+    case Tok::Shr: return ">>";
     case Tok::Eq: return "=";
     case Tok::PlusEq: return "+=";
     case Tok::MinusEq: return "-=";
     case Tok::StarEq: return "*=";
     case Tok::SlashEq: return "/=";
     case Tok::PercentEq: return "%=";
+    case Tok::AmpEq: return "&=";
+    case Tok::BarEq: return "|=";
+    case Tok::CaretEq: return "^=";
+    case Tok::ShlEq: return "<<=";
+    case Tok::ShrEq: return ">>=";
     default: return "?";
   }
 }
@@ -588,6 +754,11 @@ bool Parser::isAssignmentOp(Tok kind) {
     case Tok::StarEq:
     case Tok::SlashEq:
     case Tok::PercentEq:
+    case Tok::AmpEq:
+    case Tok::BarEq:
+    case Tok::CaretEq:
+    case Tok::ShlEq:
+    case Tok::ShrEq:
       return true;
     default:
       return false;
@@ -601,6 +772,36 @@ ExprPtr Parser::parseExpression(int minPrec) {
     int prec = binaryPrecedence(kind);
     if (prec < minPrec || prec < 0) break;
     const Token& opTok = advance();
+    if (kind == Tok::Question) {
+      auto thenValue = parseExpression();
+      expect(Tok::Colon, "':' in the conditional expression");
+      auto elseValue = parseExpression(prec);
+      auto ternary = std::make_unique<TernaryExpr>();
+      ternary->span = Span::join(left->span, elseValue->span);
+      ternary->cond = std::move(left);
+      ternary->thenValue = std::move(thenValue);
+      ternary->elseValue = std::move(elseValue);
+      left = std::move(ternary);
+      continue;
+    }
+    if (kind == Tok::DotDot) {
+      auto end = parseExpression(prec + 1);
+      if (auto* range = dynamic_cast<RangeExpr*>(left.get())) {
+        if (range->step) {
+          fail(opTok.span, "A range takes at most a start, end, and step.",
+               "Write start..end or start..end..step.");
+        }
+        range->span = Span::join(range->span, end->span);
+        range->step = std::move(end);
+      } else {
+        auto newRange = std::make_unique<RangeExpr>();
+        newRange->span = Span::join(left->span, end->span);
+        newRange->start = std::move(left);
+        newRange->end = std::move(end);
+        left = std::move(newRange);
+      }
+      continue;
+    }
     int nextMin = isRightAssociative(kind) ? prec : prec + 1;
     auto right = parseExpression(nextMin);
     if (kind == Tok::Pipe) {
@@ -631,7 +832,7 @@ ExprPtr Parser::parseExpression(int minPrec) {
 ExprPtr Parser::parsePrefix() {
   if (check(Tok::KwNot)) {
     const Token& opTok = advance();
-    auto operand = parseExpression(5);
+    auto operand = parseExpression(6);
     auto expr = std::make_unique<UnaryExpr>();
     expr->span = Span::join(opTok.span, operand->span);
     expr->opSpan = opTok.span;
@@ -639,13 +840,13 @@ ExprPtr Parser::parsePrefix() {
     expr->operand = std::move(operand);
     return expr;
   }
-  if (check(Tok::Minus)) {
+  if (check(Tok::Minus) || check(Tok::Tilde)) {
     const Token& opTok = advance();
-    auto operand = parseExpression(10);
+    auto operand = parseExpression(15);
     auto expr = std::make_unique<UnaryExpr>();
     expr->span = Span::join(opTok.span, operand->span);
     expr->opSpan = opTok.span;
-    expr->op = "-";
+    expr->op = opTok.kind == Tok::Minus ? "-" : "~";
     expr->operand = std::move(operand);
     return expr;
   }
@@ -715,12 +916,12 @@ ExprPtr Parser::parseCallOrIndexPostfix(ExprPtr base) {
         fail(cur().span, "Expected a slice end before '..'.",
              "Write start..end..step, e.g. items[0..10..2].");
       }
-      slice->end = parseExpression(8);
+      slice->end = parseExpression(13);
       if (match(Tok::DotDot)) {
         if (check(Tok::RBracket)) {
           fail(cur().span, "Expected a slice step after '..'.");
         }
-        slice->step = parseExpression(8);
+        slice->step = parseExpression(13);
         if (check(Tok::DotDot)) {
           fail(cur().span, "A slice takes at most a start, end, and step.");
         }
@@ -738,7 +939,7 @@ ExprPtr Parser::parseCallOrIndexPostfix(ExprPtr base) {
     return parseSliceTail(std::move(slice));
   }
 
-  auto first = parseExpression(8);
+  auto first = parseExpression(13);
   if (match(Tok::DotDot)) {
     auto slice = std::make_unique<SliceExpr>();
     slice->object = std::move(base);
@@ -938,10 +1139,13 @@ Pattern Parser::parsePattern() {
     return pattern;
   }
   auto expr = parseExpression();
-  if (auto* binary = dynamic_cast<BinaryExpr*>(expr.get()); binary && binary->op == "..") {
+  if (auto* range = dynamic_cast<RangeExpr*>(expr.get())) {
+    if (range->step) {
+      fail(range->span, "Range patterns do not take a step.");
+    }
     pattern.kind = Pattern::Kind::Range;
-    pattern.rangeStart = std::move(binary->lhs);
-    pattern.rangeEnd = std::move(binary->rhs);
+    pattern.rangeStart = std::move(range->start);
+    pattern.rangeEnd = std::move(range->end);
     pattern.span = expr->span;
     return pattern;
   }
@@ -949,7 +1153,8 @@ Pattern Parser::parsePattern() {
                  dynamic_cast<FloatLitExpr*>(expr.get()) ||
                  dynamic_cast<StringLitExpr*>(expr.get()) ||
                  dynamic_cast<CharLitExpr*>(expr.get()) ||
-                 dynamic_cast<BoolLitExpr*>(expr.get());
+                 dynamic_cast<BoolLitExpr*>(expr.get()) ||
+                 dynamic_cast<FieldExpr*>(expr.get());  // enum variant, e.g. Color.Red
   if (auto* unary = dynamic_cast<UnaryExpr*>(expr.get());
       unary && unary->op == "-") {
     literal = dynamic_cast<IntLitExpr*>(unary->operand.get()) ||
@@ -1022,15 +1227,73 @@ std::string Parser::decodeEscapes(const std::string& raw, Span span) {
       case 'n': out.push_back('\n'); break;
       case 't': out.push_back('\t'); break;
       case 'r': out.push_back('\r'); break;
+      case 'a': out.push_back('\a'); break;
+      case 'b': out.push_back('\b'); break;
+      case 'f': out.push_back('\f'); break;
+      case 'v': out.push_back('\v'); break;
       case '0': out.push_back('\0'); break;
       case '\\': out.push_back('\\'); break;
       case '"': out.push_back('"'); break;
       case '\'': out.push_back('\''); break;
       case '{': out.push_back('{'); break;
       case '}': out.push_back('}'); break;
+      case 'x': {
+        int digits = 0;
+        unsigned value = 0;
+        while (digits < 2 && i + 1 < raw.size() &&
+               std::isxdigit(static_cast<unsigned char>(raw[i + 1]))) {
+          char d = raw[++i];
+          value = value * 16 + static_cast<unsigned>(std::isdigit(static_cast<unsigned char>(d))
+                                                          ? d - '0'
+                                                          : (std::tolower(d) - 'a' + 10));
+          ++digits;
+        }
+        if (digits == 0) {
+          sink_.error(span, "Escape '\\x' needs two hexadecimal digits.",
+                      "Write '\\x41' for 'A'.");
+        }
+        out.push_back(static_cast<char>(value));
+        break;
+      }
+      case 'u': {
+        unsigned value = 0;
+        int digits = 0;
+        if (i + 1 < raw.size() && raw[i + 1] == '{') {
+          ++i;
+          while (i + 1 < raw.size() && std::isxdigit(static_cast<unsigned char>(raw[i + 1]))) {
+            char d = raw[++i];
+            value = value * 16 + static_cast<unsigned>(std::isdigit(static_cast<unsigned char>(d))
+                                                            ? d - '0'
+                                                            : (std::tolower(d) - 'a' + 10));
+            ++digits;
+          }
+          if (i + 1 < raw.size() && raw[i + 1] == '}') ++i;
+        }
+        if (digits == 0 || value > 0x10FFFF) {
+          sink_.error(span, "Invalid Unicode escape in string literal.",
+                      "Write at most six hex digits, e.g. '\\u{1F600}'.");
+          break;
+        }
+        if (value < 0x80) {
+          out.push_back(static_cast<char>(value));
+        } else if (value < 0x800) {
+          out.push_back(static_cast<char>(0xC0 | (value >> 6)));
+          out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+        } else if (value < 0x10000) {
+          out.push_back(static_cast<char>(0xE0 | (value >> 12)));
+          out.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+          out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+        } else {
+          out.push_back(static_cast<char>(0xF0 | (value >> 18)));
+          out.push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3F)));
+          out.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+          out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+        }
+        break;
+      }
       default:
         sink_.error(span, std::string("Unknown escape sequence '\\") + esc + "'.",
-                    "Supported escapes: \\n \\t \\r \\0 \\\\ \\\" \\' \\{ \\}.");
+                    "Supported escapes: \\n \\t \\r \\a \\b \\f \\v \\0 \\xNN \\u{...} \\\\ \\\" \\' \\{ \\}.");
         out.push_back(esc);
         break;
     }
@@ -1063,6 +1326,15 @@ std::vector<StringPart> Parser::parseStringParts(const Token& token) {
   while (i < raw.size()) {
     char c = raw[i];
     if (c == '\\') {
+      if (i + 2 < raw.size() && raw[i + 1] == 'u' && raw[i + 2] == '{') {
+        std::size_t j = i + 3;
+        while (j < raw.size() && raw[j] != '}') ++j;
+        if (j < raw.size()) {
+          literal.append(raw, i, j - i + 1);
+          i = j + 1;
+          continue;
+        }
+      }
       if (i + 1 < raw.size()) {
         if (raw[i + 1] == '{') {
           literal += '{';
@@ -1122,7 +1394,7 @@ std::vector<StringPart> Parser::parseStringParts(const Token& token) {
     StringPart part;
     part.isExpr = true;
     try {
-      Lexer subLexer(inner, sink_, base.line, base.col, /*inlineMode=*/true);
+      Lexer subLexer(inner, sink_, base.fileId, base.line, base.col, /*inlineMode=*/true);
       Parser subParser(subLexer.tokenize(), sink_);
       part.expr = subParser.parseInlineExpression();
     } catch (ParseError&) {

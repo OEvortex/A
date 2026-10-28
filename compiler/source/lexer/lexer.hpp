@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "a/common/diagnostics.hpp"
-#include "a/common/token.hpp"
+#include "diagnostics/diagnostics.hpp"
+#include "lexer/token.hpp"
 
 namespace a {
 
@@ -13,7 +13,7 @@ class Lexer {
   // When `inlineMode` is true the lexer is tokenizing a fragment (such as the
   // inside of a string interpolation): no NEWLINE/INDENT/DEDENT tokens are
   // produced and physical indentation is not significant.
-  Lexer(std::string text, DiagnosticSink& sink, int baseLine = 1, int baseCol = 1,
+  Lexer(std::string text, DiagnosticSink& sink, int fileId, int baseLine = 1, int baseCol = 1,
         bool inlineMode = false);
 
   std::vector<Token> tokenize();
@@ -55,6 +55,7 @@ class Lexer {
 
   std::string text_;
   DiagnosticSink& sink_;
+  int fileId_ = 0;
   std::size_t pos_ = 0;
   int line_ = 1;
   int col_ = 1;

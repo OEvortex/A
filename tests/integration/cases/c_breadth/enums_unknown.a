@@ -1,0 +1,7 @@
+enum Color:
+    Red
+    Green
+
+fn main() -> void:
+    print(Color.Pink)
+main()

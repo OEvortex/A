@@ -1,0 +1,27 @@
+import core
+
+var passed = 0
+var failed = 0
+
+fn check(name: String, condition: bool) -> void:
+    if condition:
+        passed = passed + 1
+    else:
+        failed = failed + 1
+        eprint("FAIL " + name)
+
+fn equal(name: String, expected: i64, actual: i64) -> void:
+    if expected == actual:
+        passed = passed + 1
+    else:
+        failed = failed + 1
+        eprint("FAIL " + name + ": expected " + str(expected) + ", found " + str(actual))
+
+fn require(condition: bool, message: String) -> void:
+    core.assert(condition, message)
+
+fn summary() -> i64:
+    return failed
+
+fn report() -> void:
+    print(str(passed) + " passed, " + str(failed) + " failed")

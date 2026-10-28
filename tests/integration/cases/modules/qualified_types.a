@@ -1,0 +1,10 @@
+import "lib/mathx.a" as m
+from "lib/mathx.a" import Point
+
+p: m.Point = m.Point(x=5, y=6)
+q: Point = Point(1, 2)
+print(p.sum())
+print(q.sum())
+print(m.bump())
+print(m.bump())
+print(m.counter)

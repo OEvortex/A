@@ -1,0 +1,5 @@
+from core import panic
+
+fn main() -> void:
+    panic("boom")
+main()

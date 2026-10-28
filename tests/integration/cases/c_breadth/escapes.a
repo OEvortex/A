@@ -1,0 +1,9 @@
+fn main() -> void:
+    print("A\x42C")
+    print("\u{1F600}")
+    print("bell\tdone")
+    print('\x41')
+    print('\u{1F600}')
+    print("\u{41}\u{42}")
+    print(len("\a\b\f\v"))
+main()

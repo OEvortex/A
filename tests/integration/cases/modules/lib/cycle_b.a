@@ -1,0 +1,3 @@
+import "../cycle_a.a"
+
+print("b")

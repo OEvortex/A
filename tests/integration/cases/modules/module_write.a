@@ -1,0 +1,7 @@
+import "lib/mathx.a" as m
+
+print(m.counter)
+m.counter = 41
+print(m.counter)
+print(m.bump())
+print(m.counter)

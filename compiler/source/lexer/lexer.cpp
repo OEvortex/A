@@ -1,4 +1,4 @@
-#include "a/frontend/lexer.hpp"
+#include "lexer/lexer.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -38,8 +38,13 @@ const char* tokName(Tok kind) {
     case Tok::KwOr: return "'or'";
     case Tok::KwNot: return "'not'";
     case Tok::KwImport: return "'import'";
+    case Tok::KwFrom: return "'from'";
+    case Tok::KwAs: return "'as'";
     case Tok::KwMatch: return "'match'";
     case Tok::KwNone: return "'None'";
+    case Tok::KwConst: return "'const'";
+    case Tok::KwEnum: return "'enum'";
+    case Tok::KwDo: return "'do'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";
     case Tok::LBracket: return "'['";
@@ -57,6 +62,12 @@ const char* tokName(Tok kind) {
     case Tok::Question: return "'?'";
     case Tok::QuestionDot: return "'?.'";
     case Tok::QuestionQuestion: return "'\?\?'";
+    case Tok::Amp: return "'&'";
+    case Tok::Bar: return "'|'";
+    case Tok::Caret: return "'^'";
+    case Tok::Tilde: return "'~'";
+    case Tok::Shl: return "'<<'";
+    case Tok::Shr: return "'>>'";
     case Tok::Plus: return "'+'";
     case Tok::Minus: return "'-'";
     case Tok::Star: return "'*'";
@@ -69,6 +80,11 @@ const char* tokName(Tok kind) {
     case Tok::StarEq: return "'*='";
     case Tok::SlashEq: return "'/='";
     case Tok::PercentEq: return "'%='";
+    case Tok::AmpEq: return "'&='";
+    case Tok::BarEq: return "'|='";
+    case Tok::CaretEq: return "'^='";
+    case Tok::ShlEq: return "'<<='";
+    case Tok::ShrEq: return "'>>='";
     case Tok::EqEq: return "'=='";
     case Tok::NotEq: return "'!='";
     case Tok::Lt: return "'<'";
@@ -113,7 +129,9 @@ const std::unordered_map<std::string, Tok>& keywordTable() {
       {"return", Tok::KwReturn}, {"defer", Tok::KwDefer},   {"struct", Tok::KwStruct},
       {"self", Tok::KwSelf},     {"true", Tok::KwTrue},     {"false", Tok::KwFalse},
       {"and", Tok::KwAnd},       {"or", Tok::KwOr},         {"not", Tok::KwNot},
-      {"import", Tok::KwImport}, {"match", Tok::KwMatch},     {"None", Tok::KwNone},
+      {"import", Tok::KwImport}, {"from", Tok::KwFrom},       {"as", Tok::KwAs},
+      {"match", Tok::KwMatch},   {"None", Tok::KwNone},       {"const", Tok::KwConst},
+      {"enum", Tok::KwEnum},     {"do", Tok::KwDo},
   };
   return table;
 }
@@ -130,10 +148,11 @@ bool isDigit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; 
 
 }  // namespace
 
-Lexer::Lexer(std::string text, DiagnosticSink& sink, int baseLine, int baseCol,
+Lexer::Lexer(std::string text, DiagnosticSink& sink, int fileId, int baseLine, int baseCol,
              bool inlineMode)
     : text_(std::move(text)),
       sink_(sink),
+      fileId_(fileId),
       baseLine_(baseLine),
       baseCol_(baseCol),
       inlineMode_(inlineMode) {
@@ -516,14 +535,61 @@ void Lexer::scanChar() {
         case 'n': value = '\n'; break;
         case 't': value = '\t'; break;
         case 'r': value = '\r'; break;
+        case 'a': value = '\a'; break;
+        case 'b': value = '\b'; break;
+        case 'f': value = '\f'; break;
+        case 'v': value = '\v'; break;
         case '0': value = 0; break;
         case '\\': value = '\\'; break;
         case '\'': value = '\''; break;
         case '"': value = '"'; break;
+        case 'x': {
+          char32_t parsed = 0;
+          int digits = 0;
+          while (digits < 2 && std::isxdigit(static_cast<unsigned char>(peek()))) {
+            char d = advance();
+            parsed = parsed * 16 + static_cast<char32_t>(std::isdigit(static_cast<unsigned char>(d))
+                                                             ? d - '0'
+                                                             : (std::tolower(d) - 'a' + 10));
+            ++digits;
+          }
+          if (digits == 0) {
+            ok = false;
+            error(makeSpan(start, startLine, startCol),
+                  "Escape '\\x' needs two hexadecimal digits.", "Write '\\x41' for 'A'.");
+          }
+          value = parsed;
+          break;
+        }
+        case 'u': {
+          if (!matchChar('{')) {
+            ok = false;
+            error(makeSpan(start, startLine, startCol),
+                  "Unicode escapes use the form '\\u{1F600}'.");
+            break;
+          }
+          char32_t parsed = 0;
+          int digits = 0;
+          while (std::isxdigit(static_cast<unsigned char>(peek()))) {
+            char d = advance();
+            parsed = parsed * 16 + static_cast<char32_t>(std::isdigit(static_cast<unsigned char>(d))
+                                                             ? d - '0'
+                                                             : (std::tolower(d) - 'a' + 10));
+            ++digits;
+          }
+          if (digits == 0 || !matchChar('}') || parsed > 0x10FFFF) {
+            ok = false;
+            error(makeSpan(start, startLine, startCol),
+                  "Invalid Unicode escape in character literal.",
+                  "Write at most six hex digits, e.g. '\\u{1F600}'.");
+          }
+          value = parsed;
+          break;
+        }
         default:
           ok = false;
           error(makeSpan(start, startLine, startCol), "Unknown escape sequence in character literal.",
-                "Supported escapes: \\n \\t \\r \\0 \\\\ \\' \\\".");
+                "Supported escapes: \\n \\t \\r \\a \\b \\f \\v \\0 \\xNN \\u{...} \\\\ \\' \\\".");
           value = static_cast<unsigned char>(esc);
           break;
       }
@@ -655,6 +721,12 @@ std::vector<Token> Lexer::tokenize() {
       advance();
       add(kind, start, startLine, startCol);
     };
+    auto emit3 = [&](Tok kind) {
+      advance();
+      advance();
+      advance();
+      add(kind, start, startLine, startCol);
+    };
     switch (ch) {
       case '"':
         scanString();
@@ -723,17 +795,34 @@ std::vector<Token> Lexer::tokenize() {
       case '|':
         if (peek(1) == '>') {
           emit2(Tok::Pipe);
+        } else if (peek(1) == '=') {
+          emit2(Tok::BarEq);
         } else {
-          advance();
-          error(makeSpan(start, startLine, startCol), "'|' is not an operator.",
-                "Use '|>' to pipe a value into a function call.");
+          emit1(Tok::Bar);
         }
         break;
+      case '&':
+        peek(1) == '=' ? emit2(Tok::AmpEq) : emit1(Tok::Amp);
+        break;
+      case '^':
+        peek(1) == '=' ? emit2(Tok::CaretEq) : emit1(Tok::Caret);
+        break;
+      case '~':
+        emit1(Tok::Tilde);
+        break;
       case '<':
-        peek(1) == '=' ? emit2(Tok::Le) : emit1(Tok::Lt);
+        if (peek(1) == '<') {
+          peek(2) == '=' ? emit3(Tok::ShlEq) : emit2(Tok::Shl);
+        } else {
+          peek(1) == '=' ? emit2(Tok::Le) : emit1(Tok::Lt);
+        }
         break;
       case '>':
-        peek(1) == '=' ? emit2(Tok::Ge) : emit1(Tok::Gt);
+        if (peek(1) == '>') {
+          peek(2) == '=' ? emit3(Tok::ShrEq) : emit2(Tok::Shr);
+        } else {
+          peek(1) == '=' ? emit2(Tok::Ge) : emit1(Tok::Gt);
+        }
         break;
       case '.':
         peek(1) == '.' ? emit2(Tok::DotDot) : emit1(Tok::Dot);
@@ -752,6 +841,8 @@ std::vector<Token> Lexer::tokenize() {
       }
     }
   }
+
+  for (auto& token : tokens_) token.span.fileId = fileId_;
 
   if (inlineMode_) {
     Token eof;

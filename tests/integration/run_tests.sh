@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Golden-file test runner for the A toolchain.
 #
-# Usage: tests/run_tests.sh [path-to-a-binary]
+# Usage: tests/integration/run_tests.sh [path-to-a-binary]
 #
-# Each tests/cases/<name>.a is executed. Optional companion files:
+# Each tests/integration/cases/<name>.a (or cases/<group>/<name>.a) is executed.
+# Files under a `lib/` directory are import fixtures, not test cases. Optional
+# companion files share the source's base path:
 #   <name>.out    expected stdout (default: empty)
 #   <name>.in     stdin fed to the program
 #   <name>.err    substrings that must appear in stderr (one per line)
@@ -12,7 +14,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 A_BIN="${1:-$ROOT_DIR/build/a}"
 if [[ "$A_BIN" != /* ]]; then
   A_BIN="$(cd "$(dirname "$A_BIN")" 2>/dev/null && pwd)/$(basename "$A_BIN")"
@@ -32,10 +34,16 @@ pass=0
 fail=0
 failed_names=()
 
-for source in "$CASES_DIR"/*.a; do
-  [[ -e "$source" ]] || continue
-  name="$(basename "$source" .a)"
-  base="$CASES_DIR/$name"
+case_sources=()
+while IFS= read -r -d '' source_file; do
+  case_sources+=("$source_file")
+done < <(find "$CASES_DIR" -type f -name '*.a' -not -path '*/lib/*' -print0 | sort -z)
+
+for source in "${case_sources[@]}"; do
+  relative="${source#"$CASES_DIR"/}"
+  name="${relative%.a}"
+  name="${name//\//_}"
+  base="${source%.a}"
 
   command="run"
   if [[ -f "$base.flags" ]] && grep -q "check" "$base.flags"; then

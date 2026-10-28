@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <deque>
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -8,16 +9,18 @@
 #include <utility>
 #include <vector>
 
-#include "a/common/diagnostics.hpp"
-#include "a/frontend/ast.hpp"
-#include "a/runtime/value.hpp"
-#include "a/sema/sema.hpp"
+#include "diagnostics/diagnostics.hpp"
+#include "errors/runtime_error.hpp"
+#include "ast/ast.hpp"
+#include "collections/transparent_map.hpp"
+#include "memory/value.hpp"
+#include "type-checker/sema.hpp"
 
 namespace a {
 
 class Interpreter {
  public:
-  Interpreter(const Program& program, const SemaResult& result, DiagnosticSink& sink,
+  Interpreter(const ModuleGraph& graph, const SemaResult& result, DiagnosticSink& sink,
               std::istream& in, std::ostream& out, std::ostream& err);
 
   // Returns the process exit code: 0 on success, 2 on a runtime error.
@@ -30,22 +33,16 @@ class Interpreter {
   };
 
   struct Env {
-    std::unordered_map<std::string, Binding> vars;
+    StringMap<Binding> vars;
     Env* parent = nullptr;
 
-    Binding* find(const std::string& name) {
+    Binding* find(std::string_view name) {
       for (Env* env = this; env; env = env->parent) {
         auto it = env->vars.find(name);
         if (it != env->vars.end()) return &it->second;
       }
       return nullptr;
     }
-  };
-
-  struct RuntimeError {
-    Span span;
-    std::string message;
-    std::string help;
   };
 
   struct ReturnSignal {
@@ -95,6 +92,8 @@ class Interpreter {
   Value callValue(const Value& callee, std::vector<Value> args, Span span);
   Value callMethod(const StructPtr& object, const std::string& methodName,
                    std::vector<Value> args, Span span);
+  Value callModuleMember(const ModuleObj& module, const std::string& member,
+                         const std::vector<CallArg>& args, Env& env, Span span);
   Value constructStruct(const StructDecl& decl, const std::vector<CallArg>& args, Env& env,
                         Span span);
   Value callBuiltin(const std::string& name, std::vector<Value>& args, Span span);
@@ -102,6 +101,13 @@ class Interpreter {
                           std::vector<Value>& args, Span span);
 
   const StructDecl* findStruct(const std::string& name) const;
+  std::string qualifiedName(const std::string& name) const;
+  std::string qualifiedName(int moduleId, const std::string& name) const;
+  std::string shortStructName(const std::string& name) const;
+  Env& moduleEnv(int moduleId);
+  Binding* moduleBinding(const ModuleObj& module, const std::string& member);
+  void bindImport(const ImportStmt& stmt, Env& env);
+  void bindFromImport(const FromImportStmt& stmt, Env& env);
 
   std::int64_t expectInt(const Value& value, Span span, const std::string& what);
   double expectFloat(const Value& value, Span span, const std::string& what);
@@ -113,14 +119,15 @@ class Interpreter {
   Value convertNumber(const std::string& typeName, const Value& value, Span span);
   std::int64_t normalizeIndex(std::int64_t index, std::size_t length, Span span);
 
-  const Program& program_;
+  const ModuleGraph& graph_;
   const SemaResult& sema_;
   DiagnosticSink& sink_;
   std::istream& in_;
   std::ostream& out_;
   std::ostream& err_;
 
-  Env* globalEnv_ = nullptr;
+  std::deque<Env> moduleEnvs_;
+  int currentModule_ = -1;
   int callDepth_ = 0;
 };
 

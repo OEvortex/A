@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "a/common/span.hpp"
+#include "lexer/span.hpp"
 
 namespace a {
 
@@ -21,7 +21,9 @@ enum class TypeKind {
   Optional,
   Tuple,
   Struct,
+  Enum,
   Function,
+  Module,
   Var,
 };
 
@@ -36,6 +38,7 @@ struct Type {
   bool isSigned = true;
   TypePtr elem;
   std::string structName;
+  int moduleId = -1;
   std::vector<TypePtr> params;
   TypePtr ret;
 
@@ -109,6 +112,29 @@ inline TypePtr typeStruct(const std::string& name) {
   return type;
 }
 
+inline TypePtr typeModule(int moduleId) {
+  auto type = makeType(TypeKind::Module);
+  type->moduleId = moduleId;
+  return type;
+}
+
+inline TypePtr typeEnum(const std::string& name) {
+  auto type = makeType(TypeKind::Enum);
+  type->structName = name;
+  return type;
+}
+
+inline TypePtr typeNativeModule(const std::string& name) {
+  auto type = makeType(TypeKind::Module);
+  type->structName = name;
+  return type;
+}
+
+inline std::string shortName(const std::string& qualified) {
+  std::size_t pos = qualified.rfind("::");
+  return pos == std::string::npos ? qualified : qualified.substr(pos + 2);
+}
+
 inline TypePtr typeFunction(std::vector<TypePtr> params, TypePtr ret) {
   auto type = makeType(TypeKind::Function);
   type->params = std::move(params);
@@ -173,7 +199,10 @@ inline std::string typeName(const TypePtr& type) {
       s += ")";
       return s;
     }
-    case TypeKind::Struct: return t->structName;
+    case TypeKind::Struct: return shortName(t->structName);
+    case TypeKind::Enum: return shortName(t->structName);
+    case TypeKind::Module:
+      return t->moduleId >= 0 ? "<module>" : "<native module " + t->structName + ">";
     case TypeKind::Function: {
       std::string s = "fn(";
       for (std::size_t i = 0; i < t->params.size(); ++i) {

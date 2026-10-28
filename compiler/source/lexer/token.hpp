@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include "a/common/span.hpp"
+#include "lexer/span.hpp"
 
 namespace a {
 
@@ -40,8 +40,13 @@ enum class Tok {
   KwOr,
   KwNot,
   KwImport,
+  KwFrom,
+  KwAs,
   KwMatch,
   KwNone,
+  KwConst,
+  KwEnum,
+  KwDo,
 
   LParen,
   RParen,
@@ -68,12 +73,24 @@ enum class Tok {
   QuestionDot,
   QuestionQuestion,
 
+  Amp,
+  Bar,
+  Caret,
+  Tilde,
+  Shl,
+  Shr,
+
   Eq,
   PlusEq,
   MinusEq,
   StarEq,
   SlashEq,
   PercentEq,
+  AmpEq,
+  BarEq,
+  CaretEq,
+  ShlEq,
+  ShrEq,
 
   EqEq,
   NotEq,

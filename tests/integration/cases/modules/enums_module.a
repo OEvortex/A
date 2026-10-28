@@ -1,0 +1,20 @@
+import "lib/colors.a" as c
+from "lib/colors.a" import LIMIT, name_of
+
+print(c.Color.Red)
+print(c.Color.Green)
+print(c.Color.Blue)
+print(c.LIMIT)
+print(LIMIT)
+
+var v: c.Color = c.Color.Blue
+print(name_of(v))
+
+s = c.Swatch(color = c.Color.Green, label = "grass")
+print(s.describe())
+
+var r = match v:
+    c.Color.Red => "r"
+    c.Color.Green => "g"
+    _ => "other"
+print(r)

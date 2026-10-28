@@ -1,0 +1,12 @@
+fn main() -> void:
+    for i in 0..10..2:
+        print(i)
+    for i in 1..10..3:
+        print(i)
+    print([n for n in 0..10..5])
+    print(0..9..3)
+    var total = 0
+    for i in 0..10..4:
+        total += i
+    print(total)
+main()

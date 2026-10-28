@@ -1,4 +1,4 @@
-#include "a/driver/driver.hpp"
+#include "driver/driver.hpp"
 
 #include <fstream>
 #include <ios>
@@ -8,12 +8,11 @@
 #include <string>
 #include <utility>
 
-#include "a/common/diagnostics.hpp"
-#include "a/common/source.hpp"
-#include "a/frontend/lexer.hpp"
-#include "a/frontend/parser.hpp"
-#include "a/runtime/interpreter.hpp"
-#include "a/sema/sema.hpp"
+#include "backend/interpreter.hpp"
+#include "diagnostics/diagnostics.hpp"
+#include "lexer/source.hpp"
+#include "name-resolution/module_loader.hpp"
+#include "type-checker/sema.hpp"
 
 namespace a {
 namespace {
@@ -27,23 +26,25 @@ constexpr int kExitNoInput = 66;
 
 int runSource(const std::string& displayPath, std::string source, const DriverConfig& config,
               std::istream& in, std::ostream& out, std::ostream& err) {
-  SourceFile file(displayPath, std::move(source));
-  DiagnosticSink sink(file);
+  DiagnosticSink sink;
 
-  Lexer lexer(file.text(), sink);
-  Parser parser(lexer.tokenize(), sink);
-  std::unique_ptr<Program> program = parser.parseProgram();
+  ModuleLoaderOptions options;
+  options.modulePaths = config.modulePaths;
+  options.stdlibRoot = config.stdlibRoot;
+  ModuleLoader loader(std::move(options), sink);
+  ModuleGraph graph = loader.load(displayPath, std::move(source));
+
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
-  Sema sema(*program, sink);
+  Sema sema(graph, sink);
   SemaResult result = sema.analyze();
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
   if (config.checkOnly) return kExitOk;
 
-  Interpreter interp(*program, result, sink, in, out, err);
+  Interpreter interp(graph, result, sink, in, out, err);
   int code = interp.run();
   sink.flush(err, config.useColor);
   return code;

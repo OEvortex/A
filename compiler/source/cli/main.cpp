@@ -7,8 +7,8 @@
 #define A_HAVE_ISATTY 1
 #endif
 
-#include "a/driver/driver.hpp"
-#include "a/version.hpp"
+#include "driver/driver.hpp"
+#include "driver/version.hpp"
 
 namespace {
 
@@ -28,6 +28,8 @@ void printUsage(std::ostream& os) {
      << "  help             show this message\n"
      << "\n"
      << "Options:\n"
+     << "  -I <dir>         add a module search directory (repeatable)\n"
+     << "  --stdlib <dir>   override the standard library directory\n"
      << "  --no-color       disable colored diagnostics\n"
      << "  -h, --help       show this message\n"
      << "  -V, --version    print the toolchain version\n";
@@ -44,6 +46,8 @@ bool isTerminal() {
 struct Options {
   std::string command;
   std::string path;
+  std::vector<std::string> modulePaths;
+  std::string stdlibRoot;
   bool useColor = false;
 };
 
@@ -55,6 +59,20 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     std::string arg = argv[i];
     if (arg == "--no-color") {
       colorDisabled = true;
+    } else if (arg == "-I" || arg == "--include") {
+      if (i + 1 >= argc) {
+        err << "error: '" << arg << "' requires a directory\n";
+        return false;
+      }
+      options.modulePaths.push_back(argv[++i]);
+    } else if (arg.rfind("-I", 0) == 0 && arg.size() > 2) {
+      options.modulePaths.push_back(arg.substr(2));
+    } else if (arg == "--stdlib") {
+      if (i + 1 >= argc) {
+        err << "error: '--stdlib' requires a directory\n";
+        return false;
+      }
+      options.stdlibRoot = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       options.command = "help";
     } else if (arg == "-V" || arg == "--version") {
@@ -144,6 +162,8 @@ int main(int argc, char** argv) {
   a::DriverConfig config;
   config.checkOnly = options.command == "check";
   config.useColor = options.useColor;
+  config.modulePaths = options.modulePaths;
+  config.stdlibRoot = options.stdlibRoot;
 
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);
 }

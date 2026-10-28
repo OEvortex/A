@@ -1,18 +1,25 @@
-#include "a/runtime/interpreter.hpp"
+#include "backend/interpreter.hpp"
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
-#include <fstream>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <sstream>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
+
+#include "errors/runtime_error.hpp"
+#include "io/file_io.hpp"
+#include "name-resolution/native_modules.hpp"
+#include "strings/format.hpp"
+#include "strings/utf8.hpp"
 
 namespace a {
 namespace {
@@ -69,9 +76,17 @@ Value makeStructValue(StructPtr value) {
   return out;
 }
 
-Value makeRange(std::int64_t start, std::int64_t end) {
+Value makeRange(std::int64_t start, std::int64_t end, std::int64_t step = 1) {
   Value out;
-  out.data = RangeValue{start, end};
+  out.data = RangeValue{start, end, step};
+  return out;
+}
+
+Value makeEnum(std::string name) {
+  auto object = std::make_shared<EnumObj>();
+  object->name = std::move(name);
+  Value out;
+  out.data = std::move(object);
   return out;
 }
 
@@ -103,19 +118,6 @@ Value makeClosureValue(ClosurePtr closure) {
 auto& randomEngine() {
   static std::mt19937_64 engine{std::random_device{}()};
   return engine;
-}
-
-bool decodeUtf8(const std::string& text, std::size_t& index, char32_t& out);
-
-char32_t codepointAt(const std::string& text, std::size_t target) {
-  std::size_t index = 0;
-  char32_t codepoint = 0;
-  std::size_t current = 0;
-  while (decodeUtf8(text, index, codepoint)) {
-    if (current == target) return codepoint;
-    ++current;
-  }
-  return 0;
 }
 
 bool builtinConstantValue(const std::string& name, Value& out) {
@@ -168,85 +170,6 @@ bool builtinConstantValue(const std::string& name, Value& out) {
   return false;
 }
 
-bool decodeUtf8(const std::string& text, std::size_t& index, char32_t& out) {
-  if (index >= text.size()) return false;
-  const unsigned char first = static_cast<unsigned char>(text[index]);
-  if (first < 0x80) {
-    out = first;
-    ++index;
-    return true;
-  }
-  int extra = 0;
-  char32_t value = 0;
-  if ((first & 0xE0) == 0xC0) {
-    extra = 1;
-    value = first & 0x1F;
-  } else if ((first & 0xF0) == 0xE0) {
-    extra = 2;
-    value = first & 0x0F;
-  } else if ((first & 0xF8) == 0xF0) {
-    extra = 3;
-    value = first & 0x07;
-  } else {
-    out = 0xFFFD;
-    ++index;
-    return true;
-  }
-  if (index + static_cast<std::size_t>(extra) >= text.size()) {
-    out = 0xFFFD;
-    ++index;
-    return true;
-  }
-  for (int i = 1; i <= extra; ++i) {
-    const unsigned char byte = static_cast<unsigned char>(text[index + static_cast<std::size_t>(i)]);
-    if ((byte & 0xC0) != 0x80) {
-      out = 0xFFFD;
-      ++index;
-      return true;
-    }
-    value = (value << 6) | (byte & 0x3F);
-  }
-  index += static_cast<std::size_t>(extra) + 1;
-  out = value;
-  return true;
-}
-
-std::size_t codepointCount(const std::string& text) {
-  std::size_t count = 0;
-  std::size_t index = 0;
-  char32_t codepoint = 0;
-  while (decodeUtf8(text, index, codepoint)) ++count;
-  return count;
-}
-
-std::string quoteString(const std::string& text) {
-  std::string out;
-  out.reserve(text.size() + 2);
-  out.push_back('"');
-  for (char c : text) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\t': out += "\\t"; break;
-      case '\r': out += "\\r"; break;
-      default: out.push_back(c); break;
-    }
-  }
-  out.push_back('"');
-  return out;
-}
-
-std::string formatDouble(double value) {
-  if (std::isnan(value)) return "nan";
-  if (std::isinf(value)) return value < 0 ? "-inf" : "inf";
-  char buffer[64];
-  auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
-  std::string text(buffer, result.ptr);
-  if (text.find_first_of(".eE") == std::string::npos) text += ".0";
-  return text;
-}
-
 bool parseInteger(const std::string& text, std::int64_t& out) {
   if (text.empty()) return false;
   const char* begin = text.data();
@@ -268,87 +191,43 @@ bool parseFloat(const std::string& text, double& out) {
 
 }  // namespace
 
-std::string utf8Encode(char32_t codepoint) {
-  std::string out;
-  if (codepoint <= 0x7F) {
-    out.push_back(static_cast<char>(codepoint));
-  } else if (codepoint <= 0x7FF) {
-    out.push_back(static_cast<char>(0xC0 | (codepoint >> 6)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
-  } else if (codepoint <= 0xFFFF) {
-    out.push_back(static_cast<char>(0xE0 | (codepoint >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (codepoint >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
-  }
-  return out;
-}
-
-std::string formatValue(const Value& value, bool quoteStrings) {
-  if (std::holds_alternative<std::monostate>(value.data)) return "void";
-  if (auto* b = std::get_if<bool>(&value.data)) return *b ? "true" : "false";
-  if (auto* i = std::get_if<std::int64_t>(&value.data)) return std::to_string(*i);
-  if (auto* d = std::get_if<double>(&value.data)) return formatDouble(*d);
-  if (auto* c = std::get_if<char32_t>(&value.data)) return utf8Encode(*c);
-  if (auto* s = std::get_if<std::string>(&value.data)) {
-    return quoteStrings ? quoteString(*s) : *s;
-  }
-  if (auto* array = std::get_if<ArrayPtr>(&value.data)) {
-    std::string out = "[";
-    for (std::size_t i = 0; i < (*array)->size(); ++i) {
-      if (i) out += ", ";
-      out += formatValue((**array)[i], true);
-    }
-    out += "]";
-    return out;
-  }
-  if (auto* object = std::get_if<StructPtr>(&value.data)) {
-    std::string out = (*object)->typeName + "(";
-    for (std::size_t i = 0; i < (*object)->fields.size(); ++i) {
-      if (i) out += ", ";
-      out += (*object)->fields[i].first + "=" + formatValue((*object)->fields[i].second, true);
-    }
-    out += ")";
-    return out;
-  }
-  if (auto* range = std::get_if<RangeValue>(&value.data)) {
-    return std::to_string(range->start) + ".." + std::to_string(range->end);
-  }
-  if (auto* optional = std::get_if<OptionalPtr>(&value.data)) {
-    if (!(*optional)->hasValue) return "None";
-    return "Some(" + formatValue((*optional)->value, true) + ")";
-  }
-  if (auto* tuple = std::get_if<TuplePtr>(&value.data)) {
-    std::string out = "(";
-    for (std::size_t i = 0; i < (*tuple)->items.size(); ++i) {
-      if (i) out += ", ";
-      out += formatValue((*tuple)->items[i], true);
-    }
-    out += ")";
-    return out;
-  }
-  if (std::holds_alternative<ClosurePtr>(value.data)) return "<function>";
-  return "void";
-}
-
-Interpreter::Interpreter(const Program& program, const SemaResult& result,
+Interpreter::Interpreter(const ModuleGraph& graph, const SemaResult& result,
                          DiagnosticSink& sink, std::istream& in, std::ostream& out,
                          std::ostream& err)
-    : program_(program), sema_(result), sink_(sink), in_(in), out_(out), err_(err) {}
+    : graph_(graph), sema_(result), sink_(sink), in_(in), out_(out), err_(err) {}
 
 void Interpreter::fail(Span span, std::string message, std::string help) {
   throw RuntimeError{span, std::move(message), std::move(help)};
 }
 
+Interpreter::Env& Interpreter::moduleEnv(int moduleId) {
+  return moduleEnvs_[static_cast<std::size_t>(moduleId)];
+}
+
+std::string Interpreter::qualifiedName(int moduleId, const std::string& name) const {
+  return graph_.at(moduleId).name + "::" + name;
+}
+
+std::string Interpreter::qualifiedName(const std::string& name) const {
+  return qualifiedName(currentModule_, name);
+}
+
+std::string Interpreter::shortStructName(const std::string& name) const {
+  std::size_t pos = name.rfind("::");
+  return pos == std::string::npos ? name : name.substr(pos + 2);
+}
+
 int Interpreter::run() {
-  Env global;
-  globalEnv_ = &global;
+  moduleEnvs_.resize(graph_.modules.size());
   try {
-    execStatements(program_.statements, global);
+    // Modules execute once, dependencies first; the entry module runs last.
+    for (int id : graph_.order) {
+      Env& env = moduleEnv(id);
+      env.parent = nullptr;
+      currentModule_ = id;
+      execStatements(graph_.at(id).program->statements, env);
+    }
+    return 0;
   } catch (RuntimeError& error) {
     sink_.error(error.span, std::move(error.message), std::move(error.help));
     return 2;
@@ -365,7 +244,6 @@ int Interpreter::run() {
     sink_.error(Span{}, std::string("Internal error: ") + error.what());
     return 2;
   }
-  return 0;
 }
 
 // ---------------------------------------------------------------- execution
@@ -484,6 +362,21 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
+  if (auto* node = dynamic_cast<const DoWhileStmt*>(&stmt)) {
+    while (true) {
+      try {
+        execBlock(node->body, env);
+      } catch (BreakSignal&) {
+        break;
+      } catch (ContinueSignal&) {
+        // fall through to the condition
+      }
+      Value condition = eval(*node->cond, env);
+      if (!expectBool(condition, node->cond->span, "The 'while' condition")) break;
+    }
+    return;
+  }
+
   if (auto* node = dynamic_cast<const ForStmt*>(&stmt)) {
     Value iterable = eval(*node->iterable, env);
 
@@ -502,7 +395,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     };
 
     if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
-      for (std::int64_t i = range->start; i < range->end; ++i) {
+      for (std::int64_t i = range->start; i < range->end; i += range->step) {
         try {
           runIteration(makeInt(i));
         } catch (BreakSignal&) {
@@ -510,7 +403,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
         } catch (ContinueSignal&) {
           // next iteration
         }
-        if (i == std::numeric_limits<std::int64_t>::max()) break;
+        if (i > std::numeric_limits<std::int64_t>::max() - range->step) break;
       }
       return;
     }
@@ -573,7 +466,84 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
+  if (auto* node = dynamic_cast<const ImportStmt*>(&stmt)) {
+    bindImport(*node, env);
+    return;
+  }
+
+  if (auto* node = dynamic_cast<const FromImportStmt*>(&stmt)) {
+    bindFromImport(*node, env);
+    return;
+  }
+
   // Function and struct declarations have no runtime effect.
+}
+
+void Interpreter::bindImport(const ImportStmt& stmt, Env& env) {
+  std::string alias = stmt.alias;
+  if (alias.empty()) {
+    if (stmt.quoted) {
+      std::size_t slash = stmt.path.find_last_of("/\\");
+      std::string stem = slash == std::string::npos ? stmt.path : stmt.path.substr(slash + 1);
+      std::size_t dot = stem.find_last_of('.');
+      if (dot != std::string::npos && dot > 0) stem = stem.substr(0, dot);
+      alias = std::move(stem);
+    } else {
+      alias = stmt.bareName;
+    }
+  }
+  if (alias.empty()) return;
+
+  auto module = std::make_shared<ModuleObj>();
+  if (stmt.nativeModule) {
+    module->nativeName = stmt.bareName;
+  } else {
+    if (stmt.moduleId < 0) return;  // unresolved; the compiler already reported it
+    module->id = stmt.moduleId;
+  }
+
+  Binding binding;
+  binding.value.data = ModulePtr(std::move(module));
+  binding.mutableBinding = false;
+  env.vars[alias] = std::move(binding);
+}
+
+void Interpreter::bindFromImport(const FromImportStmt& stmt, Env& env) {
+  for (const auto& item : stmt.items) {
+    Value value;
+    if (stmt.nativeModule) {
+      if (const std::string* fn = nativeFunction(stmt.bareName, item.name)) {
+        auto native = std::make_shared<NativeFunction>();
+        native->builtinName = *fn;
+        value.data = NativeFunctionPtr(std::move(native));
+      } else if (const std::string* constant = nativeConstant(stmt.bareName, item.name)) {
+        if (!builtinConstantValue(*constant, value)) continue;
+      } else {
+        continue;
+      }
+    } else {
+      if (stmt.moduleId < 0) continue;
+      const ModuleExports& exports = sema_.modules[static_cast<std::size_t>(stmt.moduleId)];
+      auto fn = exports.functions.find(item.name);
+      if (fn != exports.functions.end()) {
+        auto closure = std::make_shared<Closure>();
+        closure->fn = fn->second;
+        closure->moduleId = stmt.moduleId;
+        value.data = ClosurePtr(std::move(closure));
+      } else if (exports.values.count(item.name)) {
+        Binding* binding = moduleEnv(stmt.moduleId).find(item.name);
+        if (!binding) continue;
+        value = binding->value;
+      } else {
+        continue;  // struct imports bind type names only
+      }
+    }
+
+    Binding binding;
+    binding.value = std::move(value);
+    binding.mutableBinding = false;
+    env.vars[item.alias] = std::move(binding);
+  }
 }
 
 // ---------------------------------------------------------------- lvalues
@@ -596,6 +566,23 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
 
   if (auto* field = dynamic_cast<const FieldExpr*>(&target)) {
     Value objectValue = eval(*field->object, env);
+    if (auto* modulePtr = std::get_if<ModulePtr>(&objectValue.data)) {
+      const ModuleObj& module = **modulePtr;
+      if (module.id < 0) fail(field->span, "Cannot assign to a member of a native module.");
+      Binding* binding = moduleBinding(module, field->field);
+      if (!binding) {
+        fail(field->fieldSpan, "Module has no variable '" + field->field +
+                                   "' to assign to.");
+      }
+      if (!binding->mutableBinding) {
+        fail(field->fieldSpan,
+             "Cannot assign to immutable module variable '" + field->field + "'.",
+             "Declare it with 'var' to make it mutable.");
+      }
+      lvalue.kind = LValue::Kind::Variable;
+      lvalue.binding = binding;
+      return lvalue;
+    }
     auto* object = std::get_if<StructPtr>(&objectValue.data);
     if (!object) fail(field->span, "Field assignment requires a struct value.");
     lvalue.kind = LValue::Kind::Field;
@@ -606,8 +593,8 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
         return lvalue;
       }
     }
-    fail(field->fieldSpan, "Struct '" + lvalue.object->typeName + "' has no field '" +
-                               field->field + "'.");
+    fail(field->fieldSpan, "Struct '" + shortStructName(lvalue.object->typeName) +
+                               "' has no field '" + field->field + "'.");
   }
 
   if (auto* index = dynamic_cast<const IndexExpr*>(&target)) {
@@ -675,8 +662,7 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
 
   if (auto* node = dynamic_cast<const UnaryExpr*>(&expr)) {
     Value operand = eval(*node->operand, env);
-    if (node->op == "!") {
-      auto* optional = std::get_if<OptionalPtr>(&operand.data);
+    if (node->op == "!") {      auto* optional = std::get_if<OptionalPtr>(&operand.data);
       if (!optional) fail(node->span, "Operator '!' requires an optional value.");
       if (!(*optional)->hasValue) {
         fail(node->span, "Cannot unwrap None with '!'.",
@@ -686,6 +672,11 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
     }
     if (node->op == "not") {
       return makeBool(!expectBool(operand, node->span, "The 'not' operand"));
+    }
+    if (node->op == "~") {
+      auto* value = std::get_if<std::int64_t>(&operand.data);
+      if (!value) fail(node->span, "Operator '~' requires an integer operand.");
+      return makeInt(~*value);
     }
     if (auto* value = std::get_if<std::int64_t>(&operand.data)) {
       if (*value == std::numeric_limits<std::int64_t>::min()) {
@@ -698,6 +689,26 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
   }
 
   if (auto* node = dynamic_cast<const BinaryExpr*>(&expr)) return evalBinary(*node, env);
+  if (auto* node = dynamic_cast<const RangeExpr*>(&expr)) {
+    std::int64_t start = expectInt(eval(*node->start, env), node->start->span, "The range start");
+    std::int64_t end = expectInt(eval(*node->end, env), node->end->span, "The range end");
+    std::int64_t step = 1;
+    if (node->step) {
+      step = expectInt(eval(*node->step, env), node->step->span, "The range step");
+      if (step <= 0) {
+        fail(node->step->span,
+             "The range step must be positive, found " + std::to_string(step) + ".",
+             "Write start..end..step, e.g. 0..10..2.");
+      }
+    }
+    return makeRange(start, end, step);
+  }
+  if (auto* node = dynamic_cast<const TernaryExpr*>(&expr)) {
+    if (expectBool(eval(*node->cond, env), node->cond->span, "The condition of '\?:'")) {
+      return eval(*node->thenValue, env);
+    }
+    return eval(*node->elseValue, env);
+  }
 
   if (auto* node = dynamic_cast<const CallExpr*>(&expr)) return evalCall(*node, env);
   if (auto* node = dynamic_cast<const IndexExpr*>(&expr)) return evalIndex(*node, env);
@@ -720,10 +731,13 @@ Value Interpreter::evalIdentifier(const IdentExpr& expr, Env& env) {
   if (expr.name == "None") return makeNone();
   Value constant;
   if (builtinConstantValue(expr.name, constant)) return constant;
-  auto fnIt = sema_.functions.find(expr.name);
+  const std::string enumQ = qualifiedName(expr.name);
+  if (sema_.enums.count(enumQ)) return makeEnum(enumQ);
+  auto fnIt = sema_.functions.find(qualifiedName(expr.name));
   if (fnIt != sema_.functions.end()) {
     auto closure = std::make_shared<Closure>();
     closure->fn = fnIt->second;
+    closure->moduleId = currentModule_;
     return makeClosureValue(std::move(closure));
   }
   fail(expr.span, "Undefined variable '" + expr.name + "'.");
@@ -825,13 +839,70 @@ Value Interpreter::evalSlice(const SliceExpr& expr, Env& env) {
 
 Value Interpreter::evalField(const FieldExpr& expr, Env& env) {
   Value object = eval(*expr.object, env);
+
+  if (auto* enumPtr = std::get_if<EnumPtr>(&object.data)) {
+    auto info = sema_.enums.find((*enumPtr)->name);
+    if (info != sema_.enums.end()) {
+      auto value = info->second.values.find(expr.field);
+      if (value != info->second.values.end()) return makeInt(value->second);
+    }
+    fail(expr.fieldSpan,
+         "Enum '" + shortStructName((*enumPtr)->name) + "' has no variant named '" + expr.field +
+             "'.");
+  }
+
+  if (auto* modulePtr = std::get_if<ModulePtr>(&object.data)) {
+    const ModuleObj& module = **modulePtr;
+    if (module.id < 0) {
+      Value result;
+      if (const std::string* fn = nativeFunction(module.nativeName, expr.field)) {
+        auto native = std::make_shared<NativeFunction>();
+        native->builtinName = *fn;
+        result.data = NativeFunctionPtr(std::move(native));
+        return result;
+      }
+      if (const std::string* name = nativeConstant(module.nativeName, expr.field)) {
+        if (builtinConstantValue(*name, result)) return result;
+      }
+      fail(expr.fieldSpan,
+           "Module '" + module.nativeName + "' has no member '" + expr.field + "'.");
+    }
+
+    const ModuleExports& exports = sema_.modules[static_cast<std::size_t>(module.id)];
+    if (auto fn = exports.functions.find(expr.field); fn != exports.functions.end()) {
+      auto closure = std::make_shared<Closure>();
+      closure->fn = fn->second;
+      closure->moduleId = module.id;
+      return makeClosureValue(std::move(closure));
+    }
+    if (exports.structs.count(expr.field)) {
+      fail(expr.fieldSpan,
+           "'" + exports.name + "." + expr.field + "' is a struct type, not a value.",
+           "Construct it: " + exports.name + "." + expr.field + "(...).");
+    }
+    if (auto en = exports.enums.find(expr.field); en != exports.enums.end()) {
+      return makeEnum(en->second);
+    }
+    Binding* binding = moduleBinding(module, expr.field);
+    if (!binding) {
+      fail(expr.fieldSpan, "Module '" + exports.name + "' has no member '" + expr.field + "'.");
+    }
+    return binding->value;
+  }
+
   auto* structValue = std::get_if<StructPtr>(&object.data);
   if (!structValue) fail(expr.span, "Only struct values have fields.");
   for (const auto& field : (*structValue)->fields) {
     if (field.first == expr.field) return field.second;
   }
-  fail(expr.fieldSpan,
-       "Struct '" + (*structValue)->typeName + "' has no field '" + expr.field + "'.");
+  fail(expr.fieldSpan, "Struct '" + shortStructName((*structValue)->typeName) + "' has no field '" +
+                           expr.field + "'.");
+}
+
+Interpreter::Binding* Interpreter::moduleBinding(const ModuleObj& module,
+                                                 const std::string& member) {
+  if (module.id < 0) return nullptr;
+  return moduleEnv(module.id).find(member);
 }
 
 Value Interpreter::evalSafeNav(const SafeNavExpr& expr, Env& env) {
@@ -848,8 +919,8 @@ Value Interpreter::evalSafeNav(const SafeNavExpr& expr, Env& env) {
     if (std::holds_alternative<OptionalPtr>(field.second.data)) return field.second;
     return makeOptional(true, field.second);
   }
-  fail(expr.fieldSpan,
-       "Struct '" + (*structValue)->typeName + "' has no field '" + expr.field + "'.");
+  fail(expr.fieldSpan, "Struct '" + shortStructName((*structValue)->typeName) +
+                           "' has no field '" + expr.field + "'.");
 }
 
 Value Interpreter::evalTuple(const TupleExpr& expr, Env& env) {
@@ -864,7 +935,11 @@ Value Interpreter::evalTuple(const TupleExpr& expr, Env& env) {
 Value Interpreter::evalLambda(const LambdaExpr& expr, Env& env) {
   auto closure = std::make_shared<Closure>();
   closure->decl = &expr;
-  for (Env* scope = &env; scope && scope != globalEnv_; scope = scope->parent) {
+  closure->moduleId = currentModule_;
+  // Capture enclosing locals, stopping at the module scope: module globals stay
+  // live through the closure's parent environment.
+  Env* moduleScope = &moduleEnv(currentModule_);
+  for (Env* scope = &env; scope && scope != moduleScope; scope = scope->parent) {
     for (const auto& entry : scope->vars) {
       closure->captured.emplace(entry.first, entry.second.value);
     }
@@ -921,9 +996,9 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   };
 
   if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
-    for (std::int64_t i = range->start; i < range->end; ++i) {
+    for (std::int64_t i = range->start; i < range->end; i += range->step) {
       runIteration(makeInt(i));
-      if (i == std::numeric_limits<std::int64_t>::max()) break;
+      if (i > std::numeric_limits<std::int64_t>::max() - range->step) break;
     }
     return makeArray(std::move(result));
   }
@@ -964,7 +1039,6 @@ Value Interpreter::evalBinary(const BinaryExpr& expr, Env& env) {
     std::int64_t end = expectInt(eval(*expr.rhs, env), expr.rhs->span, "The range end");
     return makeRange(start, end);
   }
-
   Value left = eval(*expr.lhs, env);
   Value right = eval(*expr.rhs, env);
   return applyBinary(expr.op, left, right, expr.opSpan);
@@ -1000,7 +1074,7 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
   }
   if (auto* left = std::get_if<RangeValue>(&lhs.data)) {
     const RangeValue& right = std::get<RangeValue>(rhs.data);
-    return left->start == right.start && left->end == right.end;
+    return left->start == right.start && left->end == right.end && left->step == right.step;
   }
   if (auto* left = std::get_if<ArrayPtr>(&lhs.data)) {
     return *left == std::get<ArrayPtr>(rhs.data);
@@ -1076,6 +1150,23 @@ Value Interpreter::applyBinary(const std::string& op, const Value& lhs, const Va
       }
       return makeInt(power);
     }
+    if (op == "&") return makeInt(*left & *right);
+    if (op == "|") return makeInt(*left | *right);
+    if (op == "^") return makeInt(*left ^ *right);
+    if (op == "<<") {
+      if (*right < 0 || *right > 63) {
+        fail(span, "Shift amount " + std::to_string(*right) + " is out of range for integers.",
+             "Shift amounts must be between 0 and 63.");
+      }
+      return makeInt(static_cast<std::int64_t>(static_cast<std::uint64_t>(*left) << *right));
+    }
+    if (op == ">>") {
+      if (*right < 0 || *right > 63) {
+        fail(span, "Shift amount " + std::to_string(*right) + " is out of range for integers.",
+             "Shift amounts must be between 0 and 63.");
+      }
+      return makeInt(*left >> *right);
+    }
     if (op == "==") return makeBool(*left == *right);
     if (op == "!=") return makeBool(*left != *right);
     if (op == "<") return makeBool(*left < *right);
@@ -1149,7 +1240,12 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
       return callValue(binding->value, std::move(args), expr.span);
     }
 
-    auto structIt = sema_.structs.find(ident->name);
+    auto structIt = sema_.structs.find(qualifiedName(ident->name));
+    if (structIt == sema_.structs.end() && currentModule_ >= 0) {
+      const ModuleExports& current = sema_.modules[static_cast<std::size_t>(currentModule_)];
+      auto alias = current.structAliases.find(ident->name);
+      if (alias != current.structAliases.end()) structIt = sema_.structs.find(alias->second);
+    }
     if (structIt != sema_.structs.end()) {
       return constructStruct(*structIt->second, expr.args, env, expr.span);
     }
@@ -1158,7 +1254,7 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
     args.reserve(expr.args.size());
     for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
 
-    auto fnIt = sema_.functions.find(ident->name);
+    auto fnIt = sema_.functions.find(qualifiedName(ident->name));
     if (fnIt != sema_.functions.end()) {
       return callFunction(*fnIt->second, std::move(args), expr.span);
     }
@@ -1167,6 +1263,11 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
 
   if (auto* field = dynamic_cast<const FieldExpr*>(expr.callee.get())) {
     Value object = eval(*field->object, env);
+
+    if (auto* modulePtr = std::get_if<ModulePtr>(&object.data)) {
+      return callModuleMember(**modulePtr, field->field, expr.args, env, expr.span);
+    }
+
     std::vector<Value> args;
     args.reserve(expr.args.size());
     for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
@@ -1184,9 +1285,51 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
   return callValue(callee, std::move(args), expr.span);
 }
 
+Value Interpreter::callModuleMember(const ModuleObj& module, const std::string& member,
+                                    const std::vector<CallArg>& args, Env& env, Span span) {
+  if (module.id < 0) {
+    std::vector<Value> values;
+    values.reserve(args.size());
+    for (const auto& arg : args) values.push_back(eval(*arg.value, env));
+    if (const std::string* fn = nativeFunction(module.nativeName, member)) {
+      return callBuiltin(*fn, values, span);
+    }
+    if (nativeConstant(module.nativeName, member)) {
+      fail(span, "'" + module.nativeName + "." + member + "' is a constant, not a function.");
+    }
+    fail(span, "Module '" + module.nativeName + "' has no function '" + member + "'.");
+  }
+
+  const ModuleExports& exports = sema_.modules[static_cast<std::size_t>(module.id)];
+  if (auto fn = exports.functions.find(member); fn != exports.functions.end()) {
+    std::vector<Value> values;
+    values.reserve(args.size());
+    for (const auto& arg : args) values.push_back(eval(*arg.value, env));
+    return callFunction(*fn->second, std::move(values), span);
+  }
+  if (exports.structs.count(member)) {
+    const StructDecl* decl = findStruct(qualifiedName(module.id, member));
+    if (!decl) fail(span, "Internal error: unknown struct '" + member + "'.");
+    return constructStruct(*decl, args, env, span);
+  }
+
+  Binding* binding = moduleBinding(module, member);
+  if (binding) {
+    std::vector<Value> values;
+    values.reserve(args.size());
+    for (const auto& arg : args) values.push_back(eval(*arg.value, env));
+    return callValue(binding->value, std::move(values), span);
+  }
+
+  fail(span, "Module '" + exports.name + "' has no function '" + member + "'.");
+}
+
 Value Interpreter::callValue(const Value& callee, std::vector<Value> args, Span span) {
   if (auto* closure = std::get_if<ClosurePtr>(&callee.data)) {
     return callClosure(*closure, std::move(args), span);
+  }
+  if (auto* native = std::get_if<NativeFunctionPtr>(&callee.data)) {
+    return callBuiltin((*native)->builtinName, args, span);
   }
   fail(span, "This value is not callable.",
        "Only functions and lambdas can be called.");
@@ -1207,8 +1350,11 @@ Value Interpreter::callClosure(const ClosurePtr& closure, std::vector<Value> arg
          "Check for infinite recursion.");
   }
 
+  int savedModule = currentModule_;
+  if (closure->moduleId >= 0) currentModule_ = closure->moduleId;
+
   Env frame;
-  frame.parent = globalEnv_;
+  frame.parent = &moduleEnv(currentModule_);
   for (const auto& entry : closure->captured) {
     Binding binding;
     binding.value = entry.second;
@@ -1221,7 +1367,9 @@ Value Interpreter::callClosure(const ClosurePtr& closure, std::vector<Value> arg
     binding.mutableBinding = false;
     frame.vars[decl.params[i].name] = std::move(binding);
   }
-  return eval(*decl.body, frame);
+  Value result = eval(*decl.body, frame);
+  currentModule_ = savedModule;
+  return result;
 }
 
 Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Span span) {
@@ -1236,8 +1384,12 @@ Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Spa
          "Check for infinite recursion.");
   }
 
+  int savedModule = currentModule_;
+  auto moduleIt = sema_.fnModule.find(&decl);
+  if (moduleIt != sema_.fnModule.end()) currentModule_ = moduleIt->second;
+
   Env frame;
-  frame.parent = globalEnv_;
+  frame.parent = &moduleEnv(currentModule_);
   for (std::size_t i = 0; i < decl.params.size(); ++i) {
     Binding binding;
     binding.value = std::move(args[i]);
@@ -1245,12 +1397,15 @@ Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Spa
     frame.vars[decl.params[i].name] = std::move(binding);
   }
 
+  Value result;
   try {
     execStatements(decl.body, frame);
+    result = makeVoid();
   } catch (ReturnSignal& signal) {
-    return std::move(signal.value);
+    result = std::move(signal.value);
   }
-  return makeVoid();
+  currentModule_ = savedModule;
+  return result;
 }
 
 Value Interpreter::callMethod(const StructPtr& object, const std::string& methodName,
@@ -1274,7 +1429,8 @@ Value Interpreter::callMethod(const StructPtr& object, const std::string& method
     }
   }
 
-  fail(span, "Struct '" + object->typeName + "' has no method '" + methodName + "'.");
+  fail(span, "Struct '" + shortStructName(object->typeName) + "' has no method '" + methodName +
+                 "'.");
 }
 
 Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<CallArg>& args,
@@ -1309,7 +1465,10 @@ Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<Cal
   }
 
   auto object = std::make_shared<StructObj>();
-  object->typeName = decl.name;
+  auto moduleIt = sema_.structModule.find(&decl);
+  object->typeName = moduleIt != sema_.structModule.end()
+                         ? qualifiedName(moduleIt->second, decl.name)
+                         : decl.name;
   object->fields.reserve(decl.fields.size());
   for (std::size_t i = 0; i < decl.fields.size(); ++i) {
     if (!provided[i]) {
@@ -1450,41 +1609,117 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
   if (name == "read_file") {
     if (args.size() != 1) fail(span, "'read_file' expects 1 argument.");
     const std::string& path = expectString(args[0], span, "The 'read_file' path");
-    errno = 0;
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-      int code = errno;
-      fail(span, "Cannot read file \"" + path + "\": " + std::strerror(code == 0 ? EIO : code),
-           "Check that the file exists and is readable.");
+    FileResult result = readFile(path);
+    if (!result.ok) {
+      fail(span, result.error, "Check that the file exists and is readable.");
     }
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return makeString(contents.str());
+    return makeString(std::move(result.value));
   }
 
   if (name == "write_file" || name == "append_file") {
     if (args.size() != 2) fail(span, "'" + name + "' expects 2 arguments.");
     const std::string& path = expectString(args[0], span, "The file path");
     const std::string& contents = expectString(args[1], span, "The file contents");
-    std::ios::openmode mode = std::ios::binary;
-    mode |= name == "append_file" ? std::ios::app : std::ios::trunc;
-    errno = 0;
-    std::ofstream file(path, mode);
-    if (!file) {
-      int code = errno;
-      fail(span, "Cannot write file \"" + path + "\": " + std::strerror(code == 0 ? EIO : code),
-           "Check that the directory exists and is writable.");
+    FileResult result = writeFile(path, contents, name == "append_file");
+    if (!result.ok) {
+      fail(span, result.error, "Check that the directory exists and is writable.");
     }
-    file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-    if (!file) fail(span, "Failed while writing file \"" + path + "\".");
     return makeVoid();
   }
 
   if (name == "file_exists") {
     if (args.size() != 1) fail(span, "'file_exists' expects 1 argument.");
     const std::string& path = expectString(args[0], span, "The 'file_exists' path");
-    std::ifstream file(path, std::ios::binary);
-    return makeBool(static_cast<bool>(file));
+    return makeBool(fileExists(path));
+  }
+
+  if (name == "list_dir") {
+    if (args.size() != 1) fail(span, "'list_dir' expects 1 argument.");
+    const std::string& path = expectString(args[0], span, "The 'list_dir' path");
+    std::error_code ec;
+    std::filesystem::directory_iterator it(path, ec);
+    if (ec) {
+      fail(span, "Cannot list directory \"" + path + "\": " + ec.message(),
+           "Check that the directory exists and is readable.");
+    }
+    auto entries = std::make_shared<std::vector<Value>>();
+    for (const auto& entry : it) entries->push_back(makeString(entry.path().filename().string()));
+    std::sort(entries->begin(), entries->end(),
+              [](const Value& a, const Value& b) {
+                return std::get<std::string>(a.data) < std::get<std::string>(b.data);
+              });
+    return makeArray(std::move(entries));
+  }
+
+  if (name == "remove_file" || name == "create_dir" || name == "remove_dir") {
+    if (args.size() != 1) fail(span, "'" + name + "' expects 1 argument.");
+    const std::string& path = expectString(args[0], span, "The '" + name + "' path");
+    std::error_code ec;
+    if (name == "create_dir") {
+      std::filesystem::create_directories(path, ec);
+      if (!ec) return makeVoid();
+      fail(span, "Cannot create directory \"" + path + "\": " + ec.message());
+    }
+    bool removed = std::filesystem::remove(path, ec);
+    if (ec) fail(span, "Cannot remove \"" + path + "\": " + ec.message());
+    if (!removed) fail(span, "\"" + path + "\" does not exist.");
+    return makeVoid();
+  }
+
+  if (name == "rename") {
+    if (args.size() != 2) fail(span, "'rename' expects 2 arguments.");
+    const std::string& from = expectString(args[0], span, "The source path");
+    const std::string& to = expectString(args[1], span, "The destination path");
+    std::error_code ec;
+    std::filesystem::rename(from, to, ec);
+    if (ec) fail(span, "Cannot rename \"" + from + "\" to \"" + to + "\": " + ec.message());
+    return makeVoid();
+  }
+
+  if (name == "current_dir") {
+    if (!args.empty()) fail(span, "'current_dir' takes no arguments.");
+    std::error_code ec;
+    std::filesystem::path path = std::filesystem::current_path(ec);
+    if (ec) fail(span, "Cannot read the current directory: " + ec.message());
+    return makeString(path.string());
+  }
+
+  if (name == "now") {
+    if (!args.empty()) fail(span, "'now' takes no arguments.");
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+    return makeInt(static_cast<std::int64_t>(millis));
+  }
+
+  if (name == "sleep") {
+    if (args.size() != 1) fail(span, "'sleep' expects 1 argument.");
+    std::int64_t millis = expectInt(args[0], span, "The duration passed to 'sleep'");
+    if (millis < 0) fail(span, "'sleep' requires a non-negative duration.");
+    std::this_thread::sleep_for(std::chrono::milliseconds(millis));
+    return makeVoid();
+  }
+
+  if (name == "panic") {
+    if (args.size() != 1) fail(span, "'panic' expects 1 argument.");
+    fail(span, expectString(args[0], span, "The 'panic' message"));
+  }
+
+  if (name == "assert") {
+    if (args.empty() || args.size() > 2) fail(span, "'assert' expects 1 or 2 arguments.");
+    if (expectBool(args[0], span, "The 'assert' condition")) return makeVoid();
+    std::string message = "Assertion failed";
+    if (args.size() == 2) message += ": " + expectString(args[1], span, "The 'assert' message");
+    fail(span, std::move(message));
+  }
+
+  if (name == "assert_eq") {
+    if (args.size() < 2 || args.size() > 3) fail(span, "'assert_eq' expects 2 or 3 arguments.");
+    if (valuesEqual(args[0], args[1])) return makeVoid();
+    std::string message = "Assertion failed: expected " + formatValue(args[0], false) +
+                          ", found " + formatValue(args[1], false);
+    if (args.size() == 3) message += " (" + expectString(args[2], span, "The 'assert_eq' message") + ")";
+    fail(span, std::move(message));
   }
 
   if (name == "Some") {

@@ -1,4 +1,4 @@
-#include "a/common/diagnostics.hpp"
+#include "diagnostics/diagnostics.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -25,6 +25,16 @@ std::string repeat(char c, int count) {
 
 }  // namespace
 
+FileId DiagnosticSink::addFile(std::shared_ptr<const SourceFile> source) {
+  files_.push_back(std::move(source));
+  return static_cast<FileId>(files_.size()) - 1;
+}
+
+const SourceFile* DiagnosticSink::file(FileId id) const {
+  if (id >= 0 && static_cast<std::size_t>(id) < files_.size()) return files_[id].get();
+  return files_.empty() ? nullptr : files_.front().get();
+}
+
 void DiagnosticSink::error(Span span, std::string message, std::string help) {
   diagnostics_.push_back(Diagnostic{Severity::Error, span, std::move(message), std::move(help)});
   ++errors_;
@@ -46,13 +56,16 @@ void DiagnosticSink::flush(std::ostream& os, bool useColor) {
 
     if (!diagnostic.span.valid()) continue;
 
+    const SourceFile* source = file(diagnostic.span.fileId);
+    if (!source) continue;
+
     const std::string lineNumber = std::to_string(diagnostic.span.line);
     const int gutter = static_cast<int>(lineNumber.size());
-    os << colors.blue << "  --> " << colors.reset << source_.path() << ":"
+    os << colors.blue << "  --> " << colors.reset << source->path() << ":"
        << diagnostic.span.line << ":" << diagnostic.span.col << "\n";
     os << colors.blue << repeat(' ', gutter + 1) << "|\n" << colors.reset;
 
-    const std::string text = source_.lineText(diagnostic.span.line);
+    const std::string text = source->lineText(diagnostic.span.line);
     os << colors.blue << lineNumber << " | " << colors.reset << text << "\n";
     os << colors.blue << repeat(' ', gutter + 1) << "| " << colors.reset;
 

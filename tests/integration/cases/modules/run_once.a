@@ -1,0 +1,9 @@
+import "lib/counter.a"
+import "lib/counter.a" as again
+from "lib/counter.a" import value
+
+print(again.value)
+print(value)
+counter.value = 99
+print(counter.value)
+print(again.value)

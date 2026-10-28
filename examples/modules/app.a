@@ -1,0 +1,14 @@
+# Multi-file program: imports resolve relative to the importing file,
+# each module runs once, and module variables stay live across files.
+import "lib/cart.a"
+import "lib/money.a" as money
+from "lib/money.a" import of
+
+basket = cart.empty()
+basket.add("coffee", of(4, 50))
+basket.add("book", money.of(12, 0))
+basket.render()
+
+print("symbol is", money.symbol)
+money.symbol = "EUR "
+print("new total:", money.of(1, 5).format())

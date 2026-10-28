@@ -1,0 +1,10 @@
+import "lib/mathx.a"
+import "lib/mathx.a" as mx
+from "lib/mathx.a" import add, Point
+
+print(mathx.add(2, 3))
+print(mx.mul(4, 5))
+print(add(10, 20))
+p = Point(x=1, y=2)
+print(p.sum())
+print(mathx.Point(x=3, y=4).sum())
