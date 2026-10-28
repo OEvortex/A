@@ -1,0 +1,19 @@
+fn identity<T>(x: T) -> T:
+    return x
+
+fn first<T>(items: [T]) -> T:
+    return items[0]
+
+struct Box<T>:
+    value: T
+
+    fn get(self) -> T:
+        return self.value
+
+print(identity(5))
+print(identity("hello"))
+print(first([1, 2, 3]))
+b = Box(42)
+print(b.value, b.get())
+b2 = Box("hi")
+print(b2.value, b2.get())

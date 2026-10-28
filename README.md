@@ -166,6 +166,25 @@ user_theme = user?.settings?.theme ?? "dark"
 
 ---
 
+## 🧩 Editor support
+
+The repository ships a language server and a VS Code extension:
+
+```bash
+# Build the language server (diagnostics, goto, hover, completion)
+cmake --build build --target a-lsp -j
+```
+
+- `tools/language-server/` — `a-lsp`, a dependency-free LSP server over stdio.
+- `tools/vscode-a/` — VS Code extension with syntax highlighting, diagnostics,
+  go to definition, references, hover, completion, and document symbols.
+
+Open `tools/vscode-a` in VS Code and press `F5`, or package it with
+`npx @vscode/vsce package` and install the resulting `.vsix`. See the extension
+README for server discovery and settings.
+
+---
+
 ## 🧪 Testing
 
 Run the full integration test suite:

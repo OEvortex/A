@@ -38,6 +38,7 @@ class Parser {
   StmtPtr parseFnDecl();
   StmtPtr parseStructDecl();
   StmtPtr parseEnumDecl();
+  StmtPtr parseTypeAliasDecl();
   StmtPtr parseVarDecl();
   StmtPtr parseConstDecl();
   StmtPtr parseIf();

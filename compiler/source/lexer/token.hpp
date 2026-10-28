@@ -48,8 +48,10 @@ enum class Tok {
   KwMatch,
   KwNone,
   KwConst,
+  KwPvt,
   KwEnum,
   KwDo,
+  KwType,
 
   LParen,
   RParen,

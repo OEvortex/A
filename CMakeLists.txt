@@ -104,10 +104,20 @@ add_library(a::driver ALIAS a_driver)
 add_executable(a compiler/source/cli/main.cpp)
 target_link_libraries(a PRIVATE a_driver)
 
+# ------------------------------------------------------------ language server
+
+add_executable(a-lsp
+  tools/language-server/server.cpp
+  tools/language-server/analysis.cpp
+  tools/language-server/json.cpp
+)
+target_link_libraries(a-lsp PRIVATE a_type_checker)
+
 # ---------------------------------------------------------------- packaging
 
 include(GNUInstallDirs)
 install(TARGETS a RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS a-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY compiler/source/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a/compiler
   FILES_MATCHING PATTERN "*.hpp")
 install(DIRECTORY runtime/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/a/runtime
@@ -119,4 +129,12 @@ enable_testing()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh")
   add_test(NAME language-suite
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_tests.sh $<TARGET_FILE:a>)
+endif()
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME language-server-smoke
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/language-server/smoke_test.py
+      $<TARGET_FILE:a-lsp>)
 endif()

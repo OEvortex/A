@@ -53,6 +53,8 @@ class Sema {
 
   struct FnSig {
     std::string name;
+    std::vector<std::string> typeParams;
+    std::vector<TypePtr> typeParamVars;
     std::vector<TypePtr> paramTypes;
     TypePtr retType;
     const FnDecl* decl = nullptr;
@@ -61,6 +63,8 @@ class Sema {
   struct StructSym {
     std::string name;
     const StructDecl* decl = nullptr;
+    std::vector<std::string> typeParams;
+    std::vector<TypePtr> typeParamVars;
     std::vector<std::pair<std::string, TypePtr>> fields;
     StringMap<FnSig> methods;
   };
@@ -116,6 +120,7 @@ class Sema {
   bool occursIn(TypePtr var, TypePtr type);
   bool constrainVar(TypePtr var, Constraint constraint);
   TypePtr resolveTypeExpr(TypeExpr& expr);
+  TypePtr instantiateType(TypePtr type, const std::unordered_map<TypePtr, TypePtr>& mapping);
   TypePtr makeSignatureTypes(FnDecl& decl, TypePtr selfType, FnSig& sig);
 
   // scopes
@@ -196,6 +201,7 @@ class Sema {
   StringMap<ModuleAlias> moduleAliases_;
   StringMap<FromBinding> fromBindings_;
   StringMap<std::string> structAliases_;  // local alias -> qualified name
+  StringMap<TypePtr> genericParams_;  // current generic type parameters
 
   std::vector<StringMap<VarSym>> scopes_;
   StringMap<const FnDecl*> functionsByName_;
@@ -203,6 +209,7 @@ class Sema {
   StringMap<EnumInfo> enums_;
   std::unordered_map<const FnDecl*, FnSig> signatures_;
   StringMap<StructSym> structs_;
+  StringMap<TypePtr> typeAliases_;
   std::unordered_map<const FnDecl*, int> fnModules_;
   std::unordered_map<const StructDecl*, int> structModules_;
   std::vector<VarInfo> typeVariables_;

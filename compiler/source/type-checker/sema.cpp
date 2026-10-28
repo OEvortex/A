@@ -289,7 +289,12 @@ bool Sema::unify(TypePtr a, TypePtr b) {
     case TypeKind::Float:
       return a->bits == b->bits;
     case TypeKind::Struct:
-      return a->structName == b->structName;
+      if (a->structName != b->structName) return false;
+      if (a->params.size() != b->params.size()) return false;
+      for (std::size_t i = 0; i < a->params.size(); ++i) {
+        if (!unify(a->params[i], b->params[i])) return false;
+      }
+      return true;
     case TypeKind::Array:
     case TypeKind::Range:
     case TypeKind::Optional:
@@ -363,13 +368,32 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
   auto* named = dynamic_cast<NamedTypeExpr*>(&expr);
   if (!named) return typeError();
   if (named->qualifiers.empty()) {
+    if (genericParams_.count(named->name)) {
+      return genericParams_[named->name];
+    }
     if (TypePtr builtin = builtinTypeByName(named->name)) return builtin;
     const std::string q = qualified(named->name);
-    if (structs_.count(q)) return typeStruct(q);
+    if (structs_.count(q)) {
+      TypePtr t = typeStruct(q);
+      if (!named->typeArgs.empty()) {
+        std::vector<TypePtr> args;
+        for (auto& a : named->typeArgs) args.push_back(resolveTypeExpr(*a));
+        t->params = std::move(args);
+      }
+      return t;
+    }
     if (enums_.count(q)) return typeInt(32, true);  // enums are i32-backed
     if (auto alias = structAliases_.find(named->name); alias != structAliases_.end()) {
-      return typeStruct(alias->second);
+      TypePtr t = typeStruct(alias->second);
+      if (!named->typeArgs.empty()) {
+        std::vector<TypePtr> args;
+        for (auto& a : named->typeArgs) args.push_back(resolveTypeExpr(*a));
+        t->params = std::move(args);
+      }
+      return t;
     }
+    const std::string q = qualified(named->name);
+    if (typeAliases_.count(q)) return typeAliases_.at(q);
     sink_.error(named->span, "Unknown type '" + named->name + "'.",
                 "Type names are 'bool', 'char', 'String', 'void', the sized numeric types, "
                 "struct names, '[T]' for arrays, '(T, U)' for tuples, 'fn(T) -> R' for "
@@ -388,14 +412,47 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
     return typeError();
   }
   const std::string q = qualifiedFor(alias->moduleId, named->name);
-  if (structs_.count(q)) return typeStruct(q);
+  if (structs_.count(q)) {
+    TypePtr t = typeStruct(q);
+    if (!named->typeArgs.empty()) {
+      std::vector<TypePtr> args;
+      for (auto& a : named->typeArgs) args.push_back(resolveTypeExpr(*a));
+      t->params = std::move(args);
+    }
+    return t;
+  }
   if (enums_.count(q)) return typeInt(32, true);  // enums are i32-backed
   sink_.error(named->span, "Module '" + graph_.at(alias->moduleId).name + "' has no type named '" +
                                named->name + "'.");
   return typeError();
 }
 
-// ------------------------------------------------------------------ scopes
+TypePtr Sema::instantiateType(TypePtr type, const std::unordered_map<TypePtr, TypePtr>& mapping) {
+  type = resolveType(type);
+  if (!type) return type;
+  if (type->kind == TypeKind::Var) {
+    auto it = mapping.find(type);
+    if (it != mapping.end()) return it->second;
+    // create a fresh var preserving constraints
+    TypePtr fresh = makeType(TypeKind::Var);
+    fresh->varId = nextVarId_++;
+    fresh->constraint = type->constraint;
+    fresh->allowDefault = type->allowDefault;
+    fresh->allowUnresolved = type->allowUnresolved;
+    fresh->varDescription = type->varDescription;
+    fresh->varSpan = type->varSpan;
+    return fresh;
+  }
+  TypePtr result = makeType(type->kind);
+  result->bits = type->bits;
+  result->isSigned = type->isSigned;
+  result->structName = type->structName;
+  result->moduleId = type->moduleId;
+  if (type->elem) result->elem = instantiateType(type->elem, mapping);
+  if (type->ret) result->ret = instantiateType(type->ret, mapping);
+  for (const auto& p : type->params) result->params.push_back(instantiateType(p, mapping));
+  return result;
+}
 
 void Sema::pushScope() { scopes_.push_back({}); }
 
@@ -445,10 +502,20 @@ void Sema::declareVar(const std::string& name, Span span, TypePtr type, bool mut
 // ------------------------------------------------------------ declarations
 
 void Sema::registerStructLayout(StructDecl& decl) {
+  auto savedGenericParams = std::move(genericParams_);
   const std::string q = qualified(decl.name);
   StructSym& sym = structs_[q];
   sym.name = q;
   sym.decl = &decl;
+  sym.typeParams = decl.typeParams;
+  genericParams_.clear();
+  for (const auto& name : decl.typeParams) {
+    TypePtr var = freshVar(Constraint::None, decl.nameSpan,
+                           "type parameter '" + name + "' of '" + decl.name + "'");
+    var->allowUnresolved = true;
+    genericParams_[name] = var;
+    sym.typeParamVars.push_back(var);
+  }
 
   // Inherit fields from baseClass if present
   if (!decl.baseClass.empty()) {
@@ -477,6 +544,7 @@ void Sema::registerStructLayout(StructDecl& decl) {
     }
     sym.fields.emplace_back(field.name, type);
   }
+  genericParams_ = std::move(savedGenericParams);
 }
 
 void Sema::registerEnum(EnumDecl& decl) {
@@ -520,8 +588,18 @@ void Sema::registerEnum(EnumDecl& decl) {
 }
 
 void Sema::registerFunctionSignature(FnDecl& decl) {
+  auto saved = std::move(genericParams_);
   FnSig sig;
+  sig.typeParams = decl.typeParams;
+  for (const auto& name : decl.typeParams) {
+    TypePtr var = freshVar(Constraint::None, decl.nameSpan,
+                           "type parameter '" + name + "' of '" + decl.name + "'");
+    var->allowUnresolved = true;
+    genericParams_[name] = var;
+    sig.typeParamVars.push_back(var);
+  }
   makeSignatureTypes(decl, nullptr, sig);
+  genericParams_ = std::move(saved);
   signatures_[&decl] = std::move(sig);
 }
 
@@ -568,7 +646,26 @@ void Sema::registerMethodSignatures(StructDecl& decl) {
       }
     }
     FnSig sig;
+    sig.typeParams = method.typeParams;
+    // Inherit generic parameters from the owning struct.
+    for (std::size_t i = 0; i < sym.typeParams.size() && i < sym.typeParamVars.size(); ++i) {
+      sig.typeParams.push_back(sym.typeParams[i]);
+      sig.typeParamVars.push_back(sym.typeParamVars[i]);
+    }
+    auto savedGeneric = std::move(genericParams_);
+    genericParams_.clear();
+    for (std::size_t i = 0; i < sym.typeParams.size() && i < sym.typeParamVars.size(); ++i) {
+      genericParams_[sym.typeParams[i]] = sym.typeParamVars[i];
+    }
+    for (const auto& name : method.typeParams) {
+      TypePtr var = freshVar(Constraint::None, method.nameSpan,
+                             "type parameter '" + name + "' of '" + method.name + "'");
+      var->allowUnresolved = true;
+      genericParams_[name] = var;
+      sig.typeParamVars.push_back(var);
+    }
     makeSignatureTypes(method, selfType, sig);
+    genericParams_ = std::move(savedGeneric);
     signatures_[&method] = sig;
     sym.methods[method.name] = std::move(sig);
   }
@@ -611,11 +708,16 @@ TypePtr Sema::makeSignatureTypes(FnDecl& decl, TypePtr selfType, FnSig& sig) {
 
 void Sema::checkFunctionBody(FnDecl& decl, const FnSig& sig) {
   auto savedScopes = std::move(scopes_);
+  auto savedGenericParams = std::move(genericParams_);
   scopes_.clear();
   if (!savedScopes.empty()) {
     scopes_.push_back(savedScopes.front());
   } else {
     scopes_.push_back({});
+  }
+  genericParams_.clear();
+  for (std::size_t i = 0; i < decl.typeParams.size() && i < sig.typeParamVars.size(); ++i) {
+    genericParams_[decl.typeParams[i]] = sig.typeParamVars[i];
   }
 
   FnDecl* savedFunction = currentFunction_;
@@ -663,6 +765,7 @@ void Sema::checkFunctionBody(FnDecl& decl, const FnSig& sig) {
   deferDepth_ = savedDeferDepth;
 
   scopes_ = std::move(savedScopes);
+  genericParams_ = std::move(savedGenericParams);
 }
 
 void Sema::checkStructMethodBodies(StructDecl& decl) {
@@ -797,6 +900,8 @@ void Sema::analyzeModule(Module& module) {
   moduleAliases_.clear();
   fromBindings_.clear();
   structAliases_.clear();
+  typeAliases_.clear();
+  genericParams_.clear();
   loopDepth_ = 0;
   deferDepth_ = 0;
   currentFunction_ = nullptr;
@@ -1693,27 +1798,57 @@ TypePtr Sema::checkFunctionValueCall(const std::string& name, TypePtr fnType, Ca
 }
 
 TypePtr Sema::checkFunctionCall(const FnSig& sig, CallExpr& call) {
+  FnSig effective = sig;
+  if (!sig.typeParams.empty()) {
+    std::unordered_map<TypePtr, TypePtr> mapping;
+    for (std::size_t i = 0; i < sig.typeParamVars.size(); ++i) {
+      TypePtr fresh = freshVar(Constraint::None,
+                              sig.typeParamVars[i]->varSpan,
+                              "type parameter '" + sig.typeParams[i] + "'");
+      fresh->allowUnresolved = true;
+      mapping[sig.typeParamVars[i]] = fresh;
+    }
+    std::vector<TypePtr> params;
+    params.reserve(sig.paramTypes.size());
+    for (const auto& p : sig.paramTypes) params.push_back(instantiateType(p, mapping));
+    effective.paramTypes = std::move(params);
+    effective.retType = instantiateType(sig.retType, mapping);
+  }
+
   for (auto& arg : call.args) {
     if (!arg.name.empty()) {
       sink_.error(arg.nameSpan, "Named arguments are only supported for struct construction.");
       return typeError();
     }
   }
-  if (call.args.size() != sig.paramTypes.size()) {
+  if (call.args.size() != effective.paramTypes.size()) {
     sink_.error(call.span,
-                "Function '" + sig.name + "' expects " + std::to_string(sig.paramTypes.size()) +
+                "Function '" + effective.name + "' expects " + std::to_string(effective.paramTypes.size()) +
                     " argument(s), found " + std::to_string(call.args.size()) + ".");
     return typeError();
   }
   for (std::size_t i = 0; i < call.args.size(); ++i) {
-    checkArgAgainst(*call.args[i].value, sig.paramTypes[i],
-                    "in argument " + std::to_string(i + 1) + " to '" + sig.name + "'");
+    checkArgAgainst(*call.args[i].value, effective.paramTypes[i],
+                   "in argument " + std::to_string(i + 1) + " to '" + effective.name + "'");
   }
-  return sig.retType;
+  return effective.retType;
 }
 
 TypePtr Sema::checkStructConstruction(const StructSym& sym, CallExpr& call) {
-  const auto& fields = sym.fields;
+  std::unordered_map<TypePtr, TypePtr> mapping;
+  std::vector<TypePtr> typeArgs;
+  for (std::size_t i = 0; i < sym.typeParamVars.size(); ++i) {
+    TypePtr fresh = freshVar(Constraint::None, sym.typeParamVars[i]->varSpan,
+                            "type parameter '" + sym.typeParams[i] + "'");
+    fresh->allowUnresolved = true;
+    mapping[sym.typeParamVars[i]] = fresh;
+    typeArgs.push_back(fresh);
+  }
+  std::vector<std::pair<std::string, TypePtr>> fields;
+  fields.reserve(sym.fields.size());
+  for (const auto& f : sym.fields) {
+    fields.emplace_back(f.first, instantiateType(f.second, mapping));
+  }
 
   bool anyNamed = false;
   bool allNamed = true;
@@ -1741,7 +1876,9 @@ TypePtr Sema::checkStructConstruction(const StructSym& sym, CallExpr& call) {
                        "in field '" + fields[i].first + "' of '" + sym.name + "'");
       }
     }
-    return typeStruct(sym.name);
+    TypePtr result = typeStruct(sym.name);
+    if (!typeArgs.empty()) result->params = typeArgs;
+    return result;
   }
 
   std::vector<bool> provided(fields.size(), false);
@@ -1776,7 +1913,9 @@ TypePtr Sema::checkStructConstruction(const StructSym& sym, CallExpr& call) {
                                  "' constructor.");
     }
   }
-  return typeStruct(sym.name);
+  TypePtr result = typeStruct(sym.name);
+  if (!typeArgs.empty()) result->params = typeArgs;
+  return result;
 }
 
 TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallExpr& call) {
@@ -2603,8 +2742,14 @@ TypePtr Sema::inferField(FieldExpr& expr) {
   if (object->kind == TypeKind::Struct) {
     auto structIt = structs_.find(object->structName);
     if (structIt == structs_.end()) return typeError();
+    std::unordered_map<TypePtr, TypePtr> mapping;
+    for (std::size_t i = 0; i < structIt->second.typeParamVars.size() && i < object->params.size(); ++i) {
+      mapping[structIt->second.typeParamVars[i]] = object->params[i];
+    }
     for (const auto& field : structIt->second.fields) {
-      if (field.first == expr.field) return field.second;
+      if (field.first == expr.field) {
+        return instantiateType(field.second, mapping);
+      }
     }
     sink_.error(expr.fieldSpan,
                 "Struct '" + object->structName + "' has no field named '" + expr.field + "'.");

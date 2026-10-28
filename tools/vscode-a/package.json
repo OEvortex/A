@@ -1,0 +1,83 @@
+{
+  "name": "a-language",
+  "displayName": "A Language",
+  "description": "Syntax highlighting, diagnostics, go-to-definition, hover, and completion for the A programming language.",
+  "version": "0.1.0",
+  "publisher": "a-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "a",
+    "alang",
+    "language server",
+    "lsp"
+  ],
+  "activationEvents": [
+    "onLanguage:a",
+    "onCommand:a.restartServer"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "a",
+        "aliases": [
+          "A",
+          "a"
+        ],
+        "extensions": [
+          ".a"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "a",
+        "scopeName": "source.a",
+        "path": "./syntaxes/a.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "A",
+      "properties": {
+        "a.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the a-lsp executable. When empty, the extension searches build/a-lsp in the workspace and a-lsp on PATH."
+        },
+        "a.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments passed to a-lsp (for example --stdio)."
+        },
+        "a.server.modulePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories searched for imported A modules."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "a.restartServer",
+        "title": "A: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "vsce package"
+  }
+}

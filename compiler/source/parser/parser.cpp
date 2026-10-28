@@ -86,11 +86,14 @@ StmtPtr Parser::parseStatement() {
       passExpr->expr = std::make_unique<IntLitExpr>();
       return passExpr;
     }
-    case Tok::KwEnum:
-      return parseEnumDecl();
+     case Tok::KwEnum:
+       return parseEnumDecl();
+     case Tok::KwType:
+       return parseTypeAliasDecl();
     case Tok::KwVar:
       return parseVarDecl();
     case Tok::KwConst:
+    case Tok::KwPvt:
       return parseConstDecl();
     case Tok::KwIf:
       return parseIf();
@@ -162,6 +165,15 @@ StmtPtr Parser::parseFnDecl() {
   auto decl = std::make_unique<FnDecl>();
   decl->name = nameTok.lexeme;
   decl->nameSpan = nameTok.span;
+
+  if (match(Tok::Lt)) {
+    while (!check(Tok::Gt) && !check(Tok::Eof)) {
+      const Token& tp = expect(Tok::Ident, "a type parameter name");
+      decl->typeParams.push_back(tp.lexeme);
+      if (!match(Tok::Comma)) break;
+    }
+    expect(Tok::Gt, "'>' after type parameters");
+  }
 
   expect(Tok::LParen, "'(' after the function name");
   if (!check(Tok::RParen)) {
@@ -237,7 +249,16 @@ StmtPtr Parser::parseStructDecl() {
   decl->nameSpan = nameTok.span;
   decl->isClass = isClassDecl || isMetaclassDecl;
 
-  // Support class(BaseClass) or class(BaseClass, metaclass=Meta) or class(metaclass=Meta)
+  if (match(Tok::Lt)) {
+    while (!check(Tok::Gt) && !check(Tok::Eof)) {
+      const Token& tp = expect(Tok::Ident, "a type parameter name");
+      decl->typeParams.push_back(tp.lexeme);
+      if (!match(Tok::Comma)) break;
+    }
+    expect(Tok::Gt, "'>' after type parameters");
+  }
+
+  // Support class(BaseClass) ...
   if (match(Tok::LParen)) {
     while (!check(Tok::RParen) && !check(Tok::Eof)) {
       if (check(Tok::Ident) && peek(1).kind == Tok::Eq) {
@@ -292,6 +313,20 @@ StmtPtr Parser::parseStructDecl() {
   return decl;
 }
 
+StmtPtr Parser::parseTypeAliasDecl() {
+  Span start = cur().span;
+  expect(Tok::KwType, "'type'");
+  const Token& nameTok = expect(Tok::Ident, "a type name");
+  auto decl = std::make_unique<TypeAliasDecl>();
+  decl->name = nameTok.lexeme;
+  decl->nameSpan = nameTok.span;
+  expect(Tok::Eq, "'=' after the type alias name");
+  decl->type = parseTypeExpr();
+  expectNewline();
+  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  return decl;
+}
+
 StmtPtr Parser::parseVarDecl() {
   Span start = cur().span;
   expect(Tok::KwVar, "'var'");
@@ -317,8 +352,12 @@ StmtPtr Parser::parseVarDecl() {
 
 StmtPtr Parser::parseConstDecl() {
   Span start = cur().span;
-  expect(Tok::KwConst, "'const'");
-  const Token& nameTok = expect(Tok::Ident, "a constant name");
+  if (cur().kind == Tok::KwPvt) {
+    advance(); // consume 'pvt'
+  } else {
+    expect(Tok::KwConst, "'const' or 'pvt'");
+  }
+  const Token& nameTok = expect(Tok::Ident, "a constant or private variable name");
 
   auto decl = std::make_unique<LetStmt>();
   decl->name = nameTok.lexeme;
@@ -701,6 +740,13 @@ TypeExprPtr Parser::parseTypeExpr() {
       name = part.lexeme;
     }
     named->name = std::move(name);
+    if (match(Tok::Lt)) {
+      while (!check(Tok::Gt) && !check(Tok::Eof)) {
+        named->typeArgs.push_back(parseTypeExpr());
+        if (!match(Tok::Comma)) break;
+      }
+      expect(Tok::Gt, "'>' after type arguments");
+    }
     named->span = Span::join(named->span, tokens_[pos_ - 1].span);
     type = std::move(named);
   }

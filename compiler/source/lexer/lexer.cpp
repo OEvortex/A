@@ -46,8 +46,10 @@ const char* tokName(Tok kind) {
     case Tok::KwMatch: return "'match'";
     case Tok::KwNone: return "'None'";
     case Tok::KwConst: return "'const'";
+    case Tok::KwPvt: return "'pvt'";
     case Tok::KwEnum: return "'enum'";
     case Tok::KwDo: return "'do'";
+  case Tok::KwType: return "'type'";
     case Tok::LParen: return "'('";
     case Tok::RParen: return "')'";
     case Tok::LBracket: return "'['";
@@ -136,7 +138,8 @@ const std::unordered_map<std::string, Tok>& keywordTable() {
       {"and", Tok::KwAnd},       {"or", Tok::KwOr},         {"not", Tok::KwNot},
       {"import", Tok::KwImport}, {"from", Tok::KwFrom},       {"as", Tok::KwAs},
       {"match", Tok::KwMatch},   {"None", Tok::KwNone},       {"const", Tok::KwConst},
-      {"enum", Tok::KwEnum},     {"do", Tok::KwDo},
+      {"pvt", Tok::KwPvt},
+       {"enum", Tok::KwEnum},     {"do", Tok::KwDo},     {"type", Tok::KwType},
   };
   return table;
 }

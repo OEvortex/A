@@ -66,6 +66,7 @@ enum class StmtKind : std::uint8_t {
   FnDecl,
   StructDecl,
   EnumDecl,
+  TypeAlias,
 };
 
 // Arithmetic/logical operator identity for the backend. `op` still carries the
@@ -164,6 +165,7 @@ struct TypeExpr {
 struct NamedTypeExpr : TypeExpr {
   std::vector<std::string> qualifiers;  // module alias qualifiers: 'u' in 'u.Point'
   std::string name;
+  std::vector<TypeExprPtr> typeArgs;  // generic arguments: 'Foo<T>'
 };
 
 struct ArrayTypeExpr : TypeExpr {
@@ -490,6 +492,7 @@ struct FnDecl : Stmt {
   FnDecl() : Stmt(StmtKind::FnDecl) {}
   std::string name;
   Span nameSpan;
+  std::vector<std::string> typeParams;  // generic type parameters
   std::vector<ParamDecl> params;
   TypeExprPtr returnType;  // may be null
   std::vector<StmtPtr> body;
@@ -506,6 +509,7 @@ struct StructDecl : Stmt {
   StructDecl() : Stmt(StmtKind::StructDecl) {}
   std::string name;
   Span nameSpan;
+  std::vector<std::string> typeParams;  // generic type parameters
   std::string baseClass;  // base class name if class(Base)
   std::string metaclass;  // metaclass name if specified
   std::vector<FieldDecl> fields;
@@ -526,8 +530,11 @@ struct EnumDecl : Stmt {
   std::vector<EnumVariant> variants;
 };
 
-struct Program {
-  std::vector<StmtPtr> statements;
+struct TypeAliasDecl : Stmt {
+  TypeAliasDecl() : Stmt(StmtKind::TypeAlias) {}
+  std::string name;
+  Span nameSpan;
+  TypeExprPtr type;
 };
 
 }  // namespace a
