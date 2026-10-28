@@ -4,11 +4,12 @@
     <strong>Fast as C++. Expressive as Python. Statically typed. Memory safe.</strong>
   </p>
   <p align="center">
-    <a href="#benchmarks">Benchmarks</a> •
-    <a href="#quickstart">Quickstart</a> •
-    <a href="#language-tour">Language Tour</a> •
-    <a href="#features">Features</a> •
-    <a href="#documentation">Docs</a>
+    <a href="#-benchmarks">Benchmarks</a> •
+    <a href="#-quickstart">Quickstart</a> •
+    <a href="#-language-tour">Language Tour</a> •
+    <a href="#-editor-support">Editor Support</a> •
+    <a href="#-key-features">Features</a> •
+    <a href="docs/">Docs</a>
   </p>
 </p>
 
@@ -39,6 +40,7 @@ print("Length squared: {point.length_squared()}")  # 25.0
 * **🏛️ Classes, Inheritance & Metaclasses**: Clean object-oriented programming with `class Child(Parent):` and declarative `metaclass Meta: pass`.
 * **🛠️ 25+ First-Class Operators**: Rich operator support including arithmetic (`+ - * / % **`), bitwise (`& | ^ ~ << >>`), containment (`in`, `not in`), functional pipelines (`|>`), and safe null-coalescing (`??`, `?.`).
 * **🔒 Static Type Safety & Inference**: Unification-based global type inference with checked arithmetic, zero undefined behavior, and deterministic cleanup via `defer`.
+* **🧠 First-Class Editor Tooling**: A dependency-free language server (`a-lsp`) and VS Code extension with live diagnostics, go-to-definition, references, hover, completion, document symbols, and syntax highlighting.
 
 ---
 
@@ -58,7 +60,7 @@ Measured over 7 runs against **C++ (`g++ -O2`)** and **CPython 3.13** on identic
 
 ---
 
-## 🛠️ Quickstart
+## 🛠 Quickstart
 
 ### Prerequisites
 * CMake 3.20+
@@ -161,37 +163,111 @@ user_theme = user?.settings?.theme ?? "dark"
 ├── stdlib/                     # Standard library modules (math, fs, io, net)
 ├── benchmarks/                 # Verification suites with cross-language equivalents
 ├── examples/                   # Curated code examples
+├── docs/                       # Language spec, type system, compiler design, performance
+├── tools/
+│   ├── language-server/        # a-lsp: diagnostics, goto, hover, completion
+│   └── vscode-a/               # VS Code extension (grammar + LSP client)
 └── tests/                      # Automated golden test suite
 ```
 
 ---
 
-## 🧩 Editor support
+## 🧩 Editor Support
 
-The repository ships a language server and a VS Code extension:
+A ships with first-class editor tooling built directly on the compiler front
+end, so diagnostics and navigation match `a check`.
+
+### Language server: `a-lsp`
+
+`tools/language-server/` implements the Language Server Protocol over stdio
+with no third-party dependencies.
+
+| Capability | What it does |
+| :--- | :--- |
+| **Diagnostics** | Live lex, parse, and type errors with spans, messages, and compiler help text |
+| **Go to definition** | Locals, parameters, functions, structs/classes, fields, methods, enum variants, and imported module members |
+| **Find references** | Every use of a symbol, including across imported modules |
+| **Hover** | Declared signatures and types, plus documentation for builtins |
+| **Completion** | Keywords, builtins, visible bindings, module members, and struct/enum members after `.` |
+| **Document symbols** | Outline of functions, structs, fields, methods, enums, variants, and top-level bindings |
+| **Workspace symbols** | `Ctrl+T` / `Cmd+T` search across open A documents |
+
+Build it with the rest of the toolchain:
 
 ```bash
-# Build the language server (diagnostics, goto, hover, completion)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target a-lsp -j
+./build/a-lsp --version
 ```
 
-- `tools/language-server/` — `a-lsp`, a dependency-free LSP server over stdio.
-- `tools/vscode-a/` — VS Code extension with syntax highlighting, diagnostics,
-  go to definition, references, hover, completion, and document symbols.
+### VS Code extension
 
-Open `tools/vscode-a` in VS Code and press `F5`, or package it with
-`npx @vscode/vsce package` and install the resulting `.vsix`. See the extension
-README for server discovery and settings.
+`tools/vscode-a/` adds TextMate syntax highlighting and connects VS Code to
+`a-lsp`:
+
+- Keywords, declarations, types, builtins, numbers, operators, and comments
+- Strings with `{interpolation}`, raw `"""` strings, char literals, and escapes
+- `#` line comments, bracket matching, auto-closing pairs, and indentation rules
+- Diagnostics, go to definition (`F12`), references (`Shift+F12`), hover,
+  completion, document outline, and workspace symbols
+
+Try it in development:
+
+```bash
+# Open tools/vscode-a in VS Code / VS Code Insiders, then press F5.
+```
+
+Or package and install it:
+
+```bash
+cd tools/vscode-a
+npx --yes @vscode/vsce package
+
+# Use whichever CLI you have installed:
+code --install-extension a-language-0.1.0.vsix
+code-insiders --install-extension a-language-0.1.0.vsix
+```
+
+The extension finds `a-lsp` in this order:
+
+1. The `a.server.path` setting
+2. The `A_LSP_PATH` environment variable
+3. `build/a-lsp` or `build-*/a-lsp` inside the workspace
+4. `a-lsp` on `PATH`
+
+Useful settings:
+
+| Setting | Default | Purpose |
+| :--- | :--- | :--- |
+| `a.server.path` | `""` | Absolute path to `a-lsp` |
+| `a.server.args` | `[]` | Extra server arguments, such as `["--stdio"]` |
+| `a.server.modulePaths` | `[]` | Extra directories for `import` resolution |
+
+Run **A: Restart Language Server** from the command palette after rebuilding
+the server. See [`tools/language-server/README.md`](tools/language-server/README.md)
+and [`tools/vscode-a/README.md`](tools/vscode-a/README.md) for details.
+
+### Other editors
+
+Any LSP client can use `a-lsp`; start it over stdio and send `file://` document
+URIs. Set `A_LSP_LOG=1` for lifecycle logging on stderr.
 
 ---
 
 ## 🧪 Testing
 
-Run the full integration test suite:
+Run the full test suite (language integration tests plus the language server
+protocol smoke test):
+
 ```bash
 ctest --test-dir build --output-on-failure
-# Or directly:
+```
+
+Or run the pieces directly:
+
+```bash
 tests/integration/run_tests.sh build/a
+python3 tools/language-server/smoke_test.py build/a-lsp
 ```
 
 ---

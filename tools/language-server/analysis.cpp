@@ -321,6 +321,11 @@ class IndexBuilder {
         }
         return;
       }
+      case StmtKind::TypeAlias: {
+        auto& alias = static_cast<TypeAliasDecl&>(stmt);
+        addSymbol(alias.name, alias.nameSpan, SymbolKind::TypeParameter, "type " + alias.name, "", scope, true);
+        return;
+      }
       case StmtKind::Import: {
         auto& import = static_cast<ImportStmt&>(stmt);
         ImportDef def;

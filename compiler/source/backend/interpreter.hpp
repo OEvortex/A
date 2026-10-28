@@ -212,6 +212,7 @@ class Interpreter {
   Value evalTuple(const TupleExpr& expr, Env& env);
   Value evalLambda(const LambdaExpr& expr, Env& env);
   Value evalMatch(const MatchExpr& expr, Env& env);
+  Value evalTry(const TryExpr& expr, Env& env);
   Value evalComprehension(const ComprehensionExpr& expr, Env& env);
   Value applyBinary(BinOp op, const Value& lhs, const Value& rhs, Span span);
   bool valuesEqual(const Value& lhs, const Value& rhs);

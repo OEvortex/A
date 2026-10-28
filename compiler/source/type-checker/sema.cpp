@@ -33,8 +33,8 @@ bool isKnownBuiltin(const std::string& name) {
       "append_file", "file_exists", "list_dir", "remove_file", "create_dir",
       "remove_dir", "rename", "current_dir", "now", "sleep", "panic", "assert",
       "assert_eq", "map",  "filter",   "reduce",   "any",
-      "all",      "sum",      "join",      "random",   "random_int", "atan2",
-      "Some"};
+       "all",      "sum",      "join",      "random",   "random_int", "atan2",
+       "Some",     "Ok",       "Err"};
   for (const char* n : names) {
     if (name == n) return true;
   }
@@ -211,7 +211,8 @@ bool Sema::occursIn(TypePtr var, TypePtr type) {
     case TypeKind::Array:
     case TypeKind::Range:
     case TypeKind::Optional:
-      return occursIn(var, type->elem);
+    case TypeKind::Result:
+      return occursIn(var, type->elem) || occursIn(var, type->errorType);
     case TypeKind::Tuple:
     case TypeKind::Function: {
       for (const auto& p : type->params) {
@@ -299,6 +300,8 @@ bool Sema::unify(TypePtr a, TypePtr b) {
     case TypeKind::Range:
     case TypeKind::Optional:
       return unify(a->elem, b->elem);
+    case TypeKind::Result:
+      return unify(a->elem, b->elem) && unify(a->errorType, b->errorType);
     case TypeKind::Tuple: {
       if (a->params.size() != b->params.size()) return false;
       for (std::size_t i = 0; i < a->params.size(); ++i) {
@@ -371,6 +374,14 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
     if (genericParams_.count(named->name)) {
       return genericParams_[named->name];
     }
+    if (named->name == "Result" && !named->typeArgs.empty()) {
+      if (named->typeArgs.size() != 2) {
+        sink_.error(named->span, "'Result' requires two type arguments: Result<T, E>.");
+        return typeError();
+      }
+      return typeResult(resolveTypeExpr(*named->typeArgs[0]),
+                        resolveTypeExpr(*named->typeArgs[1]));
+    }
     if (TypePtr builtin = builtinTypeByName(named->name)) return builtin;
     const std::string q = qualified(named->name);
     if (structs_.count(q)) {
@@ -392,7 +403,6 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
       }
       return t;
     }
-    const std::string q = qualified(named->name);
     if (typeAliases_.count(q)) return typeAliases_.at(q);
     sink_.error(named->span, "Unknown type '" + named->name + "'.",
                 "Type names are 'bool', 'char', 'String', 'void', the sized numeric types, "
@@ -449,6 +459,7 @@ TypePtr Sema::instantiateType(TypePtr type, const std::unordered_map<TypePtr, Ty
   result->structName = type->structName;
   result->moduleId = type->moduleId;
   if (type->elem) result->elem = instantiateType(type->elem, mapping);
+  if (type->errorType) result->errorType = instantiateType(type->errorType, mapping);
   if (type->ret) result->ret = instantiateType(type->ret, mapping);
   for (const auto& p : type->params) result->params.push_back(instantiateType(p, mapping));
   return result;
@@ -940,6 +951,12 @@ void Sema::analyzeModule(Module& module) {
       }
       exports.enums[en->name] = q;
       registerEnum(*en);
+    } else if (auto* ta = dynamic_cast<TypeAliasDecl*>(stmt.get())) {
+      const std::string q = qualified(ta->name);
+      if (functionsByName_.count(q) || structsByName_.count(q) || enums_.count(q) || typeAliases_.count(q)) {
+        sink_.error(ta->nameSpan, "Duplicate declaration of '" + ta->name + "'.");
+        continue;
+      }
     } else if (auto* fn = dynamic_cast<FnDecl*>(stmt.get())) {
       const std::string q = qualified(fn->name);
       if (functionsByName_.count(q) || structsByName_.count(q)) {
@@ -960,6 +977,9 @@ void Sema::analyzeModule(Module& module) {
       if (found == structsByName_.end() || found->second != decl) continue;
       registerStructLayout(*decl);
       registerMethodSignatures(*decl);
+    } else if (auto* ta = dynamic_cast<TypeAliasDecl*>(stmt.get())) {
+      const std::string q = qualified(ta->name);
+      typeAliases_[q] = resolveTypeExpr(*ta->type);
     }
   }
 
@@ -1377,6 +1397,7 @@ TypePtr Sema::inferExpr(Expr& expr) {
   if (auto* node = dynamic_cast<TupleExpr*>(&expr)) return inferTuple(*node);
   if (auto* node = dynamic_cast<LambdaExpr*>(&expr)) return inferLambda(*node);
   if (auto* node = dynamic_cast<MatchExpr*>(&expr)) return inferMatch(*node);
+  if (auto* node = dynamic_cast<TryExpr*>(&expr)) return inferTry(*node);
   if (auto* node = dynamic_cast<ComprehensionExpr*>(&expr)) return inferComprehension(*node);
   if (auto* node = dynamic_cast<RangeExpr*>(&expr)) {
     TypePtr start = inferExpr(*node->start);
@@ -2527,6 +2548,34 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     return typeOptional(value);
   }
 
+  if (name == "Ok") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      TypePtr e = freshVar(Constraint::None, call.span, "the error type of 'Result'");
+      e->allowUnresolved = true;
+      return typeResult(typeError(), e);
+    }
+    TypePtr value = inferExpr(*call.args[0].value);
+    TypePtr e = freshVar(Constraint::None, call.span, "the error type of 'Result'");
+    e->allowUnresolved = true;
+    return typeResult(value, e);
+  }
+
+  if (name == "Err") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      TypePtr t = freshVar(Constraint::None, call.span, "the value type of 'Result'");
+      t->allowUnresolved = true;
+      return typeResult(t, typeError());
+    }
+    TypePtr error = inferExpr(*call.args[0].value);
+    TypePtr t = freshVar(Constraint::None, call.span, "the value type of 'Result'");
+    t->allowUnresolved = true;
+    return typeResult(t, error);
+  }
+
   if (name == "atan2") {
     if (call.args.size() != 2) {
       arityError(2);
@@ -3003,6 +3052,28 @@ TypePtr Sema::inferMatch(MatchExpr& expr) {
   }
 
   return sawResult ? result : typeError();
+}
+
+TypePtr Sema::inferTry(TryExpr& expr) {
+  TypePtr operand = inferExpr(*expr.operand);
+  TypePtr resolved = resolveType(operand);
+  if (resolved->kind != TypeKind::Result) {
+    if (resolved->kind != TypeKind::Error) {
+      sink_.error(expr.operand->span,
+                  "The '?' operator requires a Result value, found '" + typeName(resolved) + "'.");
+    }
+    return typeError();
+  }
+  // The enclosing function must return a compatible Result.
+  if (currentReturnType_) {
+    TypePtr ret = resolveType(currentReturnType_);
+    if (ret->kind == TypeKind::Result) {
+      if (!unify(ret->errorType, resolved->errorType)) {
+        sink_.error(expr.span, "The error type of '?' does not match the function's return type.");
+      }
+    }
+  }
+  return resolved->elem;
 }
 
 TypePtr Sema::inferComprehension(ComprehensionExpr& expr) {

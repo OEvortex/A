@@ -167,6 +167,7 @@ class Sema {
   TypePtr inferTuple(TupleExpr& expr);
   TypePtr inferLambda(LambdaExpr& expr);
   TypePtr inferMatch(MatchExpr& expr);
+  TypePtr inferTry(TryExpr& expr);
   TypePtr inferComprehension(ComprehensionExpr& expr);
   void checkPattern(Pattern& pattern, TypePtr subjectType);
   void checkLambdaAgainst(LambdaExpr& expr, TypePtr expected);

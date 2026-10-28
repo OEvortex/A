@@ -141,6 +141,15 @@ Value makeOptional(bool hasValue, Value value) {
   return out;
 }
 
+Value makeResult(bool ok, Value value) {
+  auto result = std::make_shared<ResultValue>();
+  result->ok = ok;
+  result->value = std::move(value);
+  auto out = Value{};
+  out.data = std::move(result);
+  return out;
+}
+
 Value makeNone() { return makeOptional(false, Value{}); }
 
 Value makeTuple(std::vector<Value> items) {
@@ -568,6 +577,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
   case StmtKind::FnDecl:
   case StmtKind::StructDecl:
   case StmtKind::EnumDecl:
+  case StmtKind::TypeAlias:
     // Declarations have no runtime effect; they are registered by sema.
     return;
   }
@@ -817,6 +827,7 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
   case ExprKind::Tuple: return evalTuple(static_cast<const TupleExpr&>(expr), env);
   case ExprKind::Lambda: return evalLambda(static_cast<const LambdaExpr&>(expr), env);
   case ExprKind::Match: return evalMatch(static_cast<const MatchExpr&>(expr), env);
+  case ExprKind::Try: return evalTry(static_cast<const TryExpr&>(expr), env);
   case ExprKind::Comprehension: {
     auto* node = static_cast<const ComprehensionExpr*>(&expr);
     return evalComprehension(*node, env);
@@ -1077,6 +1088,25 @@ Value Interpreter::evalMatch(const MatchExpr& expr, Env& env) {
   fail(expr.span, "No match arm matched value " + formatValue(subject, false) + ".");
 }
 
+Value Interpreter::evalTry(const TryExpr& expr, Env& env) {
+  Value result = eval(*expr.operand, env);
+  if (auto* res = std::get_if<ResultPtr>(&result.data)) {
+    if (!(*res)->ok) {
+      returnValue_ = (*res)->value;
+      // Wrap in Err? The value stored should be the error payload; function expects Result.
+      // Ensure returning an Err result.
+      // If the function expects Result, returning the raw error would be wrong.
+      // We stored the error payload; construct Err.
+      returnValue_ = makeResult(false, (*res)->value);
+      returning_ = true;
+      return Value{};
+    }
+    return (*res)->value;
+  }
+  // If not a Result, just return the value.
+  return result;
+}
+
 Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   Value iterable = eval(*expr.iterable, env);
   auto result = std::make_shared<std::vector<Value>>();
@@ -1178,6 +1208,11 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
     const OptionalPtr& right = std::get<OptionalPtr>(rhs.data);
     if ((*left)->hasValue != right->hasValue) return false;
     if (!(*left)->hasValue) return true;
+    return valuesEqual((*left)->value, right->value);
+  }
+  if (auto* left = std::get_if<ResultPtr>(&lhs.data)) {
+    const ResultPtr& right = std::get<ResultPtr>(rhs.data);
+    if ((*left)->ok != right->ok) return false;
     return valuesEqual((*left)->value, right->value);
   }
   if (auto* left = std::get_if<TuplePtr>(&lhs.data)) {
@@ -2030,6 +2065,16 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
   if (name == "Some") {
     if (args.size() != 1) fail(span, "'Some' expects 1 argument.");
     return makeOptional(true, std::move(args[0]));
+  }
+
+  if (name == "Ok") {
+    if (args.size() != 1) fail(span, "'Ok' expects 1 argument.");
+    return makeResult(true, std::move(args[0]));
+  }
+
+  if (name == "Err") {
+    if (args.size() != 1) fail(span, "'Err' expects 1 argument.");
+    return makeResult(false, std::move(args[0]));
   }
 
   if (name == "map" || name == "filter" || name == "any" || name == "all") {

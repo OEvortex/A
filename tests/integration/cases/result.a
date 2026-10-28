@@ -1,0 +1,11 @@
+fn divide(a: i32, b: i32) -> Result<i32, String>:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a / b)
+
+fn compute(x: i32, y: i32) -> Result<i32, String>:
+    q = divide(x, y)?
+    return Ok(q + 1)
+
+print(compute(10, 2))
+print(compute(10, 0))

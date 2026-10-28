@@ -45,6 +45,7 @@ enum class ExprKind : std::uint8_t {
   Lambda,
   Comprehension,
   Match,
+  Try,
 };
 
 enum class StmtKind : std::uint8_t {
@@ -125,6 +126,8 @@ enum class BuiltinId : std::uint8_t {
   Any,
   All,
   Some,
+  Ok,
+  Err,
   Panic,
   Assert,
   AssertEq,
@@ -151,6 +154,8 @@ inline BuiltinId builtinIdForName(std::string_view name) {
   if (name == "any") return BuiltinId::Any;
   if (name == "all") return BuiltinId::All;
   if (name == "Some") return BuiltinId::Some;
+  if (name == "Ok") return BuiltinId::Ok;
+  if (name == "Err") return BuiltinId::Err;
   if (name == "panic") return BuiltinId::Panic;
   if (name == "assert") return BuiltinId::Assert;
   if (name == "assert_eq") return BuiltinId::AssertEq;
@@ -366,6 +371,11 @@ struct MatchExpr : Expr {
   std::vector<MatchArm> arms;
 };
 
+struct TryExpr : Expr {
+  TryExpr() : Expr(ExprKind::Try) {}
+  ExprPtr operand;
+};
+
 // ---------------------------------------------------------------- statements
 
 struct Stmt {
@@ -535,6 +545,10 @@ struct TypeAliasDecl : Stmt {
   std::string name;
   Span nameSpan;
   TypeExprPtr type;
+};
+
+struct Program {
+  std::vector<StmtPtr> statements;
 };
 
 }  // namespace a

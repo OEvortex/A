@@ -83,6 +83,10 @@ std::string formatValue(const Value& value, bool quoteStrings) {
     if (!(*optional)->hasValue) return "None";
     return "Some(" + formatValue((*optional)->value, true) + ")";
   }
+  if (auto* result = std::get_if<ResultPtr>(&value.data)) {
+    if ((*result)->ok) return "Ok(" + formatValue((*result)->value, true) + ")";
+    return "Err(" + formatValue((*result)->value, true) + ")";
+  }
   if (auto* tuple = std::get_if<TuplePtr>(&value.data)) {
     std::string out = "(";
     for (std::size_t i = 0; i < (*tuple)->items.size(); ++i) {

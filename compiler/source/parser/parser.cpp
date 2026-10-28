@@ -1043,11 +1043,37 @@ ExprPtr Parser::parsePostfix() {
       expr = std::move(call);
       continue;
     }
-    if (check(Tok::LBracket)) {
-      expr = parseCallOrIndexPostfix(std::move(expr));
-      continue;
-    }
-    break;
+     if (check(Tok::LBracket)) {
+       expr = parseCallOrIndexPostfix(std::move(expr));
+       continue;
+     }
+     if (check(Tok::Question)) {
+       bool ternary = false;
+       int depth = 0;
+       for (std::size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+         Tok k = tokens_[i].kind;
+         if (k == Tok::LParen || k == Tok::LBracket || k == Tok::LBrace) {
+           ++depth;
+         } else if (k == Tok::RParen || k == Tok::RBracket || k == Tok::RBrace) {
+           if (depth == 0) break;
+           --depth;
+         } else if (depth == 0 && k == Tok::Colon) {
+           ternary = true;
+           break;
+         } else if (depth == 0 && (k == Tok::Comma || k == Tok::Newline || k == Tok::Eof ||
+                                    k == Tok::Dedent)) {
+           break;
+         }
+       }
+       if (ternary) break;
+       const Token& opTok = advance();
+       auto tryExpr = std::make_unique<TryExpr>();
+       tryExpr->span = Span::join(expr->span, opTok.span);
+       tryExpr->operand = std::move(expr);
+       expr = std::move(tryExpr);
+       continue;
+     }
+     break;
   }
   return expr;
 }

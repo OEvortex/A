@@ -24,6 +24,9 @@ using StructPtr = std::shared_ptr<StructObj>;
 struct OptionalValue;
 using OptionalPtr = std::shared_ptr<OptionalValue>;
 
+struct ResultValue;
+using ResultPtr = std::shared_ptr<ResultValue>;
+
 struct TupleValue;
 using TuplePtr = std::shared_ptr<TupleValue>;
 
@@ -47,7 +50,7 @@ struct RangeValue {
 
 struct Value {
   std::variant<std::monostate, bool, std::int64_t, double, char32_t, std::string,
-               ArrayPtr, StructPtr, RangeValue, OptionalPtr, TuplePtr, ClosurePtr, ModulePtr,
+                ArrayPtr, StructPtr, RangeValue, OptionalPtr, ResultPtr, TuplePtr, ClosurePtr, ModulePtr,
                NativeFunctionPtr, EnumPtr>
       data;
 };
@@ -72,6 +75,11 @@ struct EnumObj {
 
 struct OptionalValue {
   bool hasValue = false;
+  Value value;
+};
+
+struct ResultValue {
+  bool ok = false;
   Value value;
 };
 

@@ -19,6 +19,7 @@ enum class TypeKind {
   Array,
   Range,
   Optional,
+  Result,
   Tuple,
   Struct,
   Enum,
@@ -37,6 +38,7 @@ struct Type {
   int bits = 0;
   bool isSigned = true;
   TypePtr elem;
+  TypePtr errorType;  // for Result<T, E>
   std::string structName;
   int moduleId = -1;
   std::vector<TypePtr> params;
@@ -97,6 +99,13 @@ inline TypePtr typeRange(TypePtr elem) {
 inline TypePtr typeOptional(TypePtr elem) {
   auto type = makeType(TypeKind::Optional);
   type->elem = std::move(elem);
+  return type;
+}
+
+inline TypePtr typeResult(TypePtr value, TypePtr error) {
+  auto type = makeType(TypeKind::Result);
+  type->elem = std::move(value);
+  type->errorType = std::move(error);
   return type;
 }
 
@@ -192,6 +201,7 @@ inline std::string typeName(const TypePtr& type) {
     case TypeKind::Array: return "[" + typeName(t->elem) + "]";
     case TypeKind::Range: return "range<" + typeName(t->elem) + ">";
     case TypeKind::Optional: return typeName(t->elem) + "?";
+    case TypeKind::Result: return "Result<" + typeName(t->elem) + ", " + typeName(t->errorType) + ">";
     case TypeKind::Tuple: {
       std::string s = "(";
       for (std::size_t i = 0; i < t->params.size(); ++i) {

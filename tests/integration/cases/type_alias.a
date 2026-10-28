@@ -1,0 +1,6 @@
+type Meters = f64
+type UserId = i64
+
+var x: Meters = 3.5
+var id: UserId = 42
+print(x, id)
