@@ -160,7 +160,9 @@ inline bool isNumericType(const TypePtr& type) {
 inline TypePtr builtinTypeByName(const std::string& name) {
   if (name == "bool") return typeBool();
   if (name == "char") return typeChar();
-  if (name == "String") return typeString();
+  if (name == "String" || name == "str") return typeString();
+  if (name == "int") return typeInt(64, true);
+  if (name == "float") return typeFloat(64);
   if (name == "void") return typeVoid();
   if (name == "i8") return typeInt(8, true);
   if (name == "i16") return typeInt(16, true);

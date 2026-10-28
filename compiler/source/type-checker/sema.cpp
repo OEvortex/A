@@ -450,6 +450,20 @@ void Sema::registerStructLayout(StructDecl& decl) {
   sym.name = q;
   sym.decl = &decl;
 
+  // Inherit fields from baseClass if present
+  if (!decl.baseClass.empty()) {
+    std::string baseQ = qualified(decl.baseClass);
+    auto baseIt = structs_.find(baseQ);
+    if (baseIt == structs_.end()) {
+      baseIt = structs_.find(decl.baseClass);
+    }
+    if (baseIt != structs_.end()) {
+      for (const auto& f : baseIt->second.fields) {
+        sym.fields.push_back(f);
+      }
+    }
+  }
+
   for (FieldDecl& field : decl.fields) {
     for (const auto& existing : sym.fields) {
       if (existing.first == field.name) {
@@ -515,6 +529,20 @@ void Sema::registerMethodSignatures(StructDecl& decl) {
   const std::string q = qualified(decl.name);
   StructSym& sym = structs_[q];
   TypePtr selfType = typeStruct(q);
+
+  // Inherit methods from baseClass if present
+  if (!decl.baseClass.empty()) {
+    std::string baseQ = qualified(decl.baseClass);
+    auto baseIt = structs_.find(baseQ);
+    if (baseIt == structs_.end()) {
+      baseIt = structs_.find(decl.baseClass);
+    }
+    if (baseIt != structs_.end()) {
+      for (const auto& m : baseIt->second.methods) {
+        sym.methods.insert(m);
+      }
+    }
+  }
 
   for (auto& methodPtr : decl.methods) {
     FnDecl& method = *methodPtr;
@@ -1010,7 +1038,7 @@ void Sema::checkAssign(AssignStmt& stmt) {
                     "Cannot initialize '" + ident->name + "' with a void value.");
         valueType = typeError();
       }
-      declareVar(ident->name, ident->span, valueType, false);
+      declareVar(ident->name, ident->span, valueType, true);
       return;
     }
 
@@ -1461,6 +1489,10 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
       return typeError();
     }
     return lhs;
+  }
+
+  if (op == "in" || op == "not in") {
+    return typeBool();
   }
 
   const bool comparison = op == "==" || op == "!=" || op == "<" || op == ">" ||

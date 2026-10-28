@@ -61,6 +61,8 @@ const char* binOpName(BinOp op) {
     case BinOp::Or: return "or";
     case BinOp::Coalesce: return "??";
     case BinOp::Range: return "..";
+    case BinOp::In: return "in";
+    case BinOp::NotIn: return "not in";
     case BinOp::Invalid: break;
   }
   return "?";
@@ -647,7 +649,7 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
     Binding* binding = env.find(ident->name);
     if (!binding) {
       Binding fresh;
-      fresh.mutableBinding = false;
+      fresh.mutableBinding = true;
       env.vars[ident->name] = std::move(fresh);
       binding = &env.vars[ident->name];
     }
@@ -1203,6 +1205,31 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
 }
 
 Value Interpreter::applyBinary(BinOp op, const Value& lhs, const Value& rhs, Span span) {
+  if (op == BinOp::In || op == BinOp::NotIn) {
+    bool found = false;
+    if (auto* array = std::get_if<ArrayPtr>(&rhs.data)) {
+      for (const auto& item : **array) {
+        if (valuesEqual(lhs, item)) {
+          found = true;
+          break;
+        }
+      }
+    } else if (auto* range = std::get_if<RangeValue>(&rhs.data)) {
+      if (auto* val = std::get_if<std::int64_t>(&lhs.data)) {
+        if (range->step > 0 && *val >= range->start && *val < range->end && ((*val - range->start) % range->step == 0)) {
+          found = true;
+        }
+      }
+    } else if (auto* str = std::get_if<std::string>(&rhs.data)) {
+      if (auto* sub = std::get_if<std::string>(&lhs.data)) {
+        found = (str->find(*sub) != std::string::npos);
+      }
+    } else {
+      fail(span, "Right operand of 'in' must be an array, range, or string.");
+    }
+    return makeBool(op == BinOp::In ? found : !found);
+  }
+
   if (auto* left = std::get_if<OptionalPtr>(&lhs.data)) {
     auto* right = std::get_if<OptionalPtr>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between optional and non-optional.");
@@ -1549,13 +1576,15 @@ Value Interpreter::callMethod(const StructPtr& object, const std::string& method
   const StructDecl* decl = findStruct(object->typeName);
   if (!decl) fail(span, "Internal error: unknown struct '" + object->typeName + "'.");
 
-  for (const auto& method : decl->methods) {
-    if (method->name != methodName) continue;
-    ArgList all;
-    all.reserve(args.size() + 1);
-    all.push_back(makeStructValue(object));
-    for (auto& arg : args) all.push_back(std::move(arg));
-    return callFunction(*method, std::move(all), span);
+  for (const StructDecl* curr = decl; curr; curr = curr->baseClass.empty() ? nullptr : findStruct(curr->baseClass.find("::") != std::string::npos ? curr->baseClass : qualifiedName(curr->baseClass))) {
+    for (const auto& method : curr->methods) {
+      if (method->name != methodName) continue;
+      ArgList all;
+      all.reserve(args.size() + 1);
+      all.push_back(makeStructValue(object));
+      for (auto& arg : args) all.push_back(std::move(arg));
+      return callFunction(*method, std::move(all), span);
+    }
   }
 
   for (const auto& field : object->fields) {
@@ -1571,13 +1600,29 @@ Value Interpreter::callMethod(const StructPtr& object, const std::string& method
 
 Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<CallArg>& args,
                                    Env& env, Span span) {
-  std::vector<Value> values(decl.fields.size());
-  std::vector<bool> provided(decl.fields.size(), false);
+  // Collect all field names and spans including base classes
+  struct FieldInfo {
+    std::string name;
+    Span span;
+  };
+  std::vector<FieldInfo> allFields;
+  if (!decl.baseClass.empty()) {
+    std::string baseQ = decl.baseClass.find("::") != std::string::npos ? decl.baseClass : qualifiedName(decl.baseClass);
+    const StructDecl* baseDecl = findStruct(baseQ);
+    if (!baseDecl) baseDecl = findStruct(decl.baseClass);
+    if (baseDecl) {
+      for (const auto& bf : baseDecl->fields) allFields.push_back({bf.name, bf.span});
+    }
+  }
+  for (const auto& f : decl.fields) allFields.push_back({f.name, f.span});
+
+  std::vector<Value> values(allFields.size());
+  std::vector<bool> provided(allFields.size(), false);
 
   std::size_t nextPositional = 0;
   for (const auto& arg : args) {
     if (arg.name.empty()) {
-      if (nextPositional >= decl.fields.size()) {
+      if (nextPositional >= allFields.size()) {
         fail(span, "Too many positional arguments for struct '" + decl.name + "'.");
       }
       values[nextPositional] = eval(*arg.value, env);
@@ -1586,14 +1631,14 @@ Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<Cal
       continue;
     }
 
-    std::size_t index = decl.fields.size();
-    for (std::size_t i = 0; i < decl.fields.size(); ++i) {
-      if (decl.fields[i].name == arg.name) {
+    std::size_t index = allFields.size();
+    for (std::size_t i = 0; i < allFields.size(); ++i) {
+      if (allFields[i].name == arg.name) {
         index = i;
         break;
       }
     }
-    if (index == decl.fields.size()) {
+    if (index == allFields.size()) {
       fail(arg.nameSpan, "Struct '" + decl.name + "' has no field '" + arg.name + "'.");
     }
     values[index] = eval(*arg.value, env);
@@ -1605,12 +1650,12 @@ Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<Cal
   object->typeName = moduleIt != sema_.structModule.end()
                          ? qualifiedName(moduleIt->second, decl.name)
                          : decl.name;
-  object->fields.reserve(decl.fields.size());
-  for (std::size_t i = 0; i < decl.fields.size(); ++i) {
+  object->fields.reserve(allFields.size());
+  for (std::size_t i = 0; i < allFields.size(); ++i) {
     if (!provided[i]) {
-      fail(span, "Missing field '" + decl.fields[i].name + "' in struct '" + decl.name + "'.");
+      fail(span, "Missing field '" + allFields[i].name + "' in struct '" + decl.name + "'.");
     }
-    object->fields.emplace_back(decl.fields[i].name, std::move(values[i]));
+    object->fields.emplace_back(allFields[i].name, std::move(values[i]));
   }
   return makeStructValue(std::move(object));
 }

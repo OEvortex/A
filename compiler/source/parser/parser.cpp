@@ -76,7 +76,16 @@ StmtPtr Parser::parseStatement() {
     case Tok::KwFn:
       return parseFnDecl();
     case Tok::KwStruct:
+    case Tok::KwClass:
+    case Tok::KwMetaclass:
       return parseStructDecl();
+    case Tok::KwPass: {
+      advance();
+      expectNewline();
+      auto passExpr = std::make_unique<ExprStmt>();
+      passExpr->expr = std::make_unique<IntLitExpr>();
+      return passExpr;
+    }
     case Tok::KwEnum:
       return parseEnumDecl();
     case Tok::KwVar:
@@ -217,19 +226,52 @@ ParamDecl Parser::parseParam() {
 
 StmtPtr Parser::parseStructDecl() {
   Span start = cur().span;
-  expect(Tok::KwStruct, "'struct'");
-  const Token& nameTok = expect(Tok::Ident, "a struct name");
+  bool isClassDecl = (cur().kind == Tok::KwClass);
+  bool isMetaclassDecl = (cur().kind == Tok::KwMetaclass);
+  advance(); // consume struct, class, or metaclass
+
+  const Token& nameTok = expect(Tok::Ident, "a class or struct name");
 
   auto decl = std::make_unique<StructDecl>();
   decl->name = nameTok.lexeme;
   decl->nameSpan = nameTok.span;
+  decl->isClass = isClassDecl || isMetaclassDecl;
 
-  expect(Tok::Colon, "':' after the struct name");
+  // Support class(BaseClass) or class(BaseClass, metaclass=Meta) or class(metaclass=Meta)
+  if (match(Tok::LParen)) {
+    while (!check(Tok::RParen) && !check(Tok::Eof)) {
+      if (check(Tok::Ident) && peek(1).kind == Tok::Eq) {
+        std::string kw = advance().lexeme;
+        advance(); // consume '='
+        const Token& valTok = expect(Tok::Ident, "a metaclass name");
+        if (kw == "metaclass") {
+          decl->metaclass = valTok.lexeme;
+        }
+      } else if (check(Tok::KwMetaclass) && peek(1).kind == Tok::Eq) {
+        advance(); // consume metaclass
+        advance(); // consume '='
+        const Token& valTok = expect(Tok::Ident, "a metaclass name");
+        decl->metaclass = valTok.lexeme;
+      } else {
+        const Token& baseTok = expect(Tok::Ident, "a base class name");
+        decl->baseClass = baseTok.lexeme;
+      }
+      if (!match(Tok::Comma)) break;
+    }
+    expect(Tok::RParen, "')' after inheritance list");
+  }
+
+  expect(Tok::Colon, "':' after the name");
   expectNewline();
-  expect(Tok::Indent, "an indented struct body");
+  expect(Tok::Indent, "an indented body");
 
   while (!check(Tok::Dedent) && !check(Tok::Eof)) {
     if (match(Tok::Newline)) continue;
+    if (check(Tok::KwPass)) {
+      advance();
+      expectNewline();
+      continue;
+    }
     if (check(Tok::KwFn)) {
       auto method = parseFnDecl();
       decl->methods.push_back(std::unique_ptr<FnDecl>(static_cast<FnDecl*>(method.release())));
@@ -681,6 +723,7 @@ int Parser::binaryPrecedence(Tok kind) {
     case Tok::QuestionQuestion: return 3;
     case Tok::KwOr: return 4;
     case Tok::KwAnd: return 5;
+    case Tok::KwIn:
     case Tok::EqEq:
     case Tok::NotEq:
     case Tok::Lt:
@@ -711,6 +754,7 @@ const char* Parser::opName(Tok kind) {
   switch (kind) {
     case Tok::KwOr: return "or";
     case Tok::KwAnd: return "and";
+    case Tok::KwIn: return "in";
     case Tok::EqEq: return "==";
     case Tok::NotEq: return "!=";
     case Tok::Lt: return "<";
@@ -778,6 +822,7 @@ BinOp Parser::binOp(Tok kind) {
     case Tok::ShrEq: return BinOp::Shr;
     case Tok::KwAnd: return BinOp::And;
     case Tok::KwOr: return BinOp::Or;
+    case Tok::KwIn: return BinOp::In;
     case Tok::QuestionQuestion: return BinOp::Coalesce;
     case Tok::DotDot: return BinOp::Range;
     default: return BinOp::Invalid;
@@ -804,8 +849,24 @@ bool Parser::isAssignmentOp(Tok kind) {
 }
 
 ExprPtr Parser::parseExpression(int minPrec) {
-  auto left = parsePrefix();
+  ExprPtr left = parsePrefix();
   while (true) {
+    if (cur().kind == Tok::KwNot && peek(1).kind == Tok::KwIn) {
+      Span notSpan = advance().span; // 'not'
+      Span inSpan = advance().span;  // 'in'
+      int prec = 7;
+      auto right = parseExpression(prec + 1);
+      auto binary = std::make_unique<BinaryExpr>();
+      binary->span = Span::join(left->span, right->span);
+      binary->opSpan = Span::join(notSpan, inSpan);
+      binary->op = "not in";
+      binary->binop = BinOp::NotIn;
+      binary->lhs = std::move(left);
+      binary->rhs = std::move(right);
+      left = std::move(binary);
+      continue;
+    }
+
     Tok kind = cur().kind;
     int prec = binaryPrecedence(kind);
     if (prec < minPrec || prec < 0) break;

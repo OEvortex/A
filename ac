@@ -1,0 +1,22 @@
+#!/bin/bash
+# 'ac' CLI: Directly compiles and executes an A language source file.
+# Usage: ac <file.a> [options]
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+A_BIN="${DIR}/build/a"
+
+if [ ! -x "${A_BIN}" ]; then
+  A_BIN="$(which a 2>/dev/null)"
+fi
+
+if [ ! -x "${A_BIN}" ]; then
+  echo "error: 'a' executable not found in build/ or PATH." >&2
+  exit 1
+fi
+
+if [ -z "$1" ]; then
+  echo "Usage: ac <file.a> [options]"
+  exit 1
+fi
+
+exec "${A_BIN}" run "$@"

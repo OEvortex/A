@@ -23,6 +23,18 @@ class NativeEmitter {
     emitHeaders();
     emitRuntimeHelpers();
     
+    // Emit class / struct definitions
+    for (std::size_t i = 0; i < graph_.modules.size(); ++i) {
+      currentModule_ = static_cast<int>(i);
+      const auto& mod = graph_.modules[i];
+      if (!mod.program) continue;
+      for (const auto& stmt : mod.program->statements) {
+        if (stmt->kind == StmtKind::StructDecl) {
+          emitStructDef(*static_cast<const StructDecl*>(stmt.get()));
+        }
+      }
+    }
+
     // Emit function prototypes
     for (std::size_t i = 0; i < graph_.modules.size(); ++i) {
       currentModule_ = static_cast<int>(i);
@@ -148,6 +160,30 @@ class NativeEmitter {
   std::string mangle(const std::string& name) {
     if (name == "main") return "_a_main";
     return "_a_" + name;
+  }
+
+  void emitStructDef(const StructDecl& decl) {
+    out_ << "struct " << mangle(decl.name);
+    if (!decl.baseClass.empty()) {
+      out_ << " : public " << mangle(decl.baseClass);
+    }
+    out_ << " {\n";
+    for (const auto& field : decl.fields) {
+      out_ << "    auto " << mangle(field.name) << ";\n";
+    }
+    for (const auto& method : decl.methods) {
+      out_ << "    auto " << mangle(method->name) << "(";
+      for (std::size_t i = 1; i < method->params.size(); ++i) {
+        if (i > 1) out_ << ", ";
+        out_ << "auto " << mangle(method->params[i].name);
+      }
+      out_ << ") {\n";
+      for (const auto& s : method->body) {
+        emitStmt(*s, 2);
+      }
+      out_ << "    }\n";
+    }
+    out_ << "};\n\n";
   }
 
   void emitFunctionDecl(const FnDecl& fn) {

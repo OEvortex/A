@@ -94,6 +94,8 @@ enum class BinOp : std::uint8_t {
   Or,
   Coalesce,
   Range,
+  In,
+  NotIn,
 };
 
 // Statically resolved builtin identity. `Sema` marks each call site whose
@@ -504,8 +506,11 @@ struct StructDecl : Stmt {
   StructDecl() : Stmt(StmtKind::StructDecl) {}
   std::string name;
   Span nameSpan;
+  std::string baseClass;  // base class name if class(Base)
+  std::string metaclass;  // metaclass name if specified
   std::vector<FieldDecl> fields;
   std::vector<std::unique_ptr<FnDecl>> methods;
+  bool isClass = false;
 };
 
 struct EnumVariant {
