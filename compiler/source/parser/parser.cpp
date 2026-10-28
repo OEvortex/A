@@ -588,6 +588,7 @@ StmtPtr Parser::parseSimpleStatement() {
     auto stmt = std::make_unique<AssignStmt>();
     stmt->span = Span::join(start, tokens_[pos_ - 1].span);
     stmt->op = opName(opTok.kind);
+    stmt->binop = binOp(opTok.kind);
     stmt->opSpan = opTok.span;
     stmt->target = std::move(target);
     stmt->value = std::move(value);
@@ -746,6 +747,43 @@ const char* Parser::opName(Tok kind) {
   }
 }
 
+BinOp Parser::binOp(Tok kind) {
+  switch (kind) {
+    case Tok::Plus: return BinOp::Add;
+    case Tok::PlusEq: return BinOp::Add;
+    case Tok::Minus: return BinOp::Sub;
+    case Tok::MinusEq: return BinOp::Sub;
+    case Tok::Star: return BinOp::Mul;
+    case Tok::StarEq: return BinOp::Mul;
+    case Tok::Slash: return BinOp::Div;
+    case Tok::SlashEq: return BinOp::Div;
+    case Tok::Percent: return BinOp::Mod;
+    case Tok::PercentEq: return BinOp::Mod;
+    case Tok::StarStar: return BinOp::Pow;
+    case Tok::EqEq: return BinOp::Eq;
+    case Tok::NotEq: return BinOp::Ne;
+    case Tok::Lt: return BinOp::Lt;
+    case Tok::Gt: return BinOp::Gt;
+    case Tok::Le: return BinOp::Le;
+    case Tok::Ge: return BinOp::Ge;
+    case Tok::Amp: return BinOp::BitAnd;
+    case Tok::AmpEq: return BinOp::BitAnd;
+    case Tok::Bar: return BinOp::BitOr;
+    case Tok::BarEq: return BinOp::BitOr;
+    case Tok::Caret: return BinOp::BitXor;
+    case Tok::CaretEq: return BinOp::BitXor;
+    case Tok::Shl: return BinOp::Shl;
+    case Tok::ShlEq: return BinOp::Shl;
+    case Tok::Shr: return BinOp::Shr;
+    case Tok::ShrEq: return BinOp::Shr;
+    case Tok::KwAnd: return BinOp::And;
+    case Tok::KwOr: return BinOp::Or;
+    case Tok::QuestionQuestion: return BinOp::Coalesce;
+    case Tok::DotDot: return BinOp::Range;
+    default: return BinOp::Invalid;
+  }
+}
+
 bool Parser::isAssignmentOp(Tok kind) {
   switch (kind) {
     case Tok::Eq:
@@ -822,6 +860,7 @@ ExprPtr Parser::parseExpression(int minPrec) {
     binary->span = Span::join(left->span, right->span);
     binary->opSpan = opTok.span;
     binary->op = opName(kind);
+    binary->binop = binOp(kind);
     binary->lhs = std::move(left);
     binary->rhs = std::move(right);
     left = std::move(binary);

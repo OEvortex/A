@@ -78,6 +78,7 @@ class Parser {
   static int binaryPrecedence(Tok kind);
   static bool isRightAssociative(Tok kind);
   static const char* opName(Tok kind);
+  static BinOp binOp(Tok kind);
   static bool isAssignmentOp(Tok kind);
 
   std::vector<Token> tokens_;

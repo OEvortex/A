@@ -1,0 +1,15 @@
+fn main() -> void:
+    var total = 0
+    for i in 0..4:
+        var doubled = i * 2
+        total += doubled
+    print(total)
+
+    # Nested blocks still shadow the loop binding per iteration.
+    for i in 0..3:
+        if i == 1:
+            var i = 99
+            print(i)
+        print(i)
+
+main()

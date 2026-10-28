@@ -26,6 +26,46 @@ namespace {
 
 constexpr int kMaxCallDepth = 2000;
 
+// Tagged casts. Each AST node carries its kind; a matching kind means the
+// static_cast is valid and costs one compare instead of an RTTI lookup.
+template <class T>
+const T* asExpr(const Expr& expr, ExprKind kind) {
+  return expr.kind == kind ? static_cast<const T*>(&expr) : nullptr;
+}
+
+template <class T>
+const T* asStmt(const Stmt& stmt, StmtKind kind) {
+  return stmt.kind == kind ? static_cast<const T*>(&stmt) : nullptr;
+}
+
+const char* binOpName(BinOp op) {
+  switch (op) {
+    case BinOp::Add: return "+";
+    case BinOp::Sub: return "-";
+    case BinOp::Mul: return "*";
+    case BinOp::Div: return "/";
+    case BinOp::Mod: return "%";
+    case BinOp::Pow: return "**";
+    case BinOp::Eq: return "==";
+    case BinOp::Ne: return "!=";
+    case BinOp::Lt: return "<";
+    case BinOp::Gt: return ">";
+    case BinOp::Le: return "<=";
+    case BinOp::Ge: return ">=";
+    case BinOp::BitAnd: return "&";
+    case BinOp::BitOr: return "|";
+    case BinOp::BitXor: return "^";
+    case BinOp::Shl: return "<<";
+    case BinOp::Shr: return ">>";
+    case BinOp::And: return "and";
+    case BinOp::Or: return "or";
+    case BinOp::Coalesce: return "??";
+    case BinOp::Range: return "..";
+    case BinOp::Invalid: break;
+  }
+  return "?";
+}
+
 struct CallDepthGuard {
   int& depth;
   explicit CallDepthGuard(int& d) : depth(d) { ++depth; }
@@ -254,7 +294,7 @@ void Interpreter::execStatements(const std::vector<StmtPtr>& statements, Env& en
 
   try {
     for (const auto& statement : statements) {
-      if (auto* defer = dynamic_cast<const DeferStmt*>(statement.get())) {
+      if (auto* defer = asStmt<DeferStmt>(*statement, StmtKind::Defer)) {
         defers.push_back(defer->body.get());
         continue;
       }
@@ -290,7 +330,9 @@ void Interpreter::execBlock(const std::vector<StmtPtr>& body, Env& parent) {
 }
 
 void Interpreter::exec(const Stmt& stmt, Env& env) {
-  if (auto* node = dynamic_cast<const LetStmt*>(&stmt)) {
+  switch (stmt.kind) {
+  case StmtKind::Let: {
+    auto* node = static_cast<const LetStmt*>(&stmt);
     Binding binding;
     binding.value = eval(*node->init, env);
     binding.mutableBinding = node->mutableBinding;
@@ -298,20 +340,21 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const AssignStmt*>(&stmt)) {
+  case StmtKind::Assign: {
+    auto* node = static_cast<const AssignStmt*>(&stmt);
     LValue target = resolveLValue(*node->target, env);
     if (node->op == "=") {
       writeLValue(target, eval(*node->value, env));
     } else {
       Value left = readLValue(target);
       Value right = eval(*node->value, env);
-      std::string baseOp = node->op.substr(0, node->op.size() - 1);
-      writeLValue(target, applyBinary(baseOp, left, right, node->opSpan));
+      writeLValue(target, applyBinary(node->binop, left, right, node->opSpan));
     }
     return;
   }
 
-  if (auto* node = dynamic_cast<const DestructureStmt*>(&stmt)) {
+  case StmtKind::Destructure: {
+    auto* node = static_cast<const DestructureStmt*>(&stmt);
     Value value = eval(*node->value, env);
     auto* tuple = std::get_if<TuplePtr>(&value.data);
     if (!tuple) fail(node->span, "Destructuring requires a tuple value.");
@@ -330,12 +373,14 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const ExprStmt*>(&stmt)) {
+  case StmtKind::Expr: {
+    auto* node = static_cast<const ExprStmt*>(&stmt);
     eval(*node->expr, env);
     return;
   }
 
-  if (auto* node = dynamic_cast<const IfStmt*>(&stmt)) {
+  case StmtKind::If: {
+    auto* node = static_cast<const IfStmt*>(&stmt);
     for (auto& branch : node->branches) {
       Value condition = eval(*branch.cond, env);
       if (expectBool(condition, branch.cond->span, "The 'if' condition")) {
@@ -347,7 +392,8 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const WhileStmt*>(&stmt)) {
+  case StmtKind::While: {
+    auto* node = static_cast<const WhileStmt*>(&stmt);
     while (true) {
       Value condition = eval(*node->cond, env);
       if (!expectBool(condition, node->cond->span, "The 'while' condition")) break;
@@ -362,7 +408,8 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const DoWhileStmt*>(&stmt)) {
+  case StmtKind::DoWhile: {
+    auto* node = static_cast<const DoWhileStmt*>(&stmt);
     while (true) {
       try {
         execBlock(node->body, env);
@@ -377,21 +424,20 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const ForStmt*>(&stmt)) {
+  case StmtKind::For: {
+    auto* node = static_cast<const ForStmt*>(&stmt);
     Value iterable = eval(*node->iterable, env);
 
+    // One scope for the whole loop. The loop variable binding is created once
+    // and updated in place; the body no longer allocates a hash table per
+    // iteration. Declarations in the body are re-initialized each pass.
+    Env child;
+    child.parent = &env;
+    child.vars[node->var].mutableBinding = false;
+
     auto runIteration = [&](Value element) {
-      Env child;
-      child.parent = &env;
-      Binding binding;
-      binding.value = std::move(element);
-      binding.mutableBinding = false;
-      child.vars[node->var] = std::move(binding);
-      try {
-        execStatements(node->body, child);
-      } catch (BreakSignal&) {
-        throw BreakSignal{};
-      }
+      child.vars[node->var].value = std::move(element);
+      execStatements(node->body, child);
     };
 
     if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
@@ -440,7 +486,8 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     fail(node->iterable->span, "This value cannot be iterated over.");
   }
 
-  if (auto* node = dynamic_cast<const LoopStmt*>(&stmt)) {
+  case StmtKind::Loop: {
+    auto* node = static_cast<const LoopStmt*>(&stmt);
     while (true) {
       try {
         execBlock(node->body, env);
@@ -453,30 +500,39 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     return;
   }
 
-  if (auto* node = dynamic_cast<const ReturnStmt*>(&stmt)) {
+  case StmtKind::Return: {
+    auto* node = static_cast<const ReturnStmt*>(&stmt);
     Value value = node->value ? eval(*node->value, env) : makeVoid();
     throw ReturnSignal{std::move(value)};
   }
 
-  if (dynamic_cast<const BreakStmt*>(&stmt)) throw BreakSignal{};
-  if (dynamic_cast<const ContinueStmt*>(&stmt)) throw ContinueSignal{};
+  case StmtKind::Break: throw BreakSignal{};
+  case StmtKind::Continue: throw ContinueSignal{};
 
-  if (auto* node = dynamic_cast<const DeferStmt*>(&stmt)) {
+  case StmtKind::Defer: {
+    auto* node = static_cast<const DeferStmt*>(&stmt);
     exec(*node->body, env);
     return;
   }
 
-  if (auto* node = dynamic_cast<const ImportStmt*>(&stmt)) {
+  case StmtKind::Import: {
+    auto* node = static_cast<const ImportStmt*>(&stmt);
     bindImport(*node, env);
     return;
   }
 
-  if (auto* node = dynamic_cast<const FromImportStmt*>(&stmt)) {
+  case StmtKind::FromImport: {
+    auto* node = static_cast<const FromImportStmt*>(&stmt);
     bindFromImport(*node, env);
     return;
   }
 
-  // Function and struct declarations have no runtime effect.
+  case StmtKind::FnDecl:
+  case StmtKind::StructDecl:
+  case StmtKind::EnumDecl:
+    // Declarations have no runtime effect; they are registered by sema.
+    return;
+  }
 }
 
 void Interpreter::bindImport(const ImportStmt& stmt, Env& env) {
@@ -551,7 +607,7 @@ void Interpreter::bindFromImport(const FromImportStmt& stmt, Env& env) {
 Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
   LValue lvalue;
 
-  if (auto* ident = dynamic_cast<const IdentExpr*>(&target)) {
+  if (auto* ident = asExpr<IdentExpr>(target, ExprKind::Ident)) {
     Binding* binding = env.find(ident->name);
     if (!binding) {
       Binding fresh;
@@ -564,7 +620,7 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
     return lvalue;
   }
 
-  if (auto* field = dynamic_cast<const FieldExpr*>(&target)) {
+  if (auto* field = asExpr<FieldExpr>(target, ExprKind::Field)) {
     Value objectValue = eval(*field->object, env);
     if (auto* modulePtr = std::get_if<ModulePtr>(&objectValue.data)) {
       const ModuleObj& module = **modulePtr;
@@ -597,7 +653,7 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
                                "' has no field '" + field->field + "'.");
   }
 
-  if (auto* index = dynamic_cast<const IndexExpr*>(&target)) {
+  if (auto* index = asExpr<IndexExpr>(target, ExprKind::Index)) {
     Value objectValue = eval(*index->object, env);
     auto* array = std::get_if<ArrayPtr>(&objectValue.data);
     if (!array) fail(index->span, "Index assignment requires an array.");
@@ -652,15 +708,17 @@ std::int64_t Interpreter::normalizeIndex(std::int64_t index, std::size_t length,
 // ---------------------------------------------------------------- evaluation
 
 Value Interpreter::eval(const Expr& expr, Env& env) {
-  if (auto* node = dynamic_cast<const IntLitExpr*>(&expr)) return makeInt(node->value);
-  if (auto* node = dynamic_cast<const FloatLitExpr*>(&expr)) return makeFloat(node->value);
-  if (auto* node = dynamic_cast<const BoolLitExpr*>(&expr)) return makeBool(node->value);
-  if (auto* node = dynamic_cast<const CharLitExpr*>(&expr)) return makeChar(node->value);
-  if (auto* node = dynamic_cast<const StringLitExpr*>(&expr)) return evalString(*node, env);
+  switch (expr.kind) {
+  case ExprKind::IntLit: return makeInt(static_cast<const IntLitExpr&>(expr).value);
+  case ExprKind::FloatLit: return makeFloat(static_cast<const FloatLitExpr&>(expr).value);
+  case ExprKind::BoolLit: return makeBool(static_cast<const BoolLitExpr&>(expr).value);
+  case ExprKind::CharLit: return makeChar(static_cast<const CharLitExpr&>(expr).value);
+  case ExprKind::StringLit: return evalString(static_cast<const StringLitExpr&>(expr), env);
 
-  if (auto* node = dynamic_cast<const IdentExpr*>(&expr)) return evalIdentifier(*node, env);
+  case ExprKind::Ident: return evalIdentifier(static_cast<const IdentExpr&>(expr), env);
 
-  if (auto* node = dynamic_cast<const UnaryExpr*>(&expr)) {
+  case ExprKind::Unary: {
+    auto* node = static_cast<const UnaryExpr*>(&expr);
     Value operand = eval(*node->operand, env);
     if (node->op == "!") {      auto* optional = std::get_if<OptionalPtr>(&operand.data);
       if (!optional) fail(node->span, "Operator '!' requires an optional value.");
@@ -688,8 +746,9 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
     fail(node->span, "Operator '-' requires a numeric operand.");
   }
 
-  if (auto* node = dynamic_cast<const BinaryExpr*>(&expr)) return evalBinary(*node, env);
-  if (auto* node = dynamic_cast<const RangeExpr*>(&expr)) {
+  case ExprKind::Binary: return evalBinary(static_cast<const BinaryExpr&>(expr), env);
+  case ExprKind::Range: {
+    auto* node = static_cast<const RangeExpr*>(&expr);
     std::int64_t start = expectInt(eval(*node->start, env), node->start->span, "The range start");
     std::int64_t end = expectInt(eval(*node->end, env), node->end->span, "The range end");
     std::int64_t step = 1;
@@ -703,24 +762,27 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
     }
     return makeRange(start, end, step);
   }
-  if (auto* node = dynamic_cast<const TernaryExpr*>(&expr)) {
+  case ExprKind::Ternary: {
+    auto* node = static_cast<const TernaryExpr*>(&expr);
     if (expectBool(eval(*node->cond, env), node->cond->span, "The condition of '\?:'")) {
       return eval(*node->thenValue, env);
     }
     return eval(*node->elseValue, env);
   }
 
-  if (auto* node = dynamic_cast<const CallExpr*>(&expr)) return evalCall(*node, env);
-  if (auto* node = dynamic_cast<const IndexExpr*>(&expr)) return evalIndex(*node, env);
-  if (auto* node = dynamic_cast<const SliceExpr*>(&expr)) return evalSlice(*node, env);
-  if (auto* node = dynamic_cast<const FieldExpr*>(&expr)) return evalField(*node, env);
-  if (auto* node = dynamic_cast<const SafeNavExpr*>(&expr)) return evalSafeNav(*node, env);
-  if (auto* node = dynamic_cast<const ArrayLitExpr*>(&expr)) return evalArray(*node, env);
-  if (auto* node = dynamic_cast<const TupleExpr*>(&expr)) return evalTuple(*node, env);
-  if (auto* node = dynamic_cast<const LambdaExpr*>(&expr)) return evalLambda(*node, env);
-  if (auto* node = dynamic_cast<const MatchExpr*>(&expr)) return evalMatch(*node, env);
-  if (auto* node = dynamic_cast<const ComprehensionExpr*>(&expr)) {
+  case ExprKind::Call: return evalCall(static_cast<const CallExpr&>(expr), env);
+  case ExprKind::Index: return evalIndex(static_cast<const IndexExpr&>(expr), env);
+  case ExprKind::Slice: return evalSlice(static_cast<const SliceExpr&>(expr), env);
+  case ExprKind::Field: return evalField(static_cast<const FieldExpr&>(expr), env);
+  case ExprKind::SafeNav: return evalSafeNav(static_cast<const SafeNavExpr&>(expr), env);
+  case ExprKind::ArrayLit: return evalArray(static_cast<const ArrayLitExpr&>(expr), env);
+  case ExprKind::Tuple: return evalTuple(static_cast<const TupleExpr&>(expr), env);
+  case ExprKind::Lambda: return evalLambda(static_cast<const LambdaExpr&>(expr), env);
+  case ExprKind::Match: return evalMatch(static_cast<const MatchExpr&>(expr), env);
+  case ExprKind::Comprehension: {
+    auto* node = static_cast<const ComprehensionExpr*>(&expr);
     return evalComprehension(*node, env);
+  }
   }
 
   fail(expr.span, "Internal error: unsupported expression.");
@@ -981,13 +1043,12 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   Value iterable = eval(*expr.iterable, env);
   auto result = std::make_shared<std::vector<Value>>();
 
+  Env child;
+  child.parent = &env;
+  child.vars[expr.var].mutableBinding = false;
+
   auto runIteration = [&](Value element) {
-    Env child;
-    child.parent = &env;
-    Binding binding;
-    binding.value = std::move(element);
-    binding.mutableBinding = false;
-    child.vars[expr.var] = std::move(binding);
+    child.vars[expr.var].value = std::move(element);
     if (expr.condition && !expectBool(eval(*expr.condition, child), expr.condition->span,
                                       "The comprehension condition")) {
       return;
@@ -1017,31 +1078,35 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
 }
 
 Value Interpreter::evalBinary(const BinaryExpr& expr, Env& env) {
-  if (expr.op == "??") {
-    Value left = eval(*expr.lhs, env);
-    auto* optional = std::get_if<OptionalPtr>(&left.data);
-    if (!optional) fail(expr.opSpan, "The left side of '\?\?' must be optional.");
-    if ((*optional)->hasValue) return (*optional)->value;
-    return eval(*expr.rhs, env);
-  }
-  if (expr.op == "and") {
-    bool left = expectBool(eval(*expr.lhs, env), expr.lhs->span, "The left operand of 'and'");
-    if (!left) return makeBool(false);
-    return makeBool(expectBool(eval(*expr.rhs, env), expr.rhs->span, "The right operand of 'and'"));
-  }
-  if (expr.op == "or") {
-    bool left = expectBool(eval(*expr.lhs, env), expr.lhs->span, "The left operand of 'or'");
-    if (left) return makeBool(true);
-    return makeBool(expectBool(eval(*expr.rhs, env), expr.rhs->span, "The right operand of 'or'"));
-  }
-  if (expr.op == "..") {
-    std::int64_t start = expectInt(eval(*expr.lhs, env), expr.lhs->span, "The range start");
-    std::int64_t end = expectInt(eval(*expr.rhs, env), expr.rhs->span, "The range end");
-    return makeRange(start, end);
+  switch (expr.binop) {
+    case BinOp::Coalesce: {
+      Value left = eval(*expr.lhs, env);
+      auto* optional = std::get_if<OptionalPtr>(&left.data);
+      if (!optional) fail(expr.opSpan, "The left side of '\?\?' must be optional.");
+      if ((*optional)->hasValue) return (*optional)->value;
+      return eval(*expr.rhs, env);
+    }
+    case BinOp::And: {
+      bool left = expectBool(eval(*expr.lhs, env), expr.lhs->span, "The left operand of 'and'");
+      if (!left) return makeBool(false);
+      return makeBool(expectBool(eval(*expr.rhs, env), expr.rhs->span, "The right operand of 'and'"));
+    }
+    case BinOp::Or: {
+      bool left = expectBool(eval(*expr.lhs, env), expr.lhs->span, "The left operand of 'or'");
+      if (left) return makeBool(true);
+      return makeBool(expectBool(eval(*expr.rhs, env), expr.rhs->span, "The right operand of 'or'"));
+    }
+    case BinOp::Range: {
+      std::int64_t start = expectInt(eval(*expr.lhs, env), expr.lhs->span, "The range start");
+      std::int64_t end = expectInt(eval(*expr.rhs, env), expr.rhs->span, "The range end");
+      return makeRange(start, end);
+    }
+    default:
+      break;
   }
   Value left = eval(*expr.lhs, env);
   Value right = eval(*expr.rhs, env);
-  return applyBinary(expr.op, left, right, expr.opSpan);
+  return applyBinary(expr.binop, left, right, expr.opSpan);
 }
 
 bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
@@ -1088,50 +1153,49 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
   return false;
 }
 
-Value Interpreter::applyBinary(const std::string& op, const Value& lhs, const Value& rhs,
-                               Span span) {
+Value Interpreter::applyBinary(BinOp op, const Value& lhs, const Value& rhs, Span span) {
   if (auto* left = std::get_if<OptionalPtr>(&lhs.data)) {
     auto* right = std::get_if<OptionalPtr>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between optional and non-optional.");
-    if (op == "==" || op == "!=") {
+    if (op == BinOp::Eq || op == BinOp::Ne) {
       bool equal = false;
       if ((*left)->hasValue == (*right)->hasValue) {
         equal = !(*left)->hasValue || valuesEqual((*left)->value, (*right)->value);
       }
-      return makeBool(op == "==" ? equal : !equal);
+      return makeBool(op == BinOp::Eq ? equal : !equal);
     }
-    fail(span, "Operator '" + op + "' is not defined for optionals.");
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for optionals.");
   }
 
   if (auto* left = std::get_if<std::int64_t>(&lhs.data)) {
     auto* right = std::get_if<std::int64_t>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between integer and non-integer.");
     std::int64_t result = 0;
-    if (op == "+") {
+    if (op == BinOp::Add) {
       if (__builtin_add_overflow(*left, *right, &result)) fail(span, "Integer overflow in '+'.");
       return makeInt(result);
     }
-    if (op == "-") {
+    if (op == BinOp::Sub) {
       if (__builtin_sub_overflow(*left, *right, &result)) fail(span, "Integer overflow in '-'.");
       return makeInt(result);
     }
-    if (op == "*") {
+    if (op == BinOp::Mul) {
       if (__builtin_mul_overflow(*left, *right, &result)) fail(span, "Integer overflow in '*'.");
       return makeInt(result);
     }
-    if (op == "/") {
+    if (op == BinOp::Div) {
       if (*right == 0) fail(span, "Division by zero.", "Check the divisor before dividing.");
       if (*left == std::numeric_limits<std::int64_t>::min() && *right == -1) {
         fail(span, "Integer overflow in '/'.");
       }
       return makeInt(*left / *right);
     }
-    if (op == "%") {
+    if (op == BinOp::Mod) {
       if (*right == 0) fail(span, "Remainder by zero.", "Check the divisor before dividing.");
       if (*right == -1) return makeInt(0);
       return makeInt(*left % *right);
     }
-    if (op == "**") {
+    if (op == BinOp::Pow) {
       if (*right < 0) {
         fail(span, "Integer exponent must not be negative.",
              "Use floats (e.g. 2.0 ** -1) for negative exponents.");
@@ -1150,89 +1214,89 @@ Value Interpreter::applyBinary(const std::string& op, const Value& lhs, const Va
       }
       return makeInt(power);
     }
-    if (op == "&") return makeInt(*left & *right);
-    if (op == "|") return makeInt(*left | *right);
-    if (op == "^") return makeInt(*left ^ *right);
-    if (op == "<<") {
+    if (op == BinOp::BitAnd) return makeInt(*left & *right);
+    if (op == BinOp::BitOr) return makeInt(*left | *right);
+    if (op == BinOp::BitXor) return makeInt(*left ^ *right);
+    if (op == BinOp::Shl) {
       if (*right < 0 || *right > 63) {
         fail(span, "Shift amount " + std::to_string(*right) + " is out of range for integers.",
              "Shift amounts must be between 0 and 63.");
       }
       return makeInt(static_cast<std::int64_t>(static_cast<std::uint64_t>(*left) << *right));
     }
-    if (op == ">>") {
+    if (op == BinOp::Shr) {
       if (*right < 0 || *right > 63) {
         fail(span, "Shift amount " + std::to_string(*right) + " is out of range for integers.",
              "Shift amounts must be between 0 and 63.");
       }
       return makeInt(*left >> *right);
     }
-    if (op == "==") return makeBool(*left == *right);
-    if (op == "!=") return makeBool(*left != *right);
-    if (op == "<") return makeBool(*left < *right);
-    if (op == ">") return makeBool(*left > *right);
-    if (op == "<=") return makeBool(*left <= *right);
-    if (op == ">=") return makeBool(*left >= *right);
-    fail(span, "Operator '" + op + "' is not defined for integers.");
+    if (op == BinOp::Eq) return makeBool(*left == *right);
+    if (op == BinOp::Ne) return makeBool(*left != *right);
+    if (op == BinOp::Lt) return makeBool(*left < *right);
+    if (op == BinOp::Gt) return makeBool(*left > *right);
+    if (op == BinOp::Le) return makeBool(*left <= *right);
+    if (op == BinOp::Ge) return makeBool(*left >= *right);
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for integers.");
   }
 
   if (auto* left = std::get_if<double>(&lhs.data)) {
     auto* right = std::get_if<double>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between float and non-float.");
-    if (op == "+") return makeFloat(*left + *right);
-    if (op == "-") return makeFloat(*left - *right);
-    if (op == "*") return makeFloat(*left * *right);
-    if (op == "/") return makeFloat(*left / *right);
-    if (op == "**") return makeFloat(std::pow(*left, *right));
-    if (op == "==") return makeBool(*left == *right);
-    if (op == "!=") return makeBool(*left != *right);
-    if (op == "<") return makeBool(*left < *right);
-    if (op == ">") return makeBool(*left > *right);
-    if (op == "<=") return makeBool(*left <= *right);
-    if (op == ">=") return makeBool(*left >= *right);
-    fail(span, "Operator '" + op + "' is not defined for floats.");
+    if (op == BinOp::Add) return makeFloat(*left + *right);
+    if (op == BinOp::Sub) return makeFloat(*left - *right);
+    if (op == BinOp::Mul) return makeFloat(*left * *right);
+    if (op == BinOp::Div) return makeFloat(*left / *right);
+    if (op == BinOp::Pow) return makeFloat(std::pow(*left, *right));
+    if (op == BinOp::Eq) return makeBool(*left == *right);
+    if (op == BinOp::Ne) return makeBool(*left != *right);
+    if (op == BinOp::Lt) return makeBool(*left < *right);
+    if (op == BinOp::Gt) return makeBool(*left > *right);
+    if (op == BinOp::Le) return makeBool(*left <= *right);
+    if (op == BinOp::Ge) return makeBool(*left >= *right);
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for floats.");
   }
 
   if (auto* left = std::get_if<std::string>(&lhs.data)) {
     auto* right = std::get_if<std::string>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between string and non-string.");
-    if (op == "+") return makeString(*left + *right);
-    if (op == "==") return makeBool(*left == *right);
-    if (op == "!=") return makeBool(*left != *right);
-    if (op == "<") return makeBool(*left < *right);
-    if (op == ">") return makeBool(*left > *right);
-    if (op == "<=") return makeBool(*left <= *right);
-    if (op == ">=") return makeBool(*left >= *right);
-    fail(span, "Operator '" + op + "' is not defined for strings.");
+    if (op == BinOp::Add) return makeString(*left + *right);
+    if (op == BinOp::Eq) return makeBool(*left == *right);
+    if (op == BinOp::Ne) return makeBool(*left != *right);
+    if (op == BinOp::Lt) return makeBool(*left < *right);
+    if (op == BinOp::Gt) return makeBool(*left > *right);
+    if (op == BinOp::Le) return makeBool(*left <= *right);
+    if (op == BinOp::Ge) return makeBool(*left >= *right);
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for strings.");
   }
 
   if (auto* left = std::get_if<char32_t>(&lhs.data)) {
     auto* right = std::get_if<char32_t>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between characters.");
-    if (op == "==") return makeBool(*left == *right);
-    if (op == "!=") return makeBool(*left != *right);
-    if (op == "<") return makeBool(*left < *right);
-    if (op == ">") return makeBool(*left > *right);
-    if (op == "<=") return makeBool(*left <= *right);
-    if (op == ">=") return makeBool(*left >= *right);
-    fail(span, "Operator '" + op + "' is not defined for characters.");
+    if (op == BinOp::Eq) return makeBool(*left == *right);
+    if (op == BinOp::Ne) return makeBool(*left != *right);
+    if (op == BinOp::Lt) return makeBool(*left < *right);
+    if (op == BinOp::Gt) return makeBool(*left > *right);
+    if (op == BinOp::Le) return makeBool(*left <= *right);
+    if (op == BinOp::Ge) return makeBool(*left >= *right);
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for characters.");
   }
 
   if (auto* left = std::get_if<bool>(&lhs.data)) {
     auto* right = std::get_if<bool>(&rhs.data);
     if (!right) fail(span, "Internal type mismatch between booleans.");
-    if (op == "==") return makeBool(*left == *right);
-    if (op == "!=") return makeBool(*left != *right);
-    fail(span, "Operator '" + op + "' is not defined for bools.");
+    if (op == BinOp::Eq) return makeBool(*left == *right);
+    if (op == BinOp::Ne) return makeBool(*left != *right);
+    fail(span, "Operator '" + std::string(binOpName(op)) + "' is not defined for bools.");
   }
 
-  fail(span, "Operator '" + op + "' cannot be applied to these values.");
+  fail(span, "Operator '" + std::string(binOpName(op)) + "' cannot be applied to these values.");
 }
 
 // ---------------------------------------------------------------- calls
 
 Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
-  if (auto* ident = dynamic_cast<const IdentExpr*>(expr.callee.get())) {
+  if (auto* ident = asExpr<IdentExpr>(*expr.callee, ExprKind::Ident)) {
     if (Binding* binding = env.find(ident->name)) {
       std::vector<Value> args;
       args.reserve(expr.args.size());
@@ -1240,28 +1304,34 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
       return callValue(binding->value, std::move(args), expr.span);
     }
 
-    auto structIt = sema_.structs.find(qualifiedName(ident->name));
-    if (structIt == sema_.structs.end() && currentModule_ >= 0) {
-      const ModuleExports& current = sema_.modules[static_cast<std::size_t>(currentModule_)];
-      auto alias = current.structAliases.find(ident->name);
-      if (alias != current.structAliases.end()) structIt = sema_.structs.find(alias->second);
+    auto structIt = sema_.structs.end();
+    if (!expr.calleeResolved) {
+      structIt = sema_.structs.find(qualifiedName(ident->name));
+      if (structIt == sema_.structs.end() && currentModule_ >= 0) {
+        const ModuleExports& current = sema_.modules[static_cast<std::size_t>(currentModule_)];
+        auto alias = current.structAliases.find(ident->name);
+        if (alias != current.structAliases.end()) structIt = sema_.structs.find(alias->second);
+      }
+      expr.calleeStruct = structIt != sema_.structs.end() ? structIt->second : nullptr;
+      auto fnIt = sema_.functions.find(qualifiedName(ident->name));
+      expr.calleeFunction = fnIt != sema_.functions.end() ? fnIt->second : nullptr;
+      expr.calleeResolved = true;
     }
-    if (structIt != sema_.structs.end()) {
-      return constructStruct(*structIt->second, expr.args, env, expr.span);
+    if (expr.calleeStruct) {
+      return constructStruct(*expr.calleeStruct, expr.args, env, expr.span);
     }
 
     std::vector<Value> args;
     args.reserve(expr.args.size());
     for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
 
-    auto fnIt = sema_.functions.find(qualifiedName(ident->name));
-    if (fnIt != sema_.functions.end()) {
-      return callFunction(*fnIt->second, std::move(args), expr.span);
+    if (expr.calleeFunction) {
+      return callFunction(*expr.calleeFunction, std::move(args), expr.span);
     }
     return callBuiltin(ident->name, args, expr.span);
   }
 
-  if (auto* field = dynamic_cast<const FieldExpr*>(expr.callee.get())) {
+  if (auto* field = asExpr<FieldExpr>(*expr.callee, ExprKind::Field)) {
     Value object = eval(*field->object, env);
 
     if (auto* modulePtr = std::get_if<ModulePtr>(&object.data)) {
@@ -1485,6 +1555,38 @@ const StructDecl* Interpreter::findStruct(const std::string& name) const {
 }
 
 Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args, Span span) {
+  // Hottest builtins first: numeric conversion, math, and string/collection
+  // helpers otherwise sit behind dozens of name comparisons in this chain.
+  if (name == "f64") {
+    if (args.size() != 1) fail(span, "'f64' expects 1 argument.");
+    if (auto* value = std::get_if<double>(&args[0].data)) return makeFloat(*value);
+    if (auto* value = std::get_if<std::int64_t>(&args[0].data)) {
+      return makeFloat(static_cast<double>(*value));
+    }
+    fail(span, "'f64' requires a numeric argument.");
+  }
+  if (name == "i64") {
+    if (args.size() != 1) fail(span, "'i64' expects 1 argument.");
+    return convertNumber("i64", args[0], span);
+  }
+  if (name == "sqrt") {
+    if (args.size() != 1) fail(span, "'sqrt' expects 1 argument.");
+    return makeFloat(std::sqrt(expectFloat(args[0], span, "sqrt")));
+  }
+  if (name == "str") {
+    if (args.size() != 1) fail(span, "'str' expects 1 argument.");
+    return makeString(formatValue(args[0], false));
+  }
+  if (name == "len") {
+    if (args.size() != 1) fail(span, "'len' expects 1 argument.");
+    if (auto* text = std::get_if<std::string>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>(codepointCount(*text)));
+    }
+    if (auto* array = std::get_if<ArrayPtr>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>((*array)->size()));
+    }
+    fail(span, "'len' requires a string or an array.");
+  }
   if (name == "print" || name == "eprint") {
     std::string line;
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -1775,7 +1877,7 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
     if (array->empty()) return makeInt(0);
     Value accumulator = array->front();
     for (std::size_t i = 1; i < array->size(); ++i) {
-      accumulator = applyBinary("+", accumulator, (*array)[i], span);
+      accumulator = applyBinary(BinOp::Add, accumulator, (*array)[i], span);
     }
     return accumulator;
   }
@@ -2030,7 +2132,13 @@ Value Interpreter::convertNumber(const std::string& typeName, const Value& value
     fail(span, "'" + typeName + "' requires a numeric argument.");
   }
 
-  const int bits = std::stoi(typeName.substr(1));
+  const int bits = [&] {
+    int value = 0;
+    for (std::size_t i = 1; i < typeName.size(); ++i) {
+      value = value * 10 + (typeName[i] - '0');
+    }
+    return value;
+  }();
 
   if (typeName[0] == 'f') {
     double result = intValue ? static_cast<double>(*intValue) : *floatValue;

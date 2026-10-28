@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <array>
 #include <deque>
 #include <iosfwd>
 #include <memory>
@@ -32,14 +33,76 @@ class Interpreter {
     bool mutableBinding = true;
   };
 
+  // Environments are small: a function frame or block usually holds a handful
+  // of names. A flat vector beats a hash table for that size, and the first
+  // few bindings live inline so the common frame allocates nothing at all.
+  class BindingMap {
+   public:
+    using Entry = std::pair<std::string, Binding>;
+    static constexpr std::size_t kInline = 4;
+
+    class iterator {
+     public:
+      iterator(BindingMap* map, std::size_t index) : map_(map), index_(index) {}
+      Entry& operator*() const { return map_->at(index_); }
+      Entry* operator->() const { return &map_->at(index_); }
+      iterator& operator++() {
+        ++index_;
+        return *this;
+      }
+      bool operator!=(const iterator& other) const { return index_ != other.index_; }
+      bool operator==(const iterator& other) const { return index_ == other.index_; }
+
+     private:
+      BindingMap* map_;
+      std::size_t index_;
+    };
+
+    Binding* find(std::string_view name) {
+      for (std::size_t i = 0; i < size_; ++i) {
+        Entry& entry = at(i);
+        if (entry.first.size() == name.size() && entry.first == name) return &entry.second;
+      }
+      return nullptr;
+    }
+
+    Binding& operator[](std::string_view name) {
+      if (Binding* existing = find(name)) return *existing;
+      if (size_ < kInline) {
+        Entry& entry = inline_[size_];
+        entry.first.assign(name.data(), name.size());
+        entry.second = Binding{};
+      } else {
+        overflow_.emplace_back();
+        overflow_.back().first.assign(name.data(), name.size());
+        overflow_.back().second = Binding{};
+      }
+      ++size_;
+      return at(size_ - 1).second;
+    }
+
+    std::size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    iterator begin() { return iterator(this, 0); }
+    iterator end() { return iterator(this, size_); }
+
+   private:
+    Entry& at(std::size_t index) {
+      return index < kInline ? inline_[index] : overflow_[index - kInline];
+    }
+
+    std::array<Entry, kInline> inline_;
+    std::vector<Entry> overflow_;
+    std::size_t size_ = 0;
+  };
+
   struct Env {
-    StringMap<Binding> vars;
+    BindingMap vars;
     Env* parent = nullptr;
 
     Binding* find(std::string_view name) {
       for (Env* env = this; env; env = env->parent) {
-        auto it = env->vars.find(name);
-        if (it != env->vars.end()) return &it->second;
+        if (Binding* found = env->vars.find(name)) return found;
       }
       return nullptr;
     }
@@ -80,7 +143,7 @@ class Interpreter {
   Value evalLambda(const LambdaExpr& expr, Env& env);
   Value evalMatch(const MatchExpr& expr, Env& env);
   Value evalComprehension(const ComprehensionExpr& expr, Env& env);
-  Value applyBinary(const std::string& op, const Value& lhs, const Value& rhs, Span span);
+  Value applyBinary(BinOp op, const Value& lhs, const Value& rhs, Span span);
   bool valuesEqual(const Value& lhs, const Value& rhs);
 
   LValue resolveLValue(const Expr& target, Env& env);

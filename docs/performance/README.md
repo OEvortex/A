@@ -58,6 +58,45 @@ A's only end-to-end win is `collections`, and only because Python pays ~39 ms
 more startup; the compute itself is 26× slower than Python and ~1,000× slower
 than C++.
 
+### 1.3 P1 results (implemented 2026-10-28)
+
+The first optimization phase has landed. Same machine, same harness, best of 7.
+A compute time subtracts the measured 3.7 ms startup.
+
+| Benchmark | v0.3.0 | after P1 | speedup | vs C++ `-O2` | vs CPython |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `arithmetic/sum` | 150.3 ms | **23.2 ms** | 6.5× | 225× slower | 1.9× slower |
+| `collections/pipeline` | 14.1 ms | **4.4 ms** | 3.2× | 327× slower | 8.0× slower |
+| `memory/strings` | 145.1 ms | **35.5 ms** | 4.1× | 9.8× slower | 2.6× slower |
+| `numerical/sqrt` | 153.5 ms | **21.1 ms** | 7.3× | 38.8× slower | 3.2× slower |
+
+End-to-end, A now beats CPython on all four suites (26.9 vs 64.9 ms, 8.1 vs
+41.1 ms, 39.3 vs 56.9 ms, 24.9 vs 46.6 ms) because its startup is 3.7 ms versus
+38.4 ms. It remains 2.3×–7.6× behind C++ end-to-end and 9.8×–327× behind on
+compute alone.
+
+Changes, in order of measured effect (best-of-5 after each step):
+
+| Change | arithmetic | collections | memory | numerical |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 154.1 | 17.9 | 148.9 | 157.3 |
+| tagged AST + kind casts instead of `dynamic_cast` | 81.6 | 11.8 | 81.6 | 107.9 |
+| reuse one scope per `for` iteration | 39.0 | 10.7 | 76.0 | 86.2 |
+| flat `BindingMap` instead of `unordered_map` | 32.0 | 10.6 | 62.5 | 80.7 |
+| cache call-site resolution | 31.0 | 10.9 | 51.3 | 64.7 |
+| switch dispatch for `exec`/`eval` (CPython/Wren/Lua shape) | 32.8 | 11.1 | 49.4 | 66.8 |
+| `BinOp` enum + comprehension scope reuse | 27.3 | 8.6 | 39.5 | 60.7 |
+| hot-builtin fast paths (`f64`, `i64`, `sqrt`, `str`, `len`) | 31.3 | 8.8 | 42.7 | 25.4 |
+| inline storage for the first 4 frame bindings | **27.1** | **8.2** | **38.6** | **26.1** |
+
+Some rows are within run-to-run noise; the aggregate effect is not. The switch
+rewrite was mostly structural (it sets up the bytecode work) and did not move
+the needle on its own.
+
+What is still missing is the rest of the plan: unboxed 16-byte values (P2),
+slot-resolved frames (P3), a register bytecode VM (P4), and native codegen (P5).
+Those, not more AST-interpreter tuning, are required for C++ parity.
+
 Reproduce with:
 
 ```sh
@@ -69,31 +108,34 @@ python3 tools/benchmark-runner/compare.py --runs 7
 
 ## 2. Where the time goes
 
-The gap is structural, not a missing compiler flag. Each A arithmetic iteration
-costs roughly 470 ns against ~0.5 ns for C++. The budget is consumed by:
+The gap is structural, not a missing compiler flag. Before P1, each A
+arithmetic iteration cost roughly 750 ns against ~0.5 ns for C++. P1 removed the
+worst offenders; the remaining budget is consumed by:
 
-1. **RTTI dispatch per node.** `Interpreter::exec` and `Interpreter::eval`
-   identify nodes with long `dynamic_cast` chains
-   (`compiler/source/backend/interpreter.cpp:286+`). Every statement and
-   expression pays at least one RTTI test.
-2. **String-keyed environment lookups.** `Env::find` walks a parent chain and
-   hashes a `std::string_view` for every variable read
-   (`interpreter.hpp:35-46`). A loop variable is re-hashed on each iteration.
-3. **Boxed values.** `Value` is a `std::variant` holding `int64`, `double`,
-   `std::string`, and `shared_ptr` alternatives (`runtime/memory/value.hpp:48`).
-   Every arithmetic result constructs a new `Value`; aggregates copy atomically
-   refcounted pointers.
-4. **String operator dispatch.** `applyBinary` compares `std::string` operator
-   names (`interpreter.cpp:1091+`) before doing arithmetic, on top of checked
-   overflow intrinsics.
+1. **AST walking itself.** Dispatch is now a `switch` on a node-kind tag
+   (formerly 18–41 `dynamic_cast` tests per statement/expression), which is the
+   same shape as CPython's opcode switch, Wren's `CASE_CODE`, and Lua's
+   `vmcase`. The walk still pays a call, a switch, and a span copy per node.
+2. **Boxed values.** `Value` is a 40-byte `std::variant` holding `int64`,
+   `double`, `std::string`, and `shared_ptr` alternatives
+   (`runtime/memory/value.hpp:48`). Every arithmetic result constructs a new
+   `Value`; aggregates copy atomically refcounted pointers. This is the largest
+   remaining per-operation cost.
+3. **Name lookup per access.** `Env::find` walks a parent chain of small flat
+   maps (`interpreter.hpp`). P1 replaced hash tables with inline-storage scans
+   and removed per-iteration scope construction, but the lookup still compares
+   strings and walks scopes. P3 replaces this with a frame slot index.
+4. **Operator dispatch.** P1 added a `BinOp` enum set by the parser, so hot
+   arithmetic no longer compares operator strings or calls `substr` for
+   compound assignments. The checks themselves are now a switch.
 5. **No unboxing or specialization.** The type checker knows every expression's
    type, but the interpreter re-derives it dynamically and keeps all locals in
    generic cells.
 6. **Whole-program work per invocation.** Each `a run` re-lexes, re-parses, and
-   re-typechecks the source (part of the 3.8 ms startup). This is small next to
+   re-typechecks the source (part of the 3.7 ms startup). This is small next to
    the compute gap but blocks competitive startup for compiled binaries.
 
-The `memory` benchmark has the narrowest gap because C++ there is
+The `memory` benchmark has the narrowest compute gap (9.8×) because C++ there is
 allocation-bound (`std::to_string`, string vector, join), not dispatch-bound.
 
 ---
@@ -157,20 +199,29 @@ Scope:
 Exit criteria: `compare.py` reproduces the tables above within noise on a
 second machine.
 
-### P1 — Front-end and dispatch fast path (2–3 weeks, 1.5–2.5×)
+### P1 — Front-end and dispatch fast path (done; 3.2–6.5× measured)
 
-- Replace `dynamic_cast` chains with a tagged node kind (an `ExprKind`/
-  `StmtKind` enum or a visitor) so dispatch is a switch jump table.
-- Store binary/unary/assignment operators as interned enums in the AST and
-  parser instead of `std::string`.
-- Intern identifiers once (name → `SymbolId`) during name resolution; reuse the
-  id in the AST and environment keys.
-- Fold literals and constant expressions in the type checker; reject
-  obviously dead branches before execution.
+Landed:
+
+- Tagged `ExprKind`/`StmtKind` on every AST node; `dynamic_cast` chains replaced
+  by kind tests and `switch` dispatch.
+- `BinOp` enum set by the parser for binary and compound-assignment operators;
+  `applyBinary` no longer compares strings.
+- `BindingMap`: flat inline-storage scope map replaces the per-environment hash
+  table; `for` loops and comprehensions reuse one scope instead of allocating
+  per element.
+- Call-site resolution cache (function/struct/builtin) and hot-builtin fast
+  paths.
+- Single-scope-per-loop and one-scope comprehensions.
+
+Still open (moved to P2/P3):
+
+- Intern identifiers once (name → `SymbolId`) and key environments by id.
+- Fold literals and constant expressions in the type checker.
 - Add a `--profile` counter mode (node visits, env lookups, allocations).
 
-Exit criteria: `arithmetic` ≥ 1.5× faster, `collections` ≥ 1.5×, all tests
-green, no semantic change.
+Exit criteria met: `arithmetic` 6.5×, `collections` 3.2×, `memory` 4.1×,
+`numerical` 7.3×; all tests green.
 
 ### P2 — Value and allocation model (4–6 weeks, 1.3–2×)
 

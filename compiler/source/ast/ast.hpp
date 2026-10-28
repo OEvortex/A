@@ -12,12 +12,89 @@ namespace a {
 struct Expr;
 struct Stmt;
 struct TypeExpr;
+struct FnDecl;
+struct StructDecl;
 
 using ExprPtr = std::unique_ptr<Expr>;
 using StmtPtr = std::unique_ptr<Stmt>;
 using TypeExprPtr = std::unique_ptr<TypeExpr>;
 
 // ---------------------------------------------------------------- types
+
+// Node tags let the backend dispatch with a single compare instead of an RTTI
+// chain. Every node sets its tag in its constructor; the interpreter and any
+// future bytecode compiler switch on the tag.
+enum class ExprKind : std::uint8_t {
+  IntLit,
+  FloatLit,
+  BoolLit,
+  CharLit,
+  StringLit,
+  Ident,
+  Unary,
+  Binary,
+  Call,
+  Index,
+  Slice,
+  Field,
+  SafeNav,
+  ArrayLit,
+  Range,
+  Ternary,
+  Tuple,
+  Lambda,
+  Comprehension,
+  Match,
+};
+
+enum class StmtKind : std::uint8_t {
+  Let,
+  Assign,
+  Expr,
+  Destructure,
+  Return,
+  Break,
+  Continue,
+  Defer,
+  Import,
+  FromImport,
+  If,
+  While,
+  DoWhile,
+  For,
+  Loop,
+  FnDecl,
+  StructDecl,
+  EnumDecl,
+};
+
+// Arithmetic/logical operator identity for the backend. `op` still carries the
+// source spelling for diagnostics and semantic analysis; `binop` is what the
+// interpreter switches on.
+enum class BinOp : std::uint8_t {
+  Invalid,
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Mod,
+  Pow,
+  Eq,
+  Ne,
+  Lt,
+  Gt,
+  Le,
+  Ge,
+  BitAnd,
+  BitOr,
+  BitXor,
+  Shl,
+  Shr,
+  And,
+  Or,
+  Coalesce,
+  Range,
+};
 
 struct TypeExpr {
   Span span;
@@ -56,22 +133,28 @@ struct ParamDecl {
 
 struct Expr {
   Span span;
+  ExprKind kind;
+  explicit Expr(ExprKind k) : kind(k) {}
   virtual ~Expr() = default;
 };
 
 struct IntLitExpr : Expr {
+  IntLitExpr() : Expr(ExprKind::IntLit) {}
   std::int64_t value = 0;
 };
 
 struct FloatLitExpr : Expr {
+  FloatLitExpr() : Expr(ExprKind::FloatLit) {}
   double value = 0.0;
 };
 
 struct BoolLitExpr : Expr {
+  BoolLitExpr() : Expr(ExprKind::BoolLit) {}
   bool value = false;
 };
 
 struct CharLitExpr : Expr {
+  CharLitExpr() : Expr(ExprKind::CharLit) {}
   char32_t value = 0;
 };
 
@@ -82,21 +165,26 @@ struct StringPart {
 };
 
 struct StringLitExpr : Expr {
+  StringLitExpr() : Expr(ExprKind::StringLit) {}
   std::vector<StringPart> parts;
 };
 
 struct IdentExpr : Expr {
+  IdentExpr() : Expr(ExprKind::Ident) {}
   std::string name;
 };
 
 struct UnaryExpr : Expr {
+  UnaryExpr() : Expr(ExprKind::Unary) {}
   std::string op;  // "-" or "not"
   Span opSpan;
   ExprPtr operand;
 };
 
 struct BinaryExpr : Expr {
+  BinaryExpr() : Expr(ExprKind::Binary) {}
   std::string op;
+  BinOp binop = BinOp::Invalid;
   Span opSpan;
   ExprPtr lhs;
   ExprPtr rhs;
@@ -109,17 +197,27 @@ struct CallArg {
 };
 
 struct CallExpr : Expr {
+  CallExpr() : Expr(ExprKind::Call) {}
   ExprPtr callee;
   std::vector<CallArg> args;
+
+  // Resolved lazily by the interpreter. A plain identifier callee is fixed by
+  // name resolution, so the classification (function, struct, or builtin) can
+  // be cached per call site instead of rebuilt on every execution.
+  mutable bool calleeResolved = false;
+  mutable const FnDecl* calleeFunction = nullptr;
+  mutable const StructDecl* calleeStruct = nullptr;
 };
 
 struct IndexExpr : Expr {
+  IndexExpr() : Expr(ExprKind::Index) {}
   ExprPtr object;
   ExprPtr index;
   Span bracketSpan;
 };
 
 struct SliceExpr : Expr {
+  SliceExpr() : Expr(ExprKind::Slice) {}
   ExprPtr object;
   ExprPtr start;  // may be null
   ExprPtr end;    // may be null
@@ -128,6 +226,7 @@ struct SliceExpr : Expr {
 };
 
 struct FieldExpr : Expr {
+  FieldExpr() : Expr(ExprKind::Field) {}
   ExprPtr object;
   std::string field;
   Span fieldSpan;
@@ -135,38 +234,45 @@ struct FieldExpr : Expr {
 
 // `object?.field`: None propagates, Some(struct) accesses `field` and wraps it.
 struct SafeNavExpr : Expr {
+  SafeNavExpr() : Expr(ExprKind::SafeNav) {}
   ExprPtr object;
   std::string field;
   Span fieldSpan;
 };
 
 struct ArrayLitExpr : Expr {
+  ArrayLitExpr() : Expr(ExprKind::ArrayLit) {}
   std::vector<ExprPtr> elements;
 };
 
 struct RangeExpr : Expr {
+  RangeExpr() : Expr(ExprKind::Range) {}
   ExprPtr start;
   ExprPtr end;
   ExprPtr step;  // may be null (defaults to 1)
 };
 
 struct TernaryExpr : Expr {
+  TernaryExpr() : Expr(ExprKind::Ternary) {}
   ExprPtr cond;
   ExprPtr thenValue;
   ExprPtr elseValue;
 };
 
 struct TupleExpr : Expr {
+  TupleExpr() : Expr(ExprKind::Tuple) {}
   std::vector<ExprPtr> elements;
 };
 
 struct LambdaExpr : Expr {
+  LambdaExpr() : Expr(ExprKind::Lambda) {}
   std::vector<ParamDecl> params;
   TypeExprPtr returnType;  // may be null
   ExprPtr body;
 };
 
 struct ComprehensionExpr : Expr {
+  ComprehensionExpr() : Expr(ExprKind::Comprehension) {}
   ExprPtr element;
   std::string var;
   Span varSpan;
@@ -190,6 +296,7 @@ struct MatchArm {
 };
 
 struct MatchExpr : Expr {
+  MatchExpr() : Expr(ExprKind::Match) {}
   ExprPtr subject;
   std::vector<MatchArm> arms;
 };
@@ -198,10 +305,13 @@ struct MatchExpr : Expr {
 
 struct Stmt {
   Span span;
+  StmtKind kind;
+  explicit Stmt(StmtKind k) : kind(k) {}
   virtual ~Stmt() = default;
 };
 
 struct LetStmt : Stmt {
+  LetStmt() : Stmt(StmtKind::Let) {}
   std::string name;
   Span nameSpan;
   TypeExprPtr type;  // may be null
@@ -211,17 +321,21 @@ struct LetStmt : Stmt {
 };
 
 struct AssignStmt : Stmt {
+  AssignStmt() : Stmt(StmtKind::Assign) {}
   std::string op;  // "=", "+=", ...
+  BinOp binop = BinOp::Invalid;  // base operator for compound assignment
   Span opSpan;
   ExprPtr target;
   ExprPtr value;
 };
 
 struct ExprStmt : Stmt {
+  ExprStmt() : Stmt(StmtKind::Expr) {}
   ExprPtr expr;
 };
 
 struct DestructureStmt : Stmt {
+  DestructureStmt() : Stmt(StmtKind::Destructure) {}
   std::vector<std::string> names;  // "_" discards the slot
   std::vector<Span> nameSpans;
   bool mutableBinding = false;
@@ -229,18 +343,25 @@ struct DestructureStmt : Stmt {
 };
 
 struct ReturnStmt : Stmt {
+  ReturnStmt() : Stmt(StmtKind::Return) {}
   ExprPtr value;  // may be null
 };
 
-struct BreakStmt : Stmt {};
-struct ContinueStmt : Stmt {};
+struct BreakStmt : Stmt {
+  BreakStmt() : Stmt(StmtKind::Break) {}
+};
+struct ContinueStmt : Stmt {
+  ContinueStmt() : Stmt(StmtKind::Continue) {}
+};
 
 struct DeferStmt : Stmt {
+  DeferStmt() : Stmt(StmtKind::Defer) {}
   StmtPtr body;
 };
 
 // `import "lib/util.a"`, `import "lib/util.a" as u`, or `import math`.
 struct ImportStmt : Stmt {
+  ImportStmt() : Stmt(StmtKind::Import) {}
   std::string path;        // quoted path, empty for native/bare imports
   std::string alias;       // explicit alias, or empty
   std::string bareName;    // identifier for bare imports
@@ -252,6 +373,7 @@ struct ImportStmt : Stmt {
 
 // `from "lib/util.a" import add, Vec as Point`.
 struct FromImportStmt : Stmt {
+  FromImportStmt() : Stmt(StmtKind::FromImport) {}
   struct Item {
     std::string name;
     std::string alias;
@@ -267,6 +389,7 @@ struct FromImportStmt : Stmt {
 };
 
 struct IfStmt : Stmt {
+  IfStmt() : Stmt(StmtKind::If) {}
   struct Branch {
     ExprPtr cond;
     std::vector<StmtPtr> body;
@@ -276,16 +399,19 @@ struct IfStmt : Stmt {
 };
 
 struct WhileStmt : Stmt {
+  WhileStmt() : Stmt(StmtKind::While) {}
   ExprPtr cond;
   std::vector<StmtPtr> body;
 };
 
 struct DoWhileStmt : Stmt {
+  DoWhileStmt() : Stmt(StmtKind::DoWhile) {}
   std::vector<StmtPtr> body;
   ExprPtr cond;
 };
 
 struct ForStmt : Stmt {
+  ForStmt() : Stmt(StmtKind::For) {}
   std::string var;
   Span varSpan;
   ExprPtr iterable;
@@ -293,10 +419,12 @@ struct ForStmt : Stmt {
 };
 
 struct LoopStmt : Stmt {
+  LoopStmt() : Stmt(StmtKind::Loop) {}
   std::vector<StmtPtr> body;
 };
 
 struct FnDecl : Stmt {
+  FnDecl() : Stmt(StmtKind::FnDecl) {}
   std::string name;
   Span nameSpan;
   std::vector<ParamDecl> params;
@@ -311,6 +439,7 @@ struct FieldDecl {
 };
 
 struct StructDecl : Stmt {
+  StructDecl() : Stmt(StmtKind::StructDecl) {}
   std::string name;
   Span nameSpan;
   std::vector<FieldDecl> fields;
@@ -324,6 +453,7 @@ struct EnumVariant {
 };
 
 struct EnumDecl : Stmt {
+  EnumDecl() : Stmt(StmtKind::EnumDecl) {}
   std::string name;
   Span nameSpan;
   std::vector<EnumVariant> variants;

@@ -203,11 +203,19 @@ targets, and the C++-parity gates are in
 
 Known hot-path costs, in order of impact:
 
-- RTTI `dynamic_cast` chains in `exec`/`eval` (`backend/interpreter.cpp`);
-- string-keyed `Env::find` walks per identifier access;
-- `std::variant` `Value` construction and `shared_ptr` copies;
-- string comparison for operator dispatch in `applyBinary`;
-- no unboxed locals or slot-resolved frames, despite `Sema` knowing every type.
+- AST walking: one `switch` per node on a kind tag, plus a call and span copy;
+  the compiler-shaped alternative is a bytecode/register VM (P4);
+- 40-byte `std::variant` `Value` construction and copies (`P2` shrinks and
+  unboxes this);
+- string-compare scope lookup and parent-chain walks (`Env::find`); P3 replaces
+  this with a `(depth, slot)` index resolved by `Sema`;
+- argument vectors allocated per call; unboxed parameters follow from P2/P3;
+- no cross-node constant folding or specialization despite `Sema` knowing every
+  type.
+
+Already removed in the P1 pass: RTTI `dynamic_cast` dispatch, string comparison
+for operator dispatch, per-iteration scope/hash-table allocation in `for` and
+comprehensions, and repeated call-site resolution.
 
 ## Adding a feature
 
