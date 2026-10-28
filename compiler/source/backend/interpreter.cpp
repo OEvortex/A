@@ -299,6 +299,7 @@ void Interpreter::execStatements(const std::vector<StmtPtr>& statements, Env& en
         continue;
       }
       exec(*statement, env);
+      if (returning_) break;
     }
   } catch (...) {
     pending = std::current_exception();
@@ -342,6 +343,34 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
 
   case StmtKind::Assign: {
     auto* node = static_cast<const AssignStmt*>(&stmt);
+
+    // `name += expr` is the hot form in loops. Skip building an LValue (which
+    // carries a variant and a shared_ptr) and update the binding in place.
+    if (node->binop != BinOp::Invalid) {
+      if (auto* ident = asExpr<IdentExpr>(*node->target, ExprKind::Ident)) {
+        if (Binding* binding = env.find(ident->name)) {
+          if (node->binop == BinOp::Add) {
+            if (auto* current = std::get_if<std::int64_t>(&binding->value.data)) {
+              Value right = eval(*node->value, env);
+              if (auto* addend = std::get_if<std::int64_t>(&right.data)) {
+                std::int64_t sum = 0;
+                if (__builtin_add_overflow(*current, *addend, &sum)) {
+                  fail(node->opSpan, "Integer overflow in '+'.");
+                }
+                binding->value.data = sum;
+                return;
+              }
+              binding->value = applyBinary(node->binop, binding->value, right, node->opSpan);
+              return;
+            }
+          }
+          binding->value =
+              applyBinary(node->binop, binding->value, eval(*node->value, env), node->opSpan);
+          return;
+        }
+      }
+    }
+
     LValue target = resolveLValue(*node->target, env);
     if (node->op == "=") {
       writeLValue(target, eval(*node->value, env));
@@ -404,6 +433,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
       } catch (ContinueSignal&) {
         continue;
       }
+      if (returning_) return;
     }
     return;
   }
@@ -418,6 +448,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
       } catch (ContinueSignal&) {
         // fall through to the condition
       }
+      if (returning_) return;
       Value condition = eval(*node->cond, env);
       if (!expectBool(condition, node->cond->span, "The 'while' condition")) break;
     }
@@ -449,6 +480,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
         } catch (ContinueSignal&) {
           // next iteration
         }
+        if (returning_) return;
         if (i > std::numeric_limits<std::int64_t>::max() - range->step) break;
       }
       return;
@@ -464,6 +496,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
         } catch (ContinueSignal&) {
           // next iteration
         }
+        if (returning_) return;
       }
       return;
     }
@@ -479,6 +512,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
         } catch (ContinueSignal&) {
           // next iteration
         }
+        if (returning_) return;
       }
       return;
     }
@@ -496,14 +530,16 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
       } catch (ContinueSignal&) {
         continue;
       }
+      if (returning_) return;
     }
     return;
   }
 
   case StmtKind::Return: {
     auto* node = static_cast<const ReturnStmt*>(&stmt);
-    Value value = node->value ? eval(*node->value, env) : makeVoid();
-    throw ReturnSignal{std::move(value)};
+    returnValue_ = node->value ? eval(*node->value, env) : makeVoid();
+    returning_ = true;
+    return;
   }
 
   case StmtKind::Break: throw BreakSignal{};
@@ -1043,6 +1079,19 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   Value iterable = eval(*expr.iterable, env);
   auto result = std::make_shared<std::vector<Value>>();
 
+  // Reserve the exact capacity when the source length is known. Without this the
+  // result vector reallocates and copies its Values several times per run.
+  if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
+    if (range->step != 0 && range->end > range->start) {
+      result->reserve(static_cast<std::size_t>((range->end - range->start + range->step - 1) /
+                                               range->step));
+    }
+  } else if (auto* array = std::get_if<ArrayPtr>(&iterable.data)) {
+    result->reserve((*array)->size());
+  } else if (auto* text = std::get_if<std::string>(&iterable.data)) {
+    result->reserve(text->size());
+  }
+
   Env child;
   child.parent = &env;
   child.vars[expr.var].mutableBinding = false;
@@ -1297,8 +1346,28 @@ Value Interpreter::applyBinary(BinOp op, const Value& lhs, const Value& rhs, Spa
 
 Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
   if (auto* ident = asExpr<IdentExpr>(*expr.callee, ExprKind::Ident)) {
+    // Sema proved the callee is a builtin, not a variable: evaluate arguments
+    // and dispatch on the resolved id instead of walking scopes and name maps.
+    if (expr.builtinId != BuiltinId::None) {
+      ArgList args;
+      args.reserve(expr.args.size());
+      for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
+      return callBuiltinFast(expr.builtinId, ident->name, args, expr.span);
+    }
+    // Sema already resolved a plain identifier to a declared function or struct;
+    // call it without walking the scope chain again.
+    if (expr.calleeResolved && (expr.calleeFunction || expr.calleeStruct)) {
+      if (expr.calleeStruct) {
+        return constructStruct(*expr.calleeStruct, expr.args, env, expr.span);
+      }
+      ArgList args;
+      args.reserve(expr.args.size());
+      for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
+      return callFunction(*expr.calleeFunction, std::move(args), expr.span);
+    }
+
     if (Binding* binding = env.find(ident->name)) {
-      std::vector<Value> args;
+      ArgList args;
       args.reserve(expr.args.size());
       for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
       return callValue(binding->value, std::move(args), expr.span);
@@ -1321,7 +1390,7 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
       return constructStruct(*expr.calleeStruct, expr.args, env, expr.span);
     }
 
-    std::vector<Value> args;
+    ArgList args;
     args.reserve(expr.args.size());
     for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
 
@@ -1338,7 +1407,7 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
       return callModuleMember(**modulePtr, field->field, expr.args, env, expr.span);
     }
 
-    std::vector<Value> args;
+    ArgList args;
     args.reserve(expr.args.size());
     for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
 
@@ -1349,7 +1418,7 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
   }
 
   Value callee = eval(*expr.callee, env);
-  std::vector<Value> args;
+  ArgList args;
   args.reserve(expr.args.size());
   for (const auto& arg : expr.args) args.push_back(eval(*arg.value, env));
   return callValue(callee, std::move(args), expr.span);
@@ -1358,7 +1427,7 @@ Value Interpreter::evalCall(const CallExpr& expr, Env& env) {
 Value Interpreter::callModuleMember(const ModuleObj& module, const std::string& member,
                                     const std::vector<CallArg>& args, Env& env, Span span) {
   if (module.id < 0) {
-    std::vector<Value> values;
+    ArgList values;
     values.reserve(args.size());
     for (const auto& arg : args) values.push_back(eval(*arg.value, env));
     if (const std::string* fn = nativeFunction(module.nativeName, member)) {
@@ -1372,7 +1441,7 @@ Value Interpreter::callModuleMember(const ModuleObj& module, const std::string& 
 
   const ModuleExports& exports = sema_.modules[static_cast<std::size_t>(module.id)];
   if (auto fn = exports.functions.find(member); fn != exports.functions.end()) {
-    std::vector<Value> values;
+    ArgList values;
     values.reserve(args.size());
     for (const auto& arg : args) values.push_back(eval(*arg.value, env));
     return callFunction(*fn->second, std::move(values), span);
@@ -1385,7 +1454,7 @@ Value Interpreter::callModuleMember(const ModuleObj& module, const std::string& 
 
   Binding* binding = moduleBinding(module, member);
   if (binding) {
-    std::vector<Value> values;
+    ArgList values;
     values.reserve(args.size());
     for (const auto& arg : args) values.push_back(eval(*arg.value, env));
     return callValue(binding->value, std::move(values), span);
@@ -1394,7 +1463,7 @@ Value Interpreter::callModuleMember(const ModuleObj& module, const std::string& 
   fail(span, "Module '" + exports.name + "' has no function '" + member + "'.");
 }
 
-Value Interpreter::callValue(const Value& callee, std::vector<Value> args, Span span) {
+Value Interpreter::callValue(const Value& callee, ArgList args, Span span) {
   if (auto* closure = std::get_if<ClosurePtr>(&callee.data)) {
     return callClosure(*closure, std::move(args), span);
   }
@@ -1405,7 +1474,7 @@ Value Interpreter::callValue(const Value& callee, std::vector<Value> args, Span 
        "Only functions and lambdas can be called.");
 }
 
-Value Interpreter::callClosure(const ClosurePtr& closure, std::vector<Value> args, Span span) {
+Value Interpreter::callClosure(const ClosurePtr& closure, ArgList args, Span span) {
   if (closure->fn) return callFunction(*closure->fn, std::move(args), span);
   const LambdaExpr& decl = *closure->decl;
   if (args.size() != decl.params.size()) {
@@ -1442,7 +1511,7 @@ Value Interpreter::callClosure(const ClosurePtr& closure, std::vector<Value> arg
   return result;
 }
 
-Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Span span) {
+Value Interpreter::callFunction(const FnDecl& decl, ArgList args, Span span) {
   if (args.size() != decl.params.size()) {
     fail(span, "Function '" + decl.name + "' expects " + std::to_string(decl.params.size()) +
                    " argument(s), found " + std::to_string(args.size()) + ".");
@@ -1455,8 +1524,7 @@ Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Spa
   }
 
   int savedModule = currentModule_;
-  auto moduleIt = sema_.fnModule.find(&decl);
-  if (moduleIt != sema_.fnModule.end()) currentModule_ = moduleIt->second;
+  if (decl.moduleId >= 0) currentModule_ = decl.moduleId;
 
   Env frame;
   frame.parent = &moduleEnv(currentModule_);
@@ -1467,25 +1535,23 @@ Value Interpreter::callFunction(const FnDecl& decl, std::vector<Value> args, Spa
     frame.vars[decl.params[i].name] = std::move(binding);
   }
 
-  Value result;
-  try {
-    execStatements(decl.body, frame);
-    result = makeVoid();
-  } catch (ReturnSignal& signal) {
-    result = std::move(signal.value);
-  }
+  bool outerReturning = returning_;
+  returning_ = false;
+  execStatements(decl.body, frame);
+  Value result = returning_ ? std::move(returnValue_) : makeVoid();
+  returning_ = outerReturning;
   currentModule_ = savedModule;
   return result;
 }
 
 Value Interpreter::callMethod(const StructPtr& object, const std::string& methodName,
-                              std::vector<Value> args, Span span) {
+                              ArgList args, Span span) {
   const StructDecl* decl = findStruct(object->typeName);
   if (!decl) fail(span, "Internal error: unknown struct '" + object->typeName + "'.");
 
   for (const auto& method : decl->methods) {
     if (method->name != methodName) continue;
-    std::vector<Value> all;
+    ArgList all;
     all.reserve(args.size() + 1);
     all.push_back(makeStructValue(object));
     for (auto& arg : args) all.push_back(std::move(arg));
@@ -1554,7 +1620,99 @@ const StructDecl* Interpreter::findStruct(const std::string& name) const {
   return found == sema_.structs.end() ? nullptr : found->second;
 }
 
-Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args, Span span) {
+namespace {
+
+// Join an array into one string. The common case is an array of strings, where
+// the total size is known: reserve once and append the values directly instead
+// of formatting (and copying) each element into a temporary.
+std::string joinValues(const std::vector<Value>& values, const std::string& separator) {
+  std::size_t total = values.empty() ? 0 : separator.size() * (values.size() - 1);
+  bool allStrings = true;
+  for (const Value& value : values) {
+    if (auto* text = std::get_if<std::string>(&value.data)) {
+      total += text->size();
+    } else {
+      allStrings = false;
+      break;
+    }
+  }
+
+  std::string out;
+  if (allStrings) {
+    out.reserve(total);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i > 0) out += separator;
+      out += *std::get_if<std::string>(&values[i].data);
+    }
+    return out;
+  }
+
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) out += separator;
+    out += formatValue(values[i], false);
+  }
+  return out;
+}
+
+}  // namespace
+
+Value Interpreter::callBuiltinFast(BuiltinId id, const std::string& name, ArgList& args,
+                                   Span span) {
+  // Monomorphic fast paths for the builtins that appear in hot loops. Anything
+  // that is not exactly the common shape (wrong arity or type) falls through to
+  // the general implementation so diagnostics stay identical.
+  if (args.size() == 1) {
+    Value& value = args[0];
+    switch (id) {
+      case BuiltinId::F64:
+        if (auto* number = std::get_if<double>(&value.data)) return makeFloat(*number);
+        if (auto* number = std::get_if<std::int64_t>(&value.data)) {
+          return makeFloat(static_cast<double>(*number));
+        }
+        break;
+      case BuiltinId::I64:
+        if (auto* number = std::get_if<std::int64_t>(&value.data)) return makeInt(*number);
+        break;
+      case BuiltinId::Sqrt:
+        if (auto* number = std::get_if<double>(&value.data)) return makeFloat(std::sqrt(*number));
+        if (auto* number = std::get_if<std::int64_t>(&value.data)) {
+          return makeFloat(std::sqrt(static_cast<double>(*number)));
+        }
+        break;
+      case BuiltinId::Round:
+        if (auto* number = std::get_if<double>(&value.data)) return makeFloat(std::round(*number));
+        break;
+      case BuiltinId::Floor:
+        if (auto* number = std::get_if<double>(&value.data)) return makeFloat(std::floor(*number));
+        break;
+      case BuiltinId::Ceil:
+        if (auto* number = std::get_if<double>(&value.data)) return makeFloat(std::ceil(*number));
+        break;
+      case BuiltinId::Str:
+        return makeString(formatValue(value, false));
+      case BuiltinId::Len:
+        if (auto* text = std::get_if<std::string>(&value.data)) {
+          return makeInt(static_cast<std::int64_t>(codepointCount(*text)));
+        }
+        if (auto* array = std::get_if<ArrayPtr>(&value.data)) {
+          return makeInt(static_cast<std::int64_t>((*array)->size()));
+        }
+        break;
+      case BuiltinId::Abs:
+        if (auto* number = std::get_if<std::int64_t>(&value.data)) {
+          if (*number != std::numeric_limits<std::int64_t>::min()) {
+            return makeInt(*number < 0 ? -*number : *number);
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return callBuiltin(name, args, span);
+}
+
+Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span) {
   // Hottest builtins first: numeric conversion, math, and string/collection
   // helpers otherwise sit behind dozens of name comparisons in this chain.
   if (name == "f64") {
@@ -1837,14 +1995,14 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
       auto result = std::make_shared<std::vector<Value>>();
       result->reserve(array->size());
       for (const auto& element : *array) {
-        result->push_back(callValue(function, std::vector<Value>{element}, span));
+        result->push_back(callValue(function, ArgList{element}, span));
       }
       return makeArray(std::move(result));
     }
     if (name == "filter") {
       auto result = std::make_shared<std::vector<Value>>();
       for (const auto& element : *array) {
-        if (expectBool(callValue(function, std::vector<Value>{element}, span), span,
+        if (expectBool(callValue(function, ArgList{element}, span), span,
                        "The filter predicate")) {
           result->push_back(element);
         }
@@ -1852,7 +2010,7 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
       return makeArray(std::move(result));
     }
     for (const auto& element : *array) {
-      bool value = expectBool(callValue(function, std::vector<Value>{element}, span),
+      bool value = expectBool(callValue(function, ArgList{element}, span),
                               span, "The '" + name + "' predicate");
       if (name == "any" && value) return makeBool(true);
       if (name == "all" && !value) return makeBool(false);
@@ -1866,7 +2024,7 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
     Value accumulator = args[1];
     const Value& function = args[2];
     for (const auto& element : *array) {
-      accumulator = callValue(function, std::vector<Value>{accumulator, element}, span);
+      accumulator = callValue(function, ArgList{accumulator, element}, span);
     }
     return accumulator;
   }
@@ -1876,6 +2034,19 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
     ArrayPtr array = expectArray(args[0], span, "The argument of 'sum'");
     if (array->empty()) return makeInt(0);
     Value accumulator = array->front();
+    if (auto* total = std::get_if<std::int64_t>(&accumulator.data)) {
+      std::int64_t sum = *total;
+      std::size_t i = 1;
+      for (; i < array->size(); ++i) {
+        auto* element = std::get_if<std::int64_t>(&(*array)[i].data);
+        if (!element) break;
+        std::int64_t next = 0;
+        if (__builtin_add_overflow(sum, *element, &next)) break;
+        sum = next;
+      }
+      if (i == array->size()) return makeInt(sum);
+      accumulator = makeInt(sum);
+    }
     for (std::size_t i = 1; i < array->size(); ++i) {
       accumulator = applyBinary(BinOp::Add, accumulator, (*array)[i], span);
     }
@@ -1886,12 +2057,7 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
     if (args.size() != 2) fail(span, "'join' expects 2 arguments (array, separator).");
     ArrayPtr array = expectArray(args[0], span, "The first argument of 'join'");
     const std::string& separator = expectString(args[1], span, "The 'join' separator");
-    std::string out;
-    for (std::size_t i = 0; i < array->size(); ++i) {
-      if (i > 0) out += separator;
-      out += formatValue((*array)[i], false);
-    }
-    return makeString(std::move(out));
+    return makeString(joinValues(*array, separator));
   }
 
   if (name == "i8" || name == "i16" || name == "i32" || name == "i64" || name == "u8" ||
@@ -1904,7 +2070,7 @@ Value Interpreter::callBuiltin(const std::string& name, std::vector<Value>& args
 }
 
 Value Interpreter::callBuiltinMethod(const Value& object, const std::string& method,
-                                     std::vector<Value>& args, Span span) {
+                                     ArgList& args, Span span) {
   if (auto* array = std::get_if<ArrayPtr>(&object.data)) {
     if (method == "push") {
       if (args.size() != 1) fail(span, "Method 'push' expects 1 argument.");
@@ -1936,12 +2102,7 @@ Value Interpreter::callBuiltinMethod(const Value& object, const std::string& met
     if (method == "join") {
       if (args.size() != 1) fail(span, "Method 'join' expects 1 argument (separator).");
       const std::string& sep = expectString(args[0], span, "The 'join' separator");
-      std::string out;
-      for (std::size_t i = 0; i < (*array)->size(); ++i) {
-        if (i > 0) out += sep;
-        out += formatValue((**array)[i], false);
-      }
-      return makeString(std::move(out));
+      return makeString(joinValues(**array, sep));
     }
     if (method == "insert") {
       if (args.size() != 2) fail(span, "Method 'insert' expects 2 arguments (index, value).");

@@ -43,7 +43,11 @@ std::string formatDouble(double value) {
 std::string formatValue(const Value& value, bool quoteStrings) {
   if (std::holds_alternative<std::monostate>(value.data)) return "void";
   if (auto* b = std::get_if<bool>(&value.data)) return *b ? "true" : "false";
-  if (auto* i = std::get_if<std::int64_t>(&value.data)) return std::to_string(*i);
+  if (auto* i = std::get_if<std::int64_t>(&value.data)) {
+    char buffer[32];
+    auto result = std::to_chars(buffer, buffer + sizeof(buffer), *i);
+    return std::string(buffer, result.ptr);
+  }
   if (auto* d = std::get_if<double>(&value.data)) return formatDouble(*d);
   if (auto* c = std::get_if<char32_t>(&value.data)) return utf8Encode(*c);
   if (auto* s = std::get_if<std::string>(&value.data)) {

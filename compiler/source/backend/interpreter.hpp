@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <array>
 #include <deque>
+#include <optional>
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -31,6 +32,69 @@ class Interpreter {
   struct Binding {
     Value value;
     bool mutableBinding = true;
+  };
+
+  // Call arguments: the vast majority of calls pass 0–4 arguments, so keep
+  // them inline and avoid a heap allocation per call.
+  class ArgList {
+   public:
+    static constexpr std::size_t kInline = 4;
+
+    ArgList() = default;
+    ArgList(std::initializer_list<Value> init) {
+      reserve(init.size());
+      for (const Value& value : init) push_back(value);
+    }
+
+    void reserve(std::size_t count) {
+      if (count > kInline) extra_.reserve(count - kInline);
+    }
+
+    void push_back(Value value) {
+      if (size_ < kInline) {
+        inline_[size_] = std::move(value);
+      } else {
+        extra_.push_back(std::move(value));
+      }
+      ++size_;
+    }
+
+    std::size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+
+    Value& operator[](std::size_t index) { return at(index); }
+    const Value& operator[](std::size_t index) const { return at(index); }
+    Value& at(std::size_t index) {
+      if (index >= size_) throw std::out_of_range("argument index");
+      return index < kInline ? inline_[index] : extra_[index - kInline];
+    }
+    const Value& at(std::size_t index) const {
+      if (index >= size_) throw std::out_of_range("argument index");
+      return index < kInline ? inline_[index] : extra_[index - kInline];
+    }
+
+    class iterator {
+     public:
+      iterator(ArgList* list, std::size_t index) : list_(list), index_(index) {}
+      Value& operator*() const { return (*list_)[index_]; }
+      iterator& operator++() {
+        ++index_;
+        return *this;
+      }
+      bool operator!=(const iterator& other) const { return index_ != other.index_; }
+
+     private:
+      ArgList* list_;
+      std::size_t index_;
+    };
+
+    iterator begin() { return iterator(this, 0); }
+    iterator end() { return iterator(this, size_); }
+
+   private:
+    std::array<Value, kInline> inline_;
+    std::vector<Value> extra_;
+    std::size_t size_ = 0;
   };
 
   // Environments are small: a function frame or block usually holds a handful
@@ -69,13 +133,15 @@ class Interpreter {
     Binding& operator[](std::string_view name) {
       if (Binding* existing = find(name)) return *existing;
       if (size_ < kInline) {
-        Entry& entry = inline_[size_];
+        // Inline slots are empty optionals until used, so creating a frame does
+        // not construct (and later destroy) four Entry objects that may never
+        // be touched.
+        inline_[size_].emplace();
+        Entry& entry = *inline_[size_];
         entry.first.assign(name.data(), name.size());
-        entry.second = Binding{};
       } else {
         overflow_.emplace_back();
         overflow_.back().first.assign(name.data(), name.size());
-        overflow_.back().second = Binding{};
       }
       ++size_;
       return at(size_ - 1).second;
@@ -88,10 +154,10 @@ class Interpreter {
 
    private:
     Entry& at(std::size_t index) {
-      return index < kInline ? inline_[index] : overflow_[index - kInline];
+      return index < kInline ? *inline_[index] : overflow_[index - kInline];
     }
 
-    std::array<Entry, kInline> inline_;
+    std::array<std::optional<Entry>, kInline> inline_;
     std::vector<Entry> overflow_;
     std::size_t size_ = 0;
   };
@@ -108,6 +174,8 @@ class Interpreter {
     }
   };
 
+  // Return used to throw a signal object, which costs a full unwind on every
+  // function call. It is now a flag checked by statement lists and loops.
   struct ReturnSignal {
     Value value;
   };
@@ -150,18 +218,19 @@ class Interpreter {
   Value readLValue(const LValue& lv);
   void writeLValue(const LValue& lv, Value value);
 
-  Value callFunction(const FnDecl& decl, std::vector<Value> args, Span span);
-  Value callClosure(const ClosurePtr& closure, std::vector<Value> args, Span span);
-  Value callValue(const Value& callee, std::vector<Value> args, Span span);
-  Value callMethod(const StructPtr& object, const std::string& methodName,
-                   std::vector<Value> args, Span span);
+  Value callFunction(const FnDecl& decl, ArgList args, Span span);
+  Value callClosure(const ClosurePtr& closure, ArgList args, Span span);
+  Value callValue(const Value& callee, ArgList args, Span span);
+  Value callMethod(const StructPtr& object, const std::string& methodName, ArgList args,
+                   Span span);
   Value callModuleMember(const ModuleObj& module, const std::string& member,
                          const std::vector<CallArg>& args, Env& env, Span span);
   Value constructStruct(const StructDecl& decl, const std::vector<CallArg>& args, Env& env,
                         Span span);
-  Value callBuiltin(const std::string& name, std::vector<Value>& args, Span span);
-  Value callBuiltinMethod(const Value& object, const std::string& method,
-                          std::vector<Value>& args, Span span);
+  Value callBuiltin(const std::string& name, ArgList& args, Span span);
+  Value callBuiltinFast(BuiltinId id, const std::string& name, ArgList& args, Span span);
+  Value callBuiltinMethod(const Value& object, const std::string& method, ArgList& args,
+                          Span span);
 
   const StructDecl* findStruct(const std::string& name) const;
   std::string qualifiedName(const std::string& name) const;
@@ -192,6 +261,11 @@ class Interpreter {
   std::deque<Env> moduleEnvs_;
   int currentModule_ = -1;
   int callDepth_ = 0;
+
+  // Pending `return`. Statement lists and loops test this flag instead of
+  // propagating a thrown signal, which made every call pay for unwinding.
+  bool returning_ = false;
+  Value returnValue_;
 };
 
 }  // namespace a

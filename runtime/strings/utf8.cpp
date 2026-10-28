@@ -47,10 +47,12 @@ bool decodeUtf8(const std::string& text, std::size_t& index, char32_t& out) {
 }
 
 std::size_t codepointCount(const std::string& text) {
+  // Every UTF-8 codepoint starts with a byte that is not a continuation byte
+  // (10xxxxxx), so counting the starts is exact and needs no decoding.
   std::size_t count = 0;
-  std::size_t index = 0;
-  char32_t codepoint = 0;
-  while (decodeUtf8(text, index, codepoint)) ++count;
+  for (unsigned char byte : text) {
+    if ((byte & 0xC0) != 0x80) ++count;
+  }
   return count;
 }
 

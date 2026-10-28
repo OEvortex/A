@@ -96,6 +96,64 @@ enum class BinOp : std::uint8_t {
   Range,
 };
 
+// Statically resolved builtin identity. `Sema` marks each call site whose
+// callee is not shadowed by a variable, so the interpreter can dispatch a
+// builtin without re-scanning name strings on every call (the same idea as
+// CPython's specialized call opcodes).
+enum class BuiltinId : std::uint8_t {
+  None,
+  Print,
+  Eprint,
+  Len,
+  Str,
+  Sqrt,
+  F64,
+  I64,
+  Abs,
+  Round,
+  Floor,
+  Ceil,
+  Pow,
+  Join,
+  Map,
+  Filter,
+  Sum,
+  Reduce,
+  Any,
+  All,
+  Some,
+  Panic,
+  Assert,
+  AssertEq,
+};
+
+inline BuiltinId builtinIdForName(std::string_view name) {
+  if (name == "print") return BuiltinId::Print;
+  if (name == "eprint") return BuiltinId::Eprint;
+  if (name == "len") return BuiltinId::Len;
+  if (name == "str") return BuiltinId::Str;
+  if (name == "sqrt") return BuiltinId::Sqrt;
+  if (name == "f64") return BuiltinId::F64;
+  if (name == "i64") return BuiltinId::I64;
+  if (name == "abs") return BuiltinId::Abs;
+  if (name == "round") return BuiltinId::Round;
+  if (name == "floor") return BuiltinId::Floor;
+  if (name == "ceil") return BuiltinId::Ceil;
+  if (name == "pow") return BuiltinId::Pow;
+  if (name == "join") return BuiltinId::Join;
+  if (name == "map") return BuiltinId::Map;
+  if (name == "filter") return BuiltinId::Filter;
+  if (name == "sum") return BuiltinId::Sum;
+  if (name == "reduce") return BuiltinId::Reduce;
+  if (name == "any") return BuiltinId::Any;
+  if (name == "all") return BuiltinId::All;
+  if (name == "Some") return BuiltinId::Some;
+  if (name == "panic") return BuiltinId::Panic;
+  if (name == "assert") return BuiltinId::Assert;
+  if (name == "assert_eq") return BuiltinId::AssertEq;
+  return BuiltinId::None;
+}
+
 struct TypeExpr {
   Span span;
   virtual ~TypeExpr() = default;
@@ -207,6 +265,9 @@ struct CallExpr : Expr {
   mutable bool calleeResolved = false;
   mutable const FnDecl* calleeFunction = nullptr;
   mutable const StructDecl* calleeStruct = nullptr;
+
+  // Set by Sema when the callee is a builtin that no local binding shadows.
+  BuiltinId builtinId = BuiltinId::None;
 };
 
 struct IndexExpr : Expr {
@@ -430,6 +491,7 @@ struct FnDecl : Stmt {
   std::vector<ParamDecl> params;
   TypeExprPtr returnType;  // may be null
   std::vector<StmtPtr> body;
+  int moduleId = -1;  // module owning the function, filled in by Sema
 };
 
 struct FieldDecl {

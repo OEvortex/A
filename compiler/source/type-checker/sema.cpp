@@ -519,6 +519,7 @@ void Sema::registerMethodSignatures(StructDecl& decl) {
   for (auto& methodPtr : decl.methods) {
     FnDecl& method = *methodPtr;
     fnModules_[&method] = currentModule_;
+    method.moduleId = currentModule_;
     if (method.params.empty() || method.params.front().name != "self") {
       sink_.error(method.nameSpan,
                   "Method '" + method.name + "' must declare 'self' as its first parameter.",
@@ -814,6 +815,7 @@ void Sema::analyzeModule(Module& module) {
       }
       functionsByName_[q] = fn;
       fnModules_[fn] = currentModule_;
+      fn->moduleId = currentModule_;
       exports.functions[fn->name] = fn;
     }
   }
@@ -1569,15 +1571,24 @@ TypePtr Sema::inferCall(CallExpr& expr) {
     const std::string q = qualified(name);
     auto structIt = structs_.find(q);
     if (structIt != structs_.end()) {
+      expr.calleeStruct = structIt->second.decl;
+      expr.calleeResolved = true;
       return checkStructConstruction(structIt->second, expr);
     }
     auto fnIt = functionsByName_.find(q);
     if (fnIt != functionsByName_.end()) {
+      // Record the declaration so the interpreter can call it directly instead
+      // of re-resolving the name through the scope chain on every call.
+      expr.calleeFunction = fnIt->second;
+      expr.calleeResolved = true;
       auto sigIt = signatures_.find(fnIt->second);
       if (sigIt == signatures_.end()) return typeError();
       return checkFunctionCall(sigIt->second, expr);
     }
-    if (isKnownBuiltin(name)) return checkBuiltinCall(name, expr);
+    if (isKnownBuiltin(name)) {
+      expr.builtinId = builtinIdForName(name);
+      return checkBuiltinCall(name, expr);
+    }
     if (isBuiltinConstant(name) || name == "None") {
       sink_.error(ident->span, "'" + name + "' is a constant, not a function.");
       for (auto& arg : expr.args) inferExpr(*arg.value);
