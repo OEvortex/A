@@ -586,6 +586,13 @@ const std::vector<Token>* Compilation::entryTokens() const {
   return &tokensByModule[static_cast<std::size_t>(entry)];
 }
 
+const std::vector<Comment>* Compilation::commentsForModule(int moduleId) const {
+  if (moduleId < 0 || static_cast<std::size_t>(moduleId) >= commentsByModule.size()) {
+    return nullptr;
+  }
+  return &commentsByModule[static_cast<std::size_t>(moduleId)];
+}
+
 const std::string* Compilation::textForModule(int moduleId) const {
   if (moduleId < 0 || static_cast<std::size_t>(moduleId) >= textsByModule.size()) return nullptr;
   return &textsByModule[static_cast<std::size_t>(moduleId)];
@@ -770,6 +777,7 @@ std::unique_ptr<Compilation> analyzeDocument(const std::string& path, const std:
   const std::string canonicalEntry = canonicalPath(path);
   compilation->indexes.resize(compilation->graph.modules.size());
   compilation->tokensByModule.resize(compilation->graph.modules.size());
+  compilation->commentsByModule.resize(compilation->graph.modules.size());
   compilation->textsByModule.resize(compilation->graph.modules.size());
 
   for (std::size_t i = 0; i < compilation->graph.modules.size(); ++i) {
@@ -781,6 +789,7 @@ std::unique_ptr<Compilation> analyzeDocument(const std::string& path, const std:
     DiagnosticSink scratch;
     Lexer lexer(source, scratch, static_cast<int>(i));
     compilation->tokensByModule[i] = lexer.tokenize();
+    compilation->commentsByModule[i] = lexer.comments();
 
     FileIndex& index = compilation->indexes[i];
     index.path = module.path;

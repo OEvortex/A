@@ -46,6 +46,8 @@ enum class ExprKind : std::uint8_t {
   Comprehension,
   Match,
   Try,
+  MapLit,
+  SetLit,
 };
 
 enum class StmtKind : std::uint8_t {

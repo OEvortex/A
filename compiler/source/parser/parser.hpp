@@ -31,6 +31,11 @@ class Parser {
   const Token& advance();
   const Token& expect(Tok kind, const std::string& what);
 
+  // Span of the last consumed token that carries source text (skips the
+  // structural NEWLINE/INDENT/DEDENT tokens). Statement spans use this so they
+  // end on the statement's final line rather than the following blank line.
+  Span previousSpan() const;
+
   [[noreturn]] void fail(Span span, std::string message, std::string help = {});
   void synchronize();
 

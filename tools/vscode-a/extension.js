@@ -103,6 +103,10 @@ class LanguageClient {
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           definition: { linkSupport: true },
           references: {},
+          documentHighlight: {},
+          formatting: {},
+          rename: {},
+          foldingRange: {},
         },
       },
       initializationOptions: {
@@ -428,6 +432,30 @@ function convertDocumentSymbol(symbol) {
   return converted;
 }
 
+function toTextEdit(edit) {
+  return new vscode.TextEdit(toRange(edit.range), edit.newText || "");
+}
+
+function workspaceEditFromLsp(edit) {
+  const workspaceEdit = new vscode.WorkspaceEdit();
+  if (!edit) return workspaceEdit;
+  if (edit.changes) {
+    for (const [uri, edits] of Object.entries(edit.changes)) {
+      workspaceEdit.set(vscode.Uri.parse(uri), (edits || []).map(toTextEdit));
+    }
+  }
+  if (Array.isArray(edit.documentChanges)) {
+    for (const change of edit.documentChanges) {
+      if (!change || !change.textDocument || !Array.isArray(change.edits)) continue;
+      workspaceEdit.set(
+        vscode.Uri.parse(change.textDocument.uri),
+        change.edits.map(toTextEdit)
+      );
+    }
+  }
+  return workspaceEdit;
+}
+
 function locationsFrom(result) {
   if (!result) return null;
   const entries = Array.isArray(result) ? result : [result];
@@ -528,6 +556,75 @@ function registerProviders(context, getClient) {
         });
         if (!Array.isArray(result)) return null;
         return result.map(convertDocumentSymbol);
+      },
+    }),
+
+    vscode.languages.registerDocumentFormattingEditProvider(selector, {
+      async provideDocumentFormattingEdits(document, options) {
+        const active = getClient();
+        if (!active) return null;
+        const result = await active.request("textDocument/formatting", {
+          textDocument: { uri: document.uri.toString() },
+          options: {
+            tabSize: options.tabSize,
+            insertSpaces: options.insertSpaces,
+          },
+        });
+        if (!Array.isArray(result)) return null;
+        return result.map(toTextEdit);
+      },
+    }),
+
+    vscode.languages.registerRenameProvider(selector, {
+      async provideRenameEdits(document, position, newName) {
+        const active = getClient();
+        if (!active) return null;
+        const result = await active.request("textDocument/rename", {
+          textDocument: { uri: document.uri.toString() },
+          position: { line: position.line, character: position.character },
+          newName,
+        });
+        if (!result) return null;
+        return workspaceEditFromLsp(result);
+      },
+    }),
+
+    vscode.languages.registerDocumentHighlightProvider(selector, {
+      async provideDocumentHighlights(document, position) {
+        const active = getClient();
+        if (!active) return null;
+        const result = await active.request("textDocument/documentHighlight", {
+          textDocument: { uri: document.uri.toString() },
+          position: { line: position.line, character: position.character },
+        });
+        if (!Array.isArray(result)) return null;
+        return result.map((entry) => {
+          const kind = Math.max(0, Math.min(2, (entry.kind || 1) - 1));
+          return new vscode.DocumentHighlight(toRange(entry.range), kind);
+        });
+      },
+    }),
+
+    vscode.languages.registerFoldingRangeProvider(selector, {
+      async provideFoldingRanges(document) {
+        const active = getClient();
+        if (!active) return null;
+        const result = await active.request("textDocument/foldingRange", {
+          textDocument: { uri: document.uri.toString() },
+        });
+        if (!Array.isArray(result)) return null;
+        return result.map(
+          (entry) =>
+            new vscode.FoldingRange(
+              entry.startLine,
+              entry.endLine,
+              entry.kind === "region"
+                ? vscode.FoldingRangeKind.Region
+                : entry.kind === "comment"
+                  ? vscode.FoldingRangeKind.Comment
+                  : undefined
+            )
+        );
       },
     }),
 

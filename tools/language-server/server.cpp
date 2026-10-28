@@ -20,6 +20,7 @@
 
 #include "analysis.hpp"
 #include "json.hpp"
+#include "tooling/formatter.hpp"
 
 namespace {
 
@@ -254,7 +255,7 @@ const char* const kKeywords[] = {
     "var", "const", "fn", "if", "elif", "else", "while", "do", "for", "in", "loop",
     "break", "continue", "return", "defer", "struct", "class", "metaclass", "enum",
     "self", "true", "false", "and", "or", "not", "import", "from", "as", "match",
-    "None", "pass",
+    "None", "pass", "type", "pvt",
 };
 
 int completionKind(SymbolKind kind) {
@@ -449,6 +450,22 @@ class LanguageServer {
       documentSymbols(idValue ? *idValue : Value(), params);
       return true;
     }
+    if (method == "textDocument/formatting") {
+      formatting(idValue ? *idValue : Value(), params);
+      return true;
+    }
+    if (method == "textDocument/rename") {
+      rename(idValue ? *idValue : Value(), params);
+      return true;
+    }
+    if (method == "textDocument/documentHighlight") {
+      documentHighlights(idValue ? *idValue : Value(), params);
+      return true;
+    }
+    if (method == "textDocument/foldingRange") {
+      foldingRanges(idValue ? *idValue : Value(), params);
+      return true;
+    }
     if (method == "workspace/symbol") {
       workspaceSymbols(idValue ? *idValue : Value(), params);
       return true;
@@ -509,6 +526,12 @@ class LanguageServer {
     capabilities["hoverProvider"] = true;
     capabilities["documentSymbolProvider"] = true;
     capabilities["workspaceSymbolProvider"] = true;
+    capabilities["documentFormattingProvider"] = true;
+    capabilities["documentHighlightProvider"] = true;
+    capabilities["foldingRangeProvider"] = true;
+    Value rename = Value::object();
+    rename["prepareProvider"] = false;
+    capabilities["renameProvider"] = std::move(rename);
     Value completion = Value::object();
     Value triggers = Value::array();
     triggers.push(".");
@@ -717,6 +740,247 @@ class LanguageServer {
     return best;
   }
 
+  std::string docCommentText(const Compilation& compilation, const FileIndex& file,
+                             const Span& span) const {
+    if (!span.valid()) return {};
+    int moduleId = -1;
+    const std::string canonical = canonicalPath(file.path);
+    for (std::size_t i = 0; i < compilation.graph.modules.size(); ++i) {
+      if (canonicalPath(compilation.graph.modules[i].path) == canonical) {
+        moduleId = static_cast<int>(i);
+        break;
+      }
+    }
+    const std::vector<a::Comment>* comments = compilation.commentsForModule(moduleId);
+    if (!comments) return {};
+
+    std::vector<std::string> lines;
+    int expected = span.line - 1;
+    for (std::size_t index = comments->size(); index > 0; --index) {
+      const a::Comment& comment = (*comments)[index - 1];
+      if (!comment.doc || comment.trailing || comment.span.line != expected) break;
+      std::string line = comment.text;
+      while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+      if (line.rfind("##", 0) == 0) line.erase(0, 2);
+      if (!line.empty() && line.front() == ' ') line.erase(0, 1);
+      lines.push_back(std::move(line));
+      --expected;
+    }
+    std::string text;
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+      if (!text.empty()) text += '\n';
+      text += *it;
+    }
+    return text;
+  }
+
+  static bool validIdentifier(const std::string& name) {
+    if (name.empty()) return false;
+    if (!(std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_')) return false;
+    for (char c : name) {
+      if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+    }
+    for (const char* keyword : kKeywords) {
+      if (name == keyword) return false;
+    }
+    return true;
+  }
+
+  std::vector<std::pair<std::string, Span>> collectReferences(
+      const Compilation& compilation, const ResolvedSymbol& target) const {
+    std::vector<std::pair<std::string, Span>> references;
+    if (!target.valid()) return references;
+    const std::string targetPath = canonicalPath(target.file->path);
+    for (std::size_t moduleId = 0; moduleId < compilation.indexes.size(); ++moduleId) {
+      if (moduleId >= compilation.tokensByModule.size()) continue;
+      const FileIndex& file = compilation.indexes[moduleId];
+      const std::vector<Token>& tokens = compilation.tokensByModule[moduleId];
+      for (int i = 0; i < static_cast<int>(tokens.size()); ++i) {
+        const Token& token = tokens[static_cast<std::size_t>(i)];
+        if (token.kind != Tok::Ident) continue;
+        ResolvedSymbol resolved = a::lsp::resolveToken(compilation, file, tokens, i);
+        if (!resolved.valid()) continue;
+        if (resolved.symbol->span.line != target.symbol->span.line) continue;
+        if (resolved.symbol->span.col != target.symbol->span.col) continue;
+        if (canonicalPath(resolved.file->path) != targetPath) continue;
+        references.emplace_back(resolved.file->path, token.span);
+      }
+    }
+    return references;
+  }
+
+  Value fullDocumentRange(const std::string& text) const {
+    int lines = 0;
+    for (char c : text) {
+      if (c == '\n') ++lines;
+    }
+    std::string lastLine = lineText(text, lines + 1);
+    Value range = Value::object();
+    Value start = Value::object();
+    start["line"] = 0;
+    start["character"] = 0;
+    Value end = Value::object();
+    end["line"] = lines;
+    end["character"] = byteToUtf16Column(lastLine, static_cast<int>(lastLine.size()));
+    range["start"] = std::move(start);
+    range["end"] = std::move(end);
+    return range;
+  }
+
+  void formatting(const Value& id, const Value* params) {
+    Document* document = documentFrom(params);
+    if (!document || !document->compilation) return replyNull(id);
+
+    a::tooling::FormatOptions options;
+    if (params) {
+      if (const Value* formatOptions = params->find("options")) {
+        if (const Value* tabSize = formatOptions->find("tabSize"); tabSize && tabSize->isNumber()) {
+          const int size = static_cast<int>(tabSize->asInt());
+          if (size >= 1 && size <= 16) options.indentWidth = size;
+        }
+      }
+    }
+
+    a::DiagnosticSink sink;
+    sink.addFile(std::make_shared<a::SourceFile>(document->path, document->text));
+    a::tooling::FormatResult result =
+        a::tooling::formatSource(document->text, sink, options);
+
+    Value edits = Value::array();
+    if (!result.ok || sink.hasErrors() || result.text == document->text) {
+      reply(id, std::move(edits));
+      return;
+    }
+
+    Value edit = Value::object();
+    edit["range"] = fullDocumentRange(document->text);
+    edit["newText"] = result.text;
+    edits.push(std::move(edit));
+    reply(id, std::move(edits));
+  }
+
+  void rename(const Value& id, const Value* params) {
+    Document* document = documentFrom(params);
+    if (!document || !document->compilation || !params) return replyNull(id);
+    const Value* newNameValue = params->find("newName");
+    if (!newNameValue || !newNameValue->isString()) return replyNull(id);
+    const std::string newName = newNameValue->asString();
+    if (!validIdentifier(newName)) {
+      sendError(id, -32602, "invalid identifier: " + newName);
+      return;
+    }
+
+    const Compilation& compilation = *document->compilation;
+    const FileIndex* file = compilation.entryIndex();
+    const std::vector<Token>* tokens = compilation.entryTokens();
+    if (!file || !tokens) return replyNull(id);
+
+    int line = 0;
+    int character = 0;
+    if (!positionFrom(params, &line, &character)) return replyNull(id);
+    int byteColumn = utf16ToByteColumn(lineText(document->text, line + 1), character) + 1;
+    ResolvedSymbol target =
+        a::lsp::resolveAt(compilation, *file, *tokens, line + 1, byteColumn);
+    if (!target.valid()) return replyNull(id);
+
+    const auto references = collectReferences(compilation, target);
+    if (references.empty()) return replyNull(id);
+
+    Value changes = Value::object();
+    for (const auto& [path, span] : references) {
+      const std::string uri = pathToUri(path);
+      if (!changes.contains(uri)) changes[uri] = Value::array();
+      const std::string* text = compilation.textForPath(path);
+      static const std::string empty;
+      Value edit = Value::object();
+      edit["range"] = rangeValue(text ? *text : empty, span);
+      edit["newText"] = newName;
+      changes[uri].push(std::move(edit));
+    }
+
+    Value workspaceEdit = Value::object();
+    workspaceEdit["changes"] = std::move(changes);
+    reply(id, std::move(workspaceEdit));
+  }
+
+  void documentHighlights(const Value& id, const Value* params) {
+    Document* document = documentFrom(params);
+    if (!document || !document->compilation) return replyNull(id);
+    const Compilation& compilation = *document->compilation;
+    const FileIndex* file = compilation.entryIndex();
+    const std::vector<Token>* tokens = compilation.entryTokens();
+    if (!file || !tokens) return replyNull(id);
+
+    int line = 0;
+    int character = 0;
+    if (!positionFrom(params, &line, &character)) return replyNull(id);
+    int byteColumn = utf16ToByteColumn(lineText(document->text, line + 1), character) + 1;
+    ResolvedSymbol target =
+        a::lsp::resolveAt(compilation, *file, *tokens, line + 1, byteColumn);
+    if (!target.valid()) return replyNull(id);
+
+    Value highlights = Value::array();
+    for (int i = 0; i < static_cast<int>(tokens->size()); ++i) {
+      const Token& token = (*tokens)[static_cast<std::size_t>(i)];
+      if (token.kind != Tok::Ident) continue;
+      ResolvedSymbol resolved = a::lsp::resolveToken(compilation, *file, *tokens, i);
+      if (!resolved.valid()) continue;
+      if (resolved.symbol->span.line != target.symbol->span.line) continue;
+      if (resolved.symbol->span.col != target.symbol->span.col) continue;
+      if (canonicalPath(resolved.file->path) != canonicalPath(target.file->path)) continue;
+      Value highlight = Value::object();
+      highlight["range"] = rangeValue(document->text, token.span);
+      highlight["kind"] = 1;  // Text
+      highlights.push(std::move(highlight));
+    }
+    reply(id, std::move(highlights));
+  }
+
+  void foldingRanges(const Value& id, const Value* params) {
+    Document* document = documentFrom(params);
+    if (!document || !document->compilation) return replyNull(id);
+    const std::vector<Token>* tokens = document->compilation->entryTokens();
+    if (!tokens) return replyNull(id);
+
+    Value result = Value::array();
+    std::vector<int> starts;
+    int lastCodeLine = 0;
+    auto addRange = [&](int startLine, int endLine) {
+      if (startLine <= 0 || endLine <= startLine) return;
+      Value range = Value::object();
+      range["startLine"] = startLine - 1;
+      range["endLine"] = endLine - 1;
+      range["kind"] = "region";
+      result.push(std::move(range));
+    };
+
+    for (const Token& token : *tokens) {
+      switch (token.kind) {
+        case Tok::Indent:
+          starts.push_back(lastCodeLine > 0 ? lastCodeLine : token.span.line);
+          break;
+        case Tok::Dedent:
+          if (!starts.empty()) {
+            const int startLine = starts.back();
+            starts.pop_back();
+            addRange(startLine, lastCodeLine);
+          }
+          break;
+        case Tok::Newline:
+        case Tok::Eof:
+          break;
+        default:
+          if (token.span.endLine > 0) lastCodeLine = token.span.endLine;
+          break;
+      }
+    }
+    while (!starts.empty()) {
+      addRange(starts.back(), lastCodeLine);
+      starts.pop_back();
+    }
+    reply(id, std::move(result));
+  }
+
   void definition(const Value& id, const Value* params) {
     Document* document = documentFrom(params);
     if (!document || !document->compilation) return replyNull(id);
@@ -752,6 +1016,9 @@ class LanguageServer {
     if (resolved.valid()) {
       std::string description = a::lsp::describeSymbol(*resolved.symbol);
       std::string markdown = "```a\n" + description + "\n```";
+      const std::string documentation =
+          docCommentText(compilation, *resolved.file, resolved.symbol->span);
+      if (!documentation.empty()) markdown += "\n\n" + documentation;
       const std::string* text = compilation.textForPath(resolved.file->path);
       Value result = Value::object();
       Value contents = Value::object();

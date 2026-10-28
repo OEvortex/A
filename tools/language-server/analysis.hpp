@@ -119,12 +119,14 @@ struct Compilation {
   SemaResult sema;
   std::vector<FileIndex> indexes;                  // by module id
   std::vector<std::vector<Token>> tokensByModule;  // by module id
+  std::vector<std::vector<Comment>> commentsByModule;  // by module id
   std::vector<std::string> textsByModule;          // by module id
   bool analyzed = false;                           // Sema ran without errors
 
   const FileIndex* entryIndex() const;
   const FileIndex* indexForModule(int moduleId) const;
   const std::vector<Token>* entryTokens() const;
+  const std::vector<Comment>* commentsForModule(int moduleId) const;
   const std::string* textForModule(int moduleId) const;
   const std::string* textForPath(const std::string& path) const;
 };

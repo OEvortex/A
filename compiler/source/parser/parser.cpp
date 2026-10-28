@@ -38,6 +38,19 @@ const Token& Parser::expect(Tok kind, const std::string& what) {
   fail(cur().span, "Expected " + what + ", found " + describeToken(cur()) + ".");
 }
 
+Span Parser::previousSpan() const {
+  for (std::size_t i = pos_; i > 0; --i) {
+    Tok kind = tokens_[i - 1].kind;
+    if (kind == Tok::Newline || kind == Tok::Indent || kind == Tok::Dedent ||
+        kind == Tok::Eof) {
+      continue;
+    }
+    return tokens_[i - 1].span;
+  }
+  return Span{};
+}
+
+
 void Parser::fail(Span span, std::string message, std::string help) {
   sink_.error(span, std::move(message), std::move(help));
   throw ParseError{};
@@ -215,7 +228,7 @@ StmtPtr Parser::parseFnDecl() {
     fail(cur().span, "Expected ':' or '=' after function signature.");
   }
 
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -312,7 +325,7 @@ StmtPtr Parser::parseStructDecl() {
   }
   expect(Tok::Dedent, "the end of the struct body");
 
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -326,7 +339,7 @@ StmtPtr Parser::parseTypeAliasDecl() {
   expect(Tok::Eq, "'=' after the type alias name");
   decl->type = parseTypeExpr();
   expectNewline();
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -349,7 +362,7 @@ StmtPtr Parser::parseVarDecl() {
   expect(Tok::Eq, "'=' (variables must be initialized)");
   decl->init = parseExpression();
   expectNewline();
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -374,7 +387,7 @@ StmtPtr Parser::parseConstDecl() {
   expect(Tok::Eq, "'=' (constants must be initialized)");
   decl->init = parseExpression();
   expectNewline();
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -407,7 +420,7 @@ StmtPtr Parser::parseEnumDecl() {
     fail(start, "An enum needs at least one variant.");
   }
 
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   return decl;
 }
 
@@ -421,7 +434,7 @@ StmtPtr Parser::parseTypedDeclaration() {
   expectNewline();
 
   auto decl = std::make_unique<LetStmt>();
-  decl->span = Span::join(start, tokens_[pos_ - 1].span);
+  decl->span = Span::join(start, previousSpan());
   decl->name = nameTok.lexeme;
   decl->nameSpan = nameTok.span;
   decl->type = std::move(type);
@@ -445,7 +458,7 @@ StmtPtr Parser::parseDestructureDecl(bool mutableBinding, Span start) {
   stmt->value = parseExpression();
   expectNewline();
   stmt->mutableBinding = mutableBinding;
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -492,7 +505,7 @@ StmtPtr Parser::parseIf() {
     stmt->elseBody = parseSuite();
   }
 
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -503,7 +516,7 @@ StmtPtr Parser::parseWhile() {
   stmt->cond = parseExpression();
   expect(Tok::Colon, "':' after the condition");
   stmt->body = parseSuite();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -516,7 +529,7 @@ StmtPtr Parser::parseDoWhile() {
   expect(Tok::KwWhile, "'while' after the 'do' block");
   stmt->cond = parseExpression();
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -531,7 +544,7 @@ StmtPtr Parser::parseFor() {
   stmt->iterable = parseExpression();
   expect(Tok::Colon, "':' after the iterable expression");
   stmt->body = parseSuite();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -541,7 +554,7 @@ StmtPtr Parser::parseLoop() {
   expect(Tok::Colon, "':' after 'loop'");
   auto stmt = std::make_unique<LoopStmt>();
   stmt->body = parseSuite();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -553,7 +566,7 @@ StmtPtr Parser::parseReturn() {
     stmt->value = parseExpression();
   }
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -562,7 +575,7 @@ StmtPtr Parser::parseBreak() {
   expect(Tok::KwBreak, "'break'");
   auto stmt = std::make_unique<BreakStmt>();
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -571,7 +584,7 @@ StmtPtr Parser::parseContinue() {
   expect(Tok::KwContinue, "'continue'");
   auto stmt = std::make_unique<ContinueStmt>();
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -580,7 +593,7 @@ StmtPtr Parser::parseDefer() {
   expect(Tok::KwDefer, "'defer'");
   auto stmt = std::make_unique<DeferStmt>();
   stmt->body = parseStatement();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -609,7 +622,7 @@ StmtPtr Parser::parseImport() {
   }
 
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -649,7 +662,7 @@ StmtPtr Parser::parseFromImport() {
   }
 
   expectNewline();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   return stmt;
 }
 
@@ -667,10 +680,10 @@ StmtPtr Parser::parseSimpleStatement() {
       }
       return buildDestructure(std::move(target), std::move(value),
                               /*mutableBinding=*/false,
-                              Span::join(start, tokens_[pos_ - 1].span));
+                              Span::join(start, previousSpan()));
     }
     auto stmt = std::make_unique<AssignStmt>();
-    stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+    stmt->span = Span::join(start, previousSpan());
     stmt->op = opName(opTok.kind);
     stmt->binop = binOp(opTok.kind);
     stmt->opSpan = opTok.span;
@@ -680,7 +693,7 @@ StmtPtr Parser::parseSimpleStatement() {
   }
   expectNewline();
   auto stmt = std::make_unique<ExprStmt>();
-  stmt->span = Span::join(start, tokens_[pos_ - 1].span);
+  stmt->span = Span::join(start, previousSpan());
   stmt->expr = std::move(target);
   return stmt;
 }
@@ -693,7 +706,7 @@ TypeExprPtr Parser::parseTypeExpr() {
     auto elem = parseTypeExpr();
     expect(Tok::RBracket, "']' after the element type");
     auto array = std::make_unique<ArrayTypeExpr>();
-    array->span = Span::join(start, tokens_[pos_ - 1].span);
+    array->span = Span::join(start, previousSpan());
     array->element = std::move(elem);
     type = std::move(array);
   } else if (check(Tok::LParen)) {
@@ -708,11 +721,11 @@ TypeExprPtr Parser::parseTypeExpr() {
         if (!match(Tok::Comma)) break;
       }
       expect(Tok::RParen, "')' after the tuple element types");
-      tuple->span = Span::join(start, tokens_[pos_ - 1].span);
+      tuple->span = Span::join(start, previousSpan());
       type = std::move(tuple);
     } else {
       expect(Tok::RParen, "')' after the type");
-      first->span = Span::join(start, tokens_[pos_ - 1].span);
+      first->span = Span::join(start, previousSpan());
       type = std::move(first);
     }
   } else if (check(Tok::KwFn)) {
@@ -730,7 +743,7 @@ TypeExprPtr Parser::parseTypeExpr() {
     expect(Tok::RParen, "')' after the function type parameters");
     expect(Tok::Arrow, "'->' before the function return type");
     fn->returnType = parseTypeExpr();
-    fn->span = Span::join(start, tokens_[pos_ - 1].span);
+    fn->span = Span::join(start, previousSpan());
     type = std::move(fn);
   } else {
     const Token& nameTok = expect(Tok::Ident, "a type name");
@@ -750,13 +763,13 @@ TypeExprPtr Parser::parseTypeExpr() {
       }
       expect(Tok::Gt, "'>' after type arguments");
     }
-    named->span = Span::join(named->span, tokens_[pos_ - 1].span);
+    named->span = Span::join(named->span, previousSpan());
     type = std::move(named);
   }
 
   while (match(Tok::Question)) {
     auto optional = std::make_unique<OptionalTypeExpr>();
-    optional->span = Span::join(type->span, tokens_[pos_ - 1].span);
+    optional->span = Span::join(type->span, previousSpan());
     optional->element = std::move(type);
     type = std::move(optional);
   }
@@ -1062,7 +1075,7 @@ ExprPtr Parser::parsePostfix() {
     if (check(Tok::LParen)) {
       auto args = parseCallArgs();
       auto call = std::make_unique<CallExpr>();
-      call->span = Span::join(expr->span, tokens_[pos_ - 1].span);
+      call->span = Span::join(expr->span, previousSpan());
       call->callee = std::move(expr);
       call->args = std::move(args);
       expr = std::move(call);
@@ -1125,8 +1138,8 @@ ExprPtr Parser::parseCallOrIndexPostfix(ExprPtr base) {
       }
     }
     expect(Tok::RBracket, "']' after the slice");
-    slice->bracketSpan = Span::join(start, tokens_[pos_ - 1].span);
-    slice->span = Span::join(slice->object->span, tokens_[pos_ - 1].span);
+    slice->bracketSpan = Span::join(start, previousSpan());
+    slice->span = Span::join(slice->object->span, previousSpan());
     return slice;
   };
 
@@ -1148,8 +1161,8 @@ ExprPtr Parser::parseCallOrIndexPostfix(ExprPtr base) {
   auto index = std::make_unique<IndexExpr>();
   index->object = std::move(base);
   index->index = std::move(first);
-  index->bracketSpan = Span::join(start, tokens_[pos_ - 1].span);
-  index->span = Span::join(index->object->span, tokens_[pos_ - 1].span);
+  index->bracketSpan = Span::join(start, previousSpan());
+  index->span = Span::join(index->object->span, previousSpan());
   return index;
 }
 
@@ -1250,7 +1263,7 @@ ExprPtr Parser::parsePrimary() {
       auto first = parseExpression();
       if (!match(Tok::Comma)) {
         expect(Tok::RParen, "')' after the expression");
-        first->span = Span::join(start, tokens_[pos_ - 1].span);
+        first->span = Span::join(start, previousSpan());
         return first;
       }
       auto tuple = std::make_unique<TupleExpr>();
@@ -1260,7 +1273,7 @@ ExprPtr Parser::parsePrimary() {
         if (!match(Tok::Comma)) break;
       }
       expect(Tok::RParen, "')' after the tuple elements");
-      tuple->span = Span::join(start, tokens_[pos_ - 1].span);
+      tuple->span = Span::join(start, previousSpan());
       return tuple;
     }
     case Tok::LBracket: {
@@ -1269,7 +1282,7 @@ ExprPtr Parser::parsePrimary() {
       if (check(Tok::RBracket)) {
         advance();
         auto array = std::make_unique<ArrayLitExpr>();
-        array->span = Span::join(start, tokens_[pos_ - 1].span);
+        array->span = Span::join(start, previousSpan());
         return array;
       }
       auto first = parseExpression();
@@ -1286,7 +1299,7 @@ ExprPtr Parser::parsePrimary() {
           comprehension->condition = parseExpression();
         }
         expect(Tok::RBracket, "']' after the comprehension");
-        comprehension->span = Span::join(start, tokens_[pos_ - 1].span);
+        comprehension->span = Span::join(start, previousSpan());
         return comprehension;
       }
       auto array = std::make_unique<ArrayLitExpr>();
@@ -1296,7 +1309,7 @@ ExprPtr Parser::parsePrimary() {
         array->elements.push_back(parseExpression());
       }
       expect(Tok::RBracket, "']' after the array elements");
-      array->span = Span::join(start, tokens_[pos_ - 1].span);
+      array->span = Span::join(start, previousSpan());
       return array;
     }
     default:
@@ -1391,7 +1404,7 @@ ExprPtr Parser::parseMatch() {
   if (matchExpr->arms.empty()) {
     fail(start, "A match expression needs at least one arm.");
   }
-  matchExpr->span = Span::join(start, tokens_[pos_ - 1].span);
+  matchExpr->span = Span::join(start, previousSpan());
   return matchExpr;
 }
 

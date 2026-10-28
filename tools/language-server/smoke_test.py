@@ -14,18 +14,20 @@ import sys
 import tempfile
 from pathlib import Path
 
-SOURCE = """struct Point:
+SOURCE = """## A two-dimensional point.
+struct Point:
     x: i32
     y: i32
 
     fn length_squared(self) -> i32:
         return self.x * self.x + self.y * self.y
 
+## Adds two numbers.
 fn add(a: i32, b: i32) -> i32:
     return a + b
 
 point = Point(3, 4)
-total = add(point.x, point.y)
+total=add(point.x,point.y)
 print("total = {total}")
 """
 
@@ -135,7 +137,7 @@ def main() -> int:
             fail(f"unexpected diagnostics: {diagnostics['params']['diagnostics']}")
 
         lines = SOURCE.splitlines()
-        call_line = next(i for i, line in enumerate(lines) if "total = add(" in line)
+        call_line = next(i for i, line in enumerate(lines) if "add(point.x" in line)
         call_column = lines[call_line].index("add")
         definition = client.request(
             "textDocument/definition",
@@ -144,9 +146,13 @@ def main() -> int:
                 "position": {"line": call_line, "character": call_column},
             },
         )
+        expected_line = next(i for i, text in enumerate(lines) if text.startswith("fn add("))
         range_ = definition["result"]["range"]
-        if range_["start"]["line"] != 7:
-            fail(f"definition for 'add' landed on line {range_['start']['line']}, expected 7")
+        if range_["start"]["line"] != expected_line:
+            fail(
+                f"definition for 'add' landed on line {range_['start']['line']}, "
+                f"expected {expected_line}"
+            )
 
         hover = client.request(
             "textDocument/hover",
@@ -155,8 +161,11 @@ def main() -> int:
                 "position": {"line": call_line, "character": call_column},
             },
         )
-        if "fn add" not in hover["result"]["contents"]["value"]:
+        hover_text = hover["result"]["contents"]["value"]
+        if "fn add" not in hover_text:
             fail("hover did not describe the add function")
+        if "Adds two numbers." not in hover_text:
+            fail("hover did not include the declaration's doc comment")
 
         symbols = client.request(
             "textDocument/documentSymbol", {"textDocument": {"uri": uri}}
@@ -176,8 +185,56 @@ def main() -> int:
         if not {"add", "Point", "print"}.issubset(labels):
             fail("completion did not include functions, structs, and builtins")
 
+        formatting = client.request(
+            "textDocument/formatting",
+            {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 4, "insertSpaces": True},
+            },
+        )["result"]
+        if len(formatting) != 1:
+            fail(f"formatting returned {len(formatting)} edits, expected 1")
+        formatted = formatting[0]["newText"]
+        if "total = add(point.x, point.y)" not in formatted:
+            fail("formatting did not normalize the assignment")
+        if "\n\n\n" in formatted:
+            fail("formatting left repeated blank lines")
+
+        rename = client.request(
+            "textDocument/rename",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": call_line, "character": call_column},
+                "newName": "plus",
+            },
+        )["result"]
+        edits = rename.get("changes", {}).get(uri, [])
+        if len(edits) < 2:
+            fail(f"rename returned {len(edits)} edits, expected declaration and use")
+        if any(edit["newText"] != "plus" for edit in edits):
+            fail("rename produced an unexpected replacement")
+
+        highlights = client.request(
+            "textDocument/documentHighlight",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": call_line, "character": call_column},
+            },
+        )["result"]
+        if len(highlights) < 2:
+            fail(f"document highlight returned {len(highlights)} ranges, expected at least 2")
+
+        folding = client.request(
+            "textDocument/foldingRange", {"textDocument": {"uri": uri}}
+        )["result"]
+        if not any(entry["startLine"] == 1 for entry in folding):
+            fail(f"folding ranges did not include the struct body: {folding}")
+
         client.stop()
-        print("OK: diagnostics, definition, hover, document symbols, completion")
+        print(
+            "OK: diagnostics, definition, hover, symbols, completion, formatting, "
+            "rename, highlights, folding"
+        )
 
     return 0
 
