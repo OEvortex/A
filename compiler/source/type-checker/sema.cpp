@@ -1503,6 +1503,60 @@ TypePtr Sema::inferIdent(IdentExpr& expr) {
 
 TypePtr Sema::inferUnary(UnaryExpr& expr) {
   TypePtr operand = inferExpr(*expr.operand);
+  if ((expr.op == "++" || expr.op == "--") && expr.postfix == false) {
+    // Prefix ++/-- : operand must be a mutable numeric variable.
+    if (auto* ident = dynamic_cast<IdentExpr*>(expr.operand.get())) {
+      VarSym* sym = lookupVar(ident->name);
+      if (!sym) {
+        sink_.error(expr.opSpan, "Undefined variable '" + ident->name + "'.");
+        return typeError();
+      }
+      if (!sym->mutableBinding) {
+        sink_.error(ident->span, "Cannot apply '" + expr.op + "' to immutable binding '" + ident->name + "'.",
+                    "Declare the variable with 'var " + ident->name + " = ...' to make it mutable.");
+        return typeError();
+      }
+    } else {
+      sink_.error(expr.operand->span, "Operand of '" + expr.op + "' must be a variable.");
+      return typeError();
+    }
+    TypePtr resolved = resolveType(operand);
+    if (resolved->kind == TypeKind::Int || resolved->kind == TypeKind::Float) {
+      return operand;
+    }
+    if (resolved->kind == TypeKind::Var && constrainVar(operand, Constraint::Numeric)) {
+      return operand;
+    }
+    sink_.error(expr.opSpan, "Operator '" + expr.op + "' requires a numeric operand, found " + typePhrase(operand) + ".");
+    return typeError();
+  }
+  if ((expr.op == "++" || expr.op == "--") && expr.postfix == true) {
+    // Postfix i++ / i-- : same rules as prefix.
+    if (auto* ident = dynamic_cast<IdentExpr*>(expr.operand.get())) {
+      VarSym* sym = lookupVar(ident->name);
+      if (!sym) {
+        sink_.error(expr.opSpan, "Undefined variable '" + ident->name + "'.");
+        return typeError();
+      }
+      if (!sym->mutableBinding) {
+        sink_.error(ident->span, "Cannot apply '" + expr.op + "' to immutable binding '" + ident->name + "'.",
+                    "Declare the variable with 'var " + ident->name + " = ...' to make it mutable.");
+        return typeError();
+      }
+    } else {
+      sink_.error(expr.operand->span, "Operand of '" + expr.op + "' must be a variable.");
+      return typeError();
+    }
+    TypePtr resolved = resolveType(operand);
+    if (resolved->kind == TypeKind::Int || resolved->kind == TypeKind::Float) {
+      return operand;
+    }
+    if (resolved->kind == TypeKind::Var && constrainVar(operand, Constraint::Numeric)) {
+      return operand;
+    }
+    sink_.error(expr.opSpan, "Operator '" + expr.op + "' requires a numeric operand, found " + typePhrase(operand) + ".");
+    return typeError();
+  }
   if (expr.op == "!") {
     TypePtr resolved = resolveType(operand);
     if (resolved->kind == TypeKind::Error) return typeError();

@@ -73,6 +73,8 @@ const char* tokName(Tok kind) {
     case Tok::Tilde: return "'~'";
     case Tok::Shl: return "'<<'";
     case Tok::Shr: return "'>>'";
+    case Tok::PlusPlus: return "'++'";
+    case Tok::MinusMinus: return "'--'";
     case Tok::Plus: return "'+'";
     case Tok::Minus: return "'-'";
     case Tok::Star: return "'*'";
@@ -773,11 +775,15 @@ std::vector<Token> Lexer::tokenize() {
         emit1(Tok::Colon);
         break;
       case '+':
-        peek(1) == '=' ? emit2(Tok::PlusEq) : emit1(Tok::Plus);
+        if (peek(1) == '+') emit2(Tok::PlusPlus);
+        else if (peek(1) == '=') emit2(Tok::PlusEq);
+        else emit1(Tok::Plus);
         break;
       case '-':
-        peek(1) == '=' ? emit2(Tok::MinusEq)
-                       : peek(1) == '>' ? emit2(Tok::Arrow) : emit1(Tok::Minus);
+        if (peek(1) == '-') emit2(Tok::MinusMinus);
+        else if (peek(1) == '=') emit2(Tok::MinusEq);
+        else if (peek(1) == '>') emit2(Tok::Arrow);
+        else emit1(Tok::Minus);
         break;
       case '*':
         peek(1) == '*' ? emit2(Tok::StarStar)

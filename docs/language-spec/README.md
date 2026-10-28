@@ -8,9 +8,9 @@ and indented consistently; braces are not used for blocks.
 - Comments start with `#` and run to the end of the line.
 - Indentation must use spaces; tabs in indentation are reported as errors.
 - Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. A bare `_` is a discard name.
-- Keywords: `var const fn if elif else while do for in loop break continue
-  return defer struct class Class metaclass Metaclass pass enum self true false and or not import from as match
-  None`.
+- Keywords: `var const pvt type fn if elif else while do for in loop break
+  continue return defer struct class metaclass enum import from as match
+  self true false and or not None`.
 - Numeric literals support `_` separators, decimal integers, fractional parts,
   exponent notation, and hex/binary integer literals (`0xFF`, `0b1010_1011`).
 - String literals use double quotes with escapes `\n \t \r \0 \a \b \f \v \\
@@ -22,8 +22,8 @@ and indented consistently; braces are not used for blocks.
   newline immediately after the opening quotes. Dedenting is not performed.
 - Character literals use single quotes, cover one Unicode code point, and
   accept the same escapes as strings.
-- Operators (25+): `+ - * / % ** & | ^ ~ << >> .. in not in == != < <= > >= = += -= *= /= %=
-  &= |= ^= <<= >>= and or not ?. ?? ? : ! => -> |>`.
+- Operators (27+): `+ - * / % ** & | ^ ~ << >> .. in not in == != < <= > >= = += -= *= /= %=
+  &= |= ^= <<= >>= ++ -- and or not ?. ?? ? : ! => -> |>`.
 
 
 ## Bindings and types
@@ -82,6 +82,116 @@ inference error and asks for an annotation. Types that are used inconsistently
 (for example, passing a `String` where an integer is required) are compile
 errors. A bare `None` is allowed wherever the element type can be inferred
 later; otherwise annotate the binding (`var x: i32? = None`).
+
+## Control flow
+
+### Conditionals
+
+```a
+if score > 90:
+    print("A")
+elif score > 80:
+    print("B")
+else:
+    print("C")
+```
+
+### `while` loop — pre-test
+
+The condition is checked **before** each iteration. The body may run zero times.
+
+```a
+count = 0
+while count < 3:
+    print("while: count = {count}")
+    count = count + 1
+```
+
+### `do ... while` loop — post-test
+
+The body runs **at least once**; the condition is checked after each iteration.
+
+```a
+n = 0
+do:
+    print("do-while: n = {n}")
+    n = n + 1
+while n < 2
+```
+
+### `for` loop — iteration
+
+Iterates over a range, array, string, or other iterable. Ranges are written
+`lo..hi` (exclusive of `hi`) and may include an optional step: `lo..hi..step`.
+
+```a
+# range 0..4 → 0, 1, 2, 3
+total = 0
+for i in 0..4:
+    total = total + i
+    print("for: i = {i}, total = {total}")
+
+# stepped range 0..10..2 → 0, 2, 4, 6, 8
+for i in 0..10..2:
+    print("stepped: i = {i}")
+```
+
+### `loop` — infinite loop
+
+An unconditional loop with no condition. Exit it with `break` (or `return`).
+
+```a
+turns = 0
+loop:
+    turns = turns + 1
+    print("loop: turn = {turns}")
+    if turns == 3:
+        break
+```
+
+### `break` and `continue`
+
+`break` exits the enclosing loop immediately. `continue` skips to the next
+iteration. Both work inside `while`, `do ... while`, `for`, and `loop`.
+
+```a
+for j in 0..4:
+    if j == 2:
+        continue
+    print("j = {j}")
+```
+
+### `++` and `--` — increment / decrement
+
+`++` adds 1 to a numeric variable; `--` subtracts 1. Both come in **prefix**
+(`++i`, `--i`) and **postfix** (`i++`, `i--`) forms.
+
+- **Prefix** (`++i`): increments first, then returns the new value.
+- **Postfix** (`i++`): returns the old value, then increments.
+
+The operand must be a mutable numeric variable (`var x = ...` or a plain
+assignment, which is mutable by default).
+
+```a
+i = 0
+print(++i)   # 1  (prefix: returns new value)
+print(i++)   # 1  (postfix: returns old value)
+print(i)     # 2
+
+j = 5
+print(--j)   # 4  (prefix: returns new value)
+print(j--)   # 4  (postfix: returns old value)
+print(j)     # 3
+```
+
+They are especially handy in loops:
+
+```a
+k = 0
+while k < 3:
+    print("k = {k}")
+    k++
+```
 
 ## Expressions
 

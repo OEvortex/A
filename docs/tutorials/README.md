@@ -7,7 +7,7 @@ Suggested order:
 
 1. `examples/hello-world` — printing.
 2. `examples/input-output` — reading stdin.
-3. `examples/loops` — `while`, `for`, ranges, and `do ... while`.
+3. `examples/loops` — `while`, `for`, ranges, `do ... while`, and `++`/`--`.
 4. `examples/functions` — functions, closures, `match`, and pipelines.
 5. `examples/collections` — arrays, strings, comprehensions.
 6. `examples/structs` — structs, methods, and optionals.

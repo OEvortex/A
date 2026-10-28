@@ -67,6 +67,8 @@ enum class Tok {
   FatArrow,
   Pipe,
 
+  PlusPlus,
+  MinusMinus,
   Plus,
   Minus,
   Star,

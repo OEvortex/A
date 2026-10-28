@@ -1,0 +1,42 @@
+# Demo: All four loop types in A using type inference (no explicit data types).
+# A infers types automatically, so we write `x = 0` instead of `x: i32 = 0`.
+
+fn main() -> void:
+    # -----------------------------------------------------------
+    # 1. while loop  (pre-test: condition checked before each run)
+    # -----------------------------------------------------------
+    count = 0
+    while count < 3:
+        print("while: count = {count}")
+        count = count + 1
+
+    # -----------------------------------------------------------
+    # 2. do...while loop (post-test: body runs at least once)
+    # -----------------------------------------------------------
+    n = 0
+    do:
+        print("do-while: n = {n}")
+        n = n + 1
+    while n < 2
+
+    # -----------------------------------------------------------
+    # 3. for loop  (iterate over a range: 0 up to but not including 4)
+    # -----------------------------------------------------------
+    total = 0
+    for i in 0..4:
+        total = total + i
+        print("for: i = {i}, running total = {total}")
+
+    # -----------------------------------------------------------
+    # 4. loop  (infinite; exits only via break / return)
+    # -----------------------------------------------------------
+    turns = 0
+    loop:
+        turns = turns + 1
+        print("loop: turn = {turns}")
+        if turns == 3:
+            break
+
+    print("All loops done.")
+
+main()

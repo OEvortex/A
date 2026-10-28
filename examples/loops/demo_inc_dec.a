@@ -1,0 +1,41 @@
+# Demo: ++ and -- operators in A (type inference, no explicit data types).
+
+fn main() -> void:
+    # ---- prefix ++i and --i ----
+    a = 5
+    print("prefix ++a = {++a}")   # 6, a is now 6
+    print("a after ++a = {a}")    # 6
+
+    b = 10
+    print("prefix --b = {--b}")   # 9, b is now 9
+    print("b after --b = {b}")    # 9
+
+    # ---- postfix i++ and i-- ----
+    c = 3
+    print("postfix c++ = {c++}")  # 3 (returns old value), c is now 4
+    print("c after c++ = {c}")    # 4
+
+    d = 7
+    print("postfix d-- = {d--}")  # 7 (returns old value), d is now 6
+    print("d after d-- = {d}")    # 6
+
+    # ---- in a while loop ----
+    i = 0
+    while i < 3:
+        print("loop i = {i}")
+        i++
+
+    # ---- in a while loop with continue ----
+    j = 0
+    while j < 5:
+        if j == 2:
+            j++
+            continue
+        print("range j = {j}")
+        j++
+
+    # ---- mutable binding required (const/immutable should fail) ----
+    # const k = 1
+    # k++   # this would be a compile error
+
+main()

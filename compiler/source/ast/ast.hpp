@@ -243,7 +243,8 @@ struct IdentExpr : Expr {
 
 struct UnaryExpr : Expr {
   UnaryExpr() : Expr(ExprKind::Unary) {}
-  std::string op;  // "-" or "not"
+  std::string op;  // "-", "not", "!", "~", "++", or "--"
+  bool postfix = false;  // true for i++ / i--, false for ++i / --i / -x / !x / ~x
   Span opSpan;
   ExprPtr operand;
 };

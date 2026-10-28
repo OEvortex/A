@@ -767,6 +767,18 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
 
   case ExprKind::Unary: {
     auto* node = static_cast<const UnaryExpr*>(&expr);
+    if (node->op == "++" || node->op == "--") {
+      // Prefix/postfix increment/decrement: read, mutate, write back.
+      LValue lv = resolveLValue(*node->operand, env);
+      Value current = readLValue(lv);
+      std::int64_t intValue = 0;
+      if (auto* v = std::get_if<std::int64_t>(&current.data)) intValue = *v;
+      else if (auto* v = std::get_if<double>(&current.data)) intValue = static_cast<std::int64_t>(*v);
+      else fail(node->span, "Operator '" + node->op + "' requires a numeric operand.");
+      std::int64_t next = (node->op == "++") ? intValue + 1 : intValue - 1;
+      writeLValue(lv, makeInt(next));
+      return node->postfix ? current : makeInt(next);
+    }
     Value operand = eval(*node->operand, env);
     if (node->op == "!") {      auto* optional = std::get_if<OptionalPtr>(&operand.data);
       if (!optional) fail(node->span, "Operator '!' requires an optional value.");

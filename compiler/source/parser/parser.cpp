@@ -986,6 +986,17 @@ ExprPtr Parser::parsePrefix() {
     expr->operand = std::move(operand);
     return expr;
   }
+  if (check(Tok::PlusPlus) || check(Tok::MinusMinus)) {
+    const Token& opTok = advance();
+    auto operand = parseExpression(15);
+    auto expr = std::make_unique<UnaryExpr>();
+    expr->span = Span::join(opTok.span, operand->span);
+    expr->opSpan = opTok.span;
+    expr->op = opTok.kind == Tok::PlusPlus ? "++" : "--";
+    expr->postfix = false;
+    expr->operand = std::move(operand);
+    return expr;
+  }
   if (check(Tok::Minus) || check(Tok::Tilde)) {
     const Token& opTok = advance();
     auto operand = parseExpression(15);
@@ -1002,6 +1013,17 @@ ExprPtr Parser::parsePrefix() {
 ExprPtr Parser::parsePostfix() {
   auto expr = parsePrimary();
   while (true) {
+    if (check(Tok::PlusPlus) || check(Tok::MinusMinus)) {
+      const Token& opTok = advance();
+      auto unary = std::make_unique<UnaryExpr>();
+      unary->span = Span::join(expr->span, opTok.span);
+      unary->opSpan = opTok.span;
+      unary->op = opTok.kind == Tok::PlusPlus ? "++" : "--";
+      unary->postfix = true;
+      unary->operand = std::move(expr);
+      expr = std::move(unary);
+      continue;
+    }
     if (check(Tok::Dot)) {
       advance();
       const Token& fieldTok = expect(Tok::Ident, "a field or method name");
