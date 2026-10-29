@@ -98,10 +98,20 @@ target_link_libraries(a_runtime PUBLIC a_project_options)
 
 add_library(a_backend STATIC
   compiler/source/backend/interpreter.cpp
+  compiler/source/backend/stdlib/builtins.cpp
   compiler/source/backend/native/native_codegen.cpp
   compiler/source/backend/llvm/llvm_backend.cpp
 )
 target_link_libraries(a_backend PUBLIC a_type_checker a_runtime)
+
+# TLS for net.tls_connect / https is optional: enable it when OpenSSL is present.
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+  target_compile_definitions(a_backend PRIVATE A_HAVE_OPENSSL=1)
+  target_link_libraries(a_backend PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+else()
+  message(STATUS "OpenSSL not found: net TLS support will report as unavailable")
+endif()
 
 add_library(a_tooling STATIC
   compiler/source/tooling/source_text.cpp

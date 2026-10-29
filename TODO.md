@@ -76,13 +76,13 @@ against the compiler (2026-10-29).
 
 ## 8. Standard Library
 
-- [ ] Networking — TCP/UDP sockets, DNS, HTTP client/server, TLS (Plan §13.6)
-- [ ] JSON serialization — structured serialization (Plan §13.7)
-- [ ] Binary serialization (Plan §13.7)
-- [ ] Property-based testing support (Plan §13.8)
-- [ ] Structured logging (Plan §13.11)
-- [ ] Metrics emission — Prometheus/OpenTelemetry compatible (Plan §13.11)
-- [ ] Distributed tracing (Plan §13.11)
+- [x] Networking — TCP/UDP sockets, DNS, HTTP client/server, TLS (Plan §13.6)
+- [x] JSON serialization — structured serialization (Plan §13.7)
+- [x] Binary serialization (Plan §13.7)
+- [x] Property-based testing support (Plan §13.8)
+- [x] Structured logging (Plan §13.11)
+- [x] Metrics emission — Prometheus/OpenTelemetry compatible (Plan §13.11)
+- [x] Distributed tracing (Plan §13.11)
 
 ---
 

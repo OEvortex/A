@@ -1,0 +1,30 @@
+object
+true
+false
+Ada
+Ada
+2
+9.5
+true
+None
+None
+["name", "scores", "active", "score", "parent"]
+3
+{"name":"Ada","scores":[1,2,3],"active":true,"score":9.5,"parent":null}
+{
+  "a": [
+    1,
+    2
+  ]
+}
+true
+false
+null
+null
+12
+{"b":"é","c":"😀"}
+array
+2
+{"k":[]}
+3
+5

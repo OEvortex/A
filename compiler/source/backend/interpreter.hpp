@@ -253,6 +253,9 @@ class Interpreter {
                         Span span);
   Value callBuiltin(const std::string& name, ArgList& args, Span span);
   Value callBuiltinFast(BuiltinId id, const std::string& name, ArgList& args, Span span);
+  // json/binary/testing/log/metrics/trace/net/http, implemented in
+  // backend/stdlib/builtins.cpp.
+  Value callStdlibBuiltin(const std::string& name, ArgList& args, Span span);
   Value callBuiltinMethod(const Value& object, const std::string& method, ArgList& args,
                           Span span);
 

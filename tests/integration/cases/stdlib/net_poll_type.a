@@ -1,0 +1,6 @@
+import net
+
+fn main() -> void:
+    print(net.poll(5, 100))
+
+main()

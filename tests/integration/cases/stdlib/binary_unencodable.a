@@ -1,0 +1,6 @@
+import binary
+
+fn main() -> void:
+    print(binary.encode(fn() => 1))
+
+main()

@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+#include "name-resolution/native_modules.hpp"
+
 namespace a {
 
 namespace {
@@ -760,6 +762,8 @@ bool checkNativeExpr(const Expr& expr) {
         if (!checkNativeExpr(*arg.value)) return false;
       return true;
     }
+    // Standard-library builtins only exist in the interpreter.
+    if (isStdlibBuiltin(name)) return false;
     // These builtins are not provided by the native runtime helpers; they
     // would produce an undeclared-identifier error, so route them to the
     // interpreter instead.

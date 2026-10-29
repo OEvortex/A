@@ -1,0 +1,36 @@
+import binary
+import json
+
+struct Point:
+    x: i64
+    y: i64
+
+fn main() -> void:
+    doc = json.parse("\{\"name\": \"Ada\", \"nums\": [1, -2, 300000], \"ok\": true, \"ratio\": 0.5, \"parent\": null\}")
+    bytes = binary.encode(doc)
+    print(len(bytes) > 0)
+    back = binary.decode(bytes)!
+    print(json.kind(back))
+    print(json.as_str((json.get(back, "name"))!)!)
+    print(json.as_int((json.at((json.get(back, "nums"))!, 2))!)!)
+    print(json.as_bool((json.get(back, "ok"))!)!)
+    print(json.as_float((json.get(back, "ratio"))!)!)
+    print(json.has(back, "parent"))
+    print(json.kind((json.get(back, "parent"))!))
+
+    scalars = [binary.decode(binary.encode(7))!, binary.decode(binary.encode("s"))!, binary.decode(binary.encode(1.5))!, binary.decode(binary.encode(true))!, binary.decode(binary.encode(None))!]
+    print(len(scalars))
+    print(json.kind(scalars[0]), json.as_int(scalars[0])!)
+    print(json.as_str(scalars[1])!)
+    print(json.as_float(scalars[2])!)
+    print(json.as_bool(scalars[3])!)
+    print(json.kind(scalars[4]))
+
+    empty: [i64] = []
+    bytes2 = binary.encode(empty)
+    print(json.kind(binary.decode(bytes2)!))
+
+    big = binary.encode([4611686018427387904, -4611686018427387904])
+    print(json.as_int((json.at(binary.decode(big)!, 0))!)!)
+
+main()

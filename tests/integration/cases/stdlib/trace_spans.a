@@ -1,0 +1,48 @@
+import trace
+import json
+
+fn inner() -> void:
+    child = trace.start("inner")
+    trace.set_attribute(child, "rows", 3)
+    trace.add_event(child, "cache_miss")
+    trace.end(child)
+
+fn main() -> void:
+    trace.reset()
+    print(trace.current())
+    root = trace.start("request")
+    print(trace.current() == root)
+    trace.set_attribute(root, "http.route", "/home")
+    trace.set_attribute(root, "http.route", "/other")
+    carrier = trace.inject()
+    inner()
+    trace.add_event(root, "done")
+    trace.end(root)
+    print(trace.current())
+
+    spans = trace.spans()
+    print(len(spans))
+    print((json.as_str((json.get(spans[0], "name"))!))!)
+    print((json.as_int((json.get(spans[0], "parent_id"))!))!)
+    print((json.as_int((json.get(spans[1], "parent_id"))!))!)
+    print(len((json.as_str((json.get(spans[0], "trace_id"))!))!) == 32)
+    print(len((json.as_str((json.get(spans[0], "span_id"))!))!) == 16)
+    attrs = (json.as_map((json.get(spans[0], "attributes"))!))!
+    print(len(attrs))
+    print(attrs["http.route"])
+    events = (json.as_array((json.get(spans[1], "events"))!))!
+    print(len(events))
+    print((json.as_float((json.get(spans[0], "duration_ms"))!))! >= 0.0)
+
+    remote = trace.extract(carrier)
+    remote_spans = trace.spans()
+    print(len(remote_spans))
+    new_root = remote_spans[len(remote_spans) - 1]
+    print((json.as_str((json.get(new_root, "name"))!))!)
+    print(len((json.as_str((json.get(new_root, "trace_id"))!))!) == 32)
+    trace.end(remote)
+
+    trace.reset()
+    print(len(trace.spans()))
+
+main()

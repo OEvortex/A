@@ -1,0 +1,20 @@
+import json
+
+struct Point:
+    x: i64
+    y: i64
+
+fn main() -> void:
+    print(json.stringify(42))
+    print(json.stringify(3.25))
+    print(json.stringify("hi\n"))
+    print(json.stringify(true))
+    print(json.stringify([1, 2, 3]))
+    print(json.stringify({"a": "b"}))
+    print(json.stringify(Point(1, 2)))
+    print(json.stringify(Some(7)))
+    print(json.stringify(None))
+    print(json.pretty(json.parse("\{\"k\": 2, \"list\": [1, 2, \{\"deep\": true\}]\}")))
+    print(json.stringify(json.parse("[]")))
+
+main()

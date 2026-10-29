@@ -1,0 +1,47 @@
+# Structured logging, Prometheus metrics, and span tracing in one program.
+import log
+import metrics
+import trace
+import json
+
+fn handle(route: String, millis: f64) -> void:
+    span = trace.start("handle")
+    trace.set_attribute(span, "http.route", route)
+    metrics.counter("requests_total", 1, "route", route)
+    metrics.histogram("request_duration_ms", millis, "route", route)
+    if millis > 100.0:
+        log.warn("slow request", "route", route, "ms", millis)
+    else:
+        log.info("handled", "route", route, "ms", millis)
+    trace.add_event(span, "response_sent")
+    trace.end(span)
+
+fn main() -> void:
+    log.set_level("info")
+    log.set_json(true)
+    trace.reset()
+    metrics.reset()
+
+    handle("/home", 12.5)
+    handle("/home", 340.0)
+    handle("/about", 4.0)
+
+    # Log records go to stderr, so this output stays a metrics/tracing report.
+    print(metrics.render())
+
+    parent = trace.start("request")
+    carrier = trace.inject()
+    print("traceparent: " + carrier)
+    handle("/child", 7.0)
+    trace.end(parent)
+
+    # A remote process would extract the carrier to keep the same trace id.
+    remote = trace.extract(carrier)
+    trace.end(remote)
+
+    finished = trace.spans()
+    print("recorded " + str(len(finished)) + " spans")
+    for span in finished:
+        print(json.kind(span) + " " + (json.as_str((json.get(span, "name"))!))!)
+
+main()

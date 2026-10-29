@@ -1,0 +1,15 @@
+import log
+
+fn main() -> void:
+    log.set_json(false)
+    log.set_level("info")
+    log.info("user signup", "user_id", 42, "plan", "pro")
+    log.debug("hidden", "a", 1)
+    log.warn("slow request", {"route": "/home", "ms": "850"})
+    log.set_json(true)
+    log.error("boom", "code", 500, "tags", ["a", "b"])
+    log.set_level("error")
+    log.warn("suppressed")
+    log.info("also suppressed")
+
+main()

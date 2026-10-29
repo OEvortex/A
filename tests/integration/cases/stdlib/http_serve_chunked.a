@@ -1,0 +1,30 @@
+import http
+import net
+
+fn handler(method: String, path: String, headers: {String: String}, body: String) -> (i64, {String: String}, String):
+    if path == "/stream":
+        return (200, {"Transfer-Encoding": "chunked", "Content-Type": "text/plain"}, "stream")
+    return (200, {"Content-Type": "text/plain"}, method + " " + path + " " + body + " " + headers["x-custom"])
+
+fn main() -> void:
+    listener = net.tcp_listen("127.0.0.1", 0)
+    port = net.local_port(listener)
+
+    client = net.tcp_connect("127.0.0.1", port)
+    net.send(client, "PUT /upload HTTP/1.1\r\nHost: localhost\r\nX-Custom: tagged\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n, worl\r\n0\r\n\r\n")
+    print(http.serve_once(listener, handler))
+    response = net.recv(client, 8192)
+    print(response.contains("200 OK"))
+    print(response.contains("PUT /upload hello, worl tagged"))
+    net.close(client)
+
+    client2 = net.tcp_connect("127.0.0.1", port)
+    net.send(client2, "GET /stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    print(http.serve_once(listener, handler))
+    response2 = net.recv(client2, 8192)
+    print(response2.contains("Transfer-Encoding: chunked"))
+    print(response2.contains("6\r\nstream\r\n0\r\n\r\n"))
+    net.close(client2)
+    net.close(listener)
+
+main()

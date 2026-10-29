@@ -1,0 +1,14 @@
+import testing
+
+fn main() -> void:
+    testing.seed(7)
+    print(testing.for_all_int(25, -100, 100, fn(n: i64) -> bool => n >= -100 and n <= 100))
+    print(testing.for_all_float(15, 1.5, 2.5, fn(x: f64) -> bool => x >= 1.5 and x <= 2.5))
+    print(testing.for_all_bool(6, fn(b: bool) -> bool => b or not b))
+    print(testing.for_all_string(10, 5, fn(s: String) -> bool => len(s) <= 5))
+    print(testing.for_all_elem([2, 4, 6], fn(n: i64) -> bool => n % 2 == 0))
+    print(testing.for_all_elem(["ab", "cd"], fn(s: String) -> bool => len(s) == 2))
+    print(testing.for_all_int(50, 0, 1000, fn(n: i64) -> bool => n < 500))
+    print(testing.for_all_int(0, 0, 1, fn(n: i64) -> bool => false))
+
+main()

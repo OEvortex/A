@@ -1,0 +1,22 @@
+# TYPE http_requests counter
+http_requests{method="GET",route="/about"} 3
+http_requests{method="GET",route="/home"} 3
+# TYPE latency_ms histogram
+latency_ms_bucket{route="/home",le="0.005"} 0
+latency_ms_bucket{route="/home",le="0.01"} 0
+latency_ms_bucket{route="/home",le="0.025"} 0
+latency_ms_bucket{route="/home",le="0.05"} 0
+latency_ms_bucket{route="/home",le="0.1"} 0
+latency_ms_bucket{route="/home",le="0.25"} 0
+latency_ms_bucket{route="/home",le="0.5"} 0
+latency_ms_bucket{route="/home",le="1"} 0
+latency_ms_bucket{route="/home",le="2.5"} 0
+latency_ms_bucket{route="/home",le="5"} 0
+latency_ms_bucket{route="/home",le="10"} 0
+latency_ms_bucket{route="/home",le="+Inf"} 2
+latency_ms_sum{route="/home"} 262.5
+latency_ms_count{route="/home"} 2
+# TYPE queue_depth gauge
+queue_depth 7.5
+
+[]

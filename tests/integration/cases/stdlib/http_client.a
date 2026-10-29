@@ -1,0 +1,29 @@
+import http
+import net
+
+fn preload(payload: String) -> i64:
+    listener = net.tcp_listen("127.0.0.1", 0)
+    bound = net.local_port(listener)
+    client = net.tcp_connect("127.0.0.1", bound)
+    server = net.accept(listener)
+    net.send(server, payload)
+    net.close(server)
+    net.close(listener)
+    return client
+
+fn main() -> void:
+    (status, headers, body) = http.request(preload("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Test: yes\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"), "GET", "/ping", {"Accept": "text/plain"}, "")
+    print(status)
+    print(body)
+    print(headers["content-type"])
+    print(headers["x-test"])
+
+    (chunk_status, _, chunk_body) = http.request(preload("HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n"), "POST", "/upload", {"Content-Type": "text/plain"}, "data")
+    print(chunk_status)
+    print(chunk_body)
+
+    (code, _, not_found) = http.request(preload("HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\nConnection: close\r\n\r\nmissing"), "GET", "/none", {}, "")
+    print(code)
+    print(not_found)
+
+main()

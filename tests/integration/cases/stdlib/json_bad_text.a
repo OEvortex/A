@@ -1,0 +1,6 @@
+import json
+
+fn main() -> void:
+    print(json.parse("[1, 2"))
+
+main()

@@ -1,0 +1,9 @@
+import http
+
+fn bad_handler(method: String) -> i64:
+    return 200
+
+fn main() -> void:
+    print(http.serve_once(1, bad_handler))
+
+main()

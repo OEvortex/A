@@ -1,0 +1,16 @@
+import json
+import binary
+
+fn summarize(doc: Json) -> String:
+    return json.kind(doc) + "/" + str(json.len(doc))
+
+fn decode(text: [i64]) -> Json?:
+    return binary.decode(text)
+
+fn main() -> void:
+    doc = json.parse("\{\"a\": 1, \"b\": [2, 3]\}")
+    print(summarize(doc))
+    print(summarize((decode(binary.encode(doc)))!))
+    print((json.as_str((decode(binary.encode("ok")))!))! == "ok")
+
+main()

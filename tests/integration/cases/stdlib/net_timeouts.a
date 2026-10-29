@@ -1,0 +1,23 @@
+import net
+
+fn main() -> void:
+    listener = net.tcp_listen("127.0.0.1", 0)
+    port = net.local_port(listener)
+    client = net.tcp_connect("127.0.0.1", port)
+    server = net.accept(listener)
+
+    net.set_timeout(server, 40)
+    print(net.recv(server, 64) == "")
+
+    net.set_nonblocking(client, true)
+    print(net.recv(client, 64) == "")
+    echo = net.send(client, "ping")
+    print(echo == 4)
+    print(net.recv(server, 64))
+    print(net.poll([server, client], 100))
+
+    net.close(client)
+    net.close(server)
+    net.close(listener)
+
+main()

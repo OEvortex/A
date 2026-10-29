@@ -1,0 +1,6 @@
+import metrics
+
+fn main() -> void:
+    metrics.counter("bad", 1, "only")
+
+main()

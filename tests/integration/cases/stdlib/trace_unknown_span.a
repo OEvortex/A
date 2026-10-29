@@ -1,0 +1,6 @@
+import trace
+
+fn main() -> void:
+    trace.end(999)
+
+main()

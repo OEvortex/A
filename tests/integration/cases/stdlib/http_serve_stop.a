@@ -1,0 +1,25 @@
+import http
+import net
+
+fn handler(method: String, path: String, headers: {String: String}, body: String) -> (i64, {String: String}, String):
+    if path == "/stop":
+        return (0, {}, "")
+    return (200, {"Content-Type": "text/plain"}, "served " + path)
+
+fn main() -> void:
+    listener = net.tcp_listen("127.0.0.1", 0)
+    port = net.local_port(listener)
+
+    first = net.tcp_connect("127.0.0.1", port)
+    net.send(first, "GET /index HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    second = net.tcp_connect("127.0.0.1", port)
+    net.send(second, "GET /stop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+
+    http.serve(listener, handler)
+    print(true)
+    print(net.recv(first, 4096).contains("served /index"))
+    net.close(first)
+    net.close(second)
+    net.close(listener)
+
+main()

@@ -1,0 +1,41 @@
+# Talk to a peer over the loopback interface: a raw TCP exchange, an HTTP
+# request/response handled by the same process, and a UDP datagram round trip.
+import net
+import http
+
+fn handler(method: String, path: String, headers: {String: String},
+           body: String) -> (i64, {String: String}, String):
+    reply = method + " " + path + " note=" + headers["x-note"] + " body=" + body
+    return (200, {"Content-Type": "text/plain"}, reply)
+
+fn tcp_round_trip() -> void:
+    listener = net.tcp_listen("127.0.0.1", 0)
+    port = net.local_port(listener)
+    client = net.tcp_connect("127.0.0.1", port)
+    net.send(client, "GET /hello HTTP/1.1\r\nHost: localhost\r\nX-Note: raw\r\nConnection: close\r\n\r\n")
+    http.serve_once(listener, handler)
+    print(net.recv(client, 4096))
+    net.close(client)
+    net.close(listener)
+
+fn udp_round_trip() -> void:
+    receiver = net.udp_socket()
+    sender = net.udp_socket()
+    net.udp_bind(receiver, "127.0.0.1", 0)
+    port = net.local_port(receiver)
+    net.udp_send(sender, "127.0.0.1", port, "ping")
+    (data, peer_host, peer_port) = net.udp_recv(receiver, 1024)
+    print(data + " from " + peer_host + ":" + str(peer_port))
+    net.udp_send(receiver, peer_host, peer_port, "pong")
+    (answer, _, _) = net.udp_recv(sender, 1024)
+    print(answer)
+    net.close(sender)
+    net.close(receiver)
+
+fn main() -> void:
+    print(net.resolve("localhost"))
+    tcp_round_trip()
+    udp_round_trip()
+    print("tls available: " + str(net.tls_available()))
+
+main()

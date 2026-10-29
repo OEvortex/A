@@ -44,7 +44,7 @@ bool isKnownBuiltin(const std::string& name) {
   for (const char* n : names) {
     if (name == n) return true;
   }
-  return isConversionBuiltin(name) || isMathBuiltin(name);
+  return isConversionBuiltin(name) || isMathBuiltin(name) || isStdlibBuiltin(name);
 }
 
 TypePtr builtinConstantType(const std::string& name) {
@@ -2679,6 +2679,16 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
                                " argument(s), found " + std::to_string(call.args.size()) + ".");
   };
 
+  // Structured values (Json) are opaque; any non-void value may be serialized.
+  auto inferAny = [&](std::size_t index, const std::string& context) {
+    TypePtr type = inferExpr(*call.args[index].value);
+    if (resolveType(type)->kind == TypeKind::Void) {
+      sink_.error(call.args[index].value->span,
+                  "Cannot pass a void value " + context + ".");
+    }
+    return type;
+  };
+
   if (name == "print" || name == "eprint") {
     for (auto& arg : call.args) {
       TypePtr type = inferExpr(*arg.value);
@@ -3356,6 +3366,556 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
                      "in the separator passed to 'join'");
     }
     return typeString();
+  }
+
+  // ---------------------------------------------------------- json module
+  if (name == "json_parse") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeJson();
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "in the text passed to 'json.parse'");
+    return typeJson();
+  }
+  if (name == "json_stringify" || name == "json_pretty") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeString();
+    }
+    inferAny(0, "to 'json." + std::string(name == "json_stringify" ? "stringify" : "pretty") + "'");
+    return typeString();
+  }
+  if (name == "json_is_valid") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeBool();
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "in 'json.is_valid'");
+    return typeBool();
+  }
+  if (name == "json_get" || name == "json_has") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return name == "json_get" ? typeOptional(typeJson()) : typeBool();
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in the value passed to 'json'");
+    checkArgAgainst(*call.args[1].value, typeString(), "in the key passed to 'json'");
+    return name == "json_get" ? typeOptional(typeJson()) : typeBool();
+  }
+  if (name == "json_at") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeOptional(typeJson());
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in the value passed to 'json.at'");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The index passed to 'json.at'");
+    return typeOptional(typeJson());
+  }
+  if (name == "json_len") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in 'json.len'");
+    return typeInt(64, true);
+  }
+  if (name == "json_keys") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeArray(typeString());
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in 'json.keys'");
+    return typeArray(typeString());
+  }
+  if (name == "json_type") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeString();
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in 'json.type'");
+    return typeString();
+  }
+  if (name == "json_as_str" || name == "json_as_int" || name == "json_as_float" ||
+      name == "json_as_bool" || name == "json_as_array" || name == "json_as_map") {
+    TypePtr inner = typeJson();
+    if (name == "json_as_str") inner = typeString();
+    if (name == "json_as_int") inner = typeInt(64, true);
+    if (name == "json_as_float") inner = typeFloat(64);
+    if (name == "json_as_bool") inner = typeBool();
+    if (name == "json_as_array") inner = typeArray(typeJson());
+    if (name == "json_as_map") inner = typeMap(typeString(), typeJson());
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeOptional(inner);
+    }
+    checkArgAgainst(*call.args[0].value, typeJson(), "in the value passed to 'json'");
+    return typeOptional(inner);
+  }
+
+  // -------------------------------------------------------- binary module
+  if (name == "binary_encode") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeArray(typeInt(64, true));
+    }
+    inferAny(0, "to 'binary.encode'");
+    return typeArray(typeInt(64, true));
+  }
+  if (name == "binary_decode") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeOptional(typeJson());
+    }
+    checkArgAgainst(*call.args[0].value, typeArray(typeInt(64, true)),
+                    "in the bytes passed to 'binary.decode'");
+    return typeOptional(typeJson());
+  }
+
+  // ------------------------------------------------------- testing module
+  if (name == "testing_seed") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The seed passed to 'testing.seed'");
+    return typeVoid();
+  }
+  if (name == "testing_for_all_int") {
+    if (call.args.size() != 4) {
+      arityError(4);
+      inferArgs();
+      return typeBool();
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      requireInteger(inferExpr(*call.args[i].value), call.args[i].value->span,
+                     "The generator bound passed to 'testing.for_all_int'");
+    }
+    checkArgAgainst(*call.args[3].value, typeFunction({typeInt(64, true)}, typeBool()),
+                    "in the property passed to 'testing.for_all_int'");
+    return typeBool();
+  }
+  if (name == "testing_for_all_float") {
+    if (call.args.size() != 4) {
+      arityError(4);
+      inferArgs();
+      return typeBool();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The run count passed to 'testing.for_all_float'");
+    for (std::size_t i = 1; i < 3; ++i) {
+      requireNumeric(inferExpr(*call.args[i].value), call.args[i].value->span,
+                     "A bound passed to 'testing.for_all_float'");
+    }
+    checkArgAgainst(*call.args[3].value, typeFunction({typeFloat(64)}, typeBool()),
+                    "in the property passed to 'testing.for_all_float'");
+    return typeBool();
+  }
+  if (name == "testing_for_all_bool") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeBool();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The run count passed to 'testing.for_all_bool'");
+    checkArgAgainst(*call.args[1].value, typeFunction({typeBool()}, typeBool()),
+                    "in the property passed to 'testing.for_all_bool'");
+    return typeBool();
+  }
+  if (name == "testing_for_all_string") {
+    if (call.args.size() != 3) {
+      arityError(3);
+      inferArgs();
+      return typeBool();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The run count passed to 'testing.for_all_string'");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The maximum length passed to 'testing.for_all_string'");
+    checkArgAgainst(*call.args[2].value, typeFunction({typeString()}, typeBool()),
+                    "in the property passed to 'testing.for_all_string'");
+    return typeBool();
+  }
+  if (name == "testing_for_all_elem") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeBool();
+    }
+    TypePtr arrayType = inferExpr(*call.args[0].value);
+    TypePtr array = resolveType(arrayType);
+    if (array->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'testing.for_all_elem' expects an array, found " + typePhrase(array) + ".");
+      inferExpr(*call.args[1].value);
+      return typeBool();
+    }
+    checkArgAgainst(*call.args[1].value, typeFunction({array->elem}, typeBool()),
+                    "in the property passed to 'testing.for_all_elem'");
+    return typeBool();
+  }
+
+  // ----------------------------------------------------------- log module
+  if (name == "log_set_level") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "in 'log.set_level'");
+    return typeVoid();
+  }
+  if (name == "log_set_json") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    checkArgAgainst(*call.args[0].value, typeBool(), "in 'log.set_json'");
+    return typeVoid();
+  }
+  if (name == "log_debug" || name == "log_info" || name == "log_warn" ||
+      name == "log_error") {
+    if (call.args.empty()) {
+      sink_.error(call.span, "'" + name + "' expects a message.");
+      return typeVoid();
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the log message");
+    if (call.args.size() == 2) {
+      inferAny(1, "as log fields");
+    } else if (call.args.size() > 2) {
+      if ((call.args.size() - 1) % 2 != 0) {
+        sink_.error(call.span,
+                    "'" + name +
+                        "' expects a message followed by field/value pairs or a fields map.");
+        inferArgs();
+        return typeVoid();
+      }
+      for (std::size_t i = 1; i + 1 < call.args.size(); i += 2) {
+        checkArgAgainst(*call.args[i].value, typeString(), "as a log field name");
+        inferAny(i + 1, "as a log field value");
+      }
+    }
+    return typeVoid();
+  }
+
+  // ------------------------------------------------------- metrics module
+  if (name == "metrics_counter" || name == "metrics_gauge" || name == "metrics_histogram") {
+    if (call.args.size() < 2 || (call.args.size() > 3 && (call.args.size() - 2) % 2 != 0)) {
+      sink_.error(call.span,
+                  "'" + name +
+                      "' expects a name, a value, and optional labels (a map or key/value pairs).");
+      inferArgs();
+      return typeVoid();
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the metric name");
+    if (name == "metrics_counter") {
+      requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                     "The increment passed to 'metrics.counter'");
+    } else {
+      requireNumeric(inferExpr(*call.args[1].value), call.args[1].value->span,
+                     "The value passed to '" + name + "'");
+    }
+    if (call.args.size() == 3) {
+      inferAny(2, "as metric labels");
+    } else if (call.args.size() > 3) {
+      for (std::size_t i = 2; i + 1 < call.args.size(); i += 2) {
+        checkArgAgainst(*call.args[i].value, typeString(), "as a metric label name");
+        inferAny(i + 1, "as a metric label value");
+      }
+    }
+    return typeVoid();
+  }
+  if (name == "metrics_render") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeString();
+  }
+  if (name == "metrics_reset") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeVoid();
+  }
+
+  // --------------------------------------------------------- trace module
+  if (name == "trace_start") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the span name");
+    return typeInt(64, true);
+  }
+  if (name == "trace_end") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The span passed to 'trace.end'");
+    return typeVoid();
+  }
+  if (name == "trace_current") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeInt(64, true);
+  }
+  if (name == "trace_set_attribute") {
+    if (call.args.size() != 3) {
+      arityError(3);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The span passed to 'trace.set_attribute'");
+    checkArgAgainst(*call.args[1].value, typeString(), "as the attribute name");
+    inferAny(2, "as the attribute value");
+    return typeVoid();
+  }
+  if (name == "trace_add_event") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The span passed to 'trace.add_event'");
+    checkArgAgainst(*call.args[1].value, typeString(), "as the event name");
+    return typeVoid();
+  }
+  if (name == "trace_inject") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeString();
+  }
+  if (name == "trace_extract") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the trace context");
+    return typeInt(64, true);
+  }
+  if (name == "trace_spans") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeArray(typeJson());
+  }
+  if (name == "trace_reset") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeVoid();
+  }
+
+  // ----------------------------------------------------------- net module
+  if (name == "net_resolve") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeArray(typeString());
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the host name");
+    return typeArray(typeString());
+  }
+  if (name == "net_tcp_listen" || name == "net_tcp_connect" || name == "net_tls_connect") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the host name");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The port number");
+    return typeInt(64, true);
+  }
+  if (name == "net_accept" || name == "net_local_port" || name == "net_close") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return name == "net_close" ? typeVoid() : typeInt(64, true);
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    return name == "net_close" ? typeVoid() : typeInt(64, true);
+  }
+  if (name == "net_send" || name == "net_recv") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return name == "net_recv" ? typeString() : typeInt(64, true);
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    if (name == "net_send") {
+      checkArgAgainst(*call.args[1].value, typeString(), "as the data to send");
+      return typeInt(64, true);
+    }
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The maximum byte count");
+    return typeString();
+  }
+  if (name == "net_set_timeout") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The timeout in milliseconds");
+    return typeVoid();
+  }
+  if (name == "net_set_nonblocking") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    checkArgAgainst(*call.args[1].value, typeBool(), "as the non-blocking flag");
+    return typeVoid();
+  }
+  if (name == "net_poll") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeArray(typeInt(64, true));
+    }
+    checkArgAgainst(*call.args[0].value, typeArray(typeInt(64, true)),
+                    "as the socket handles");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The poll timeout");
+    return typeArray(typeInt(64, true));
+  }
+  if (name == "net_udp_socket") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeInt(64, true);
+  }
+  if (name == "net_udp_bind") {
+    if (call.args.size() != 3) {
+      arityError(3);
+      inferArgs();
+      return typeVoid();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    checkArgAgainst(*call.args[1].value, typeString(), "as the bind address");
+    requireInteger(inferExpr(*call.args[2].value), call.args[2].value->span,
+                   "The port number");
+    return typeVoid();
+  }
+  if (name == "net_udp_send") {
+    if (call.args.size() != 4) {
+      arityError(4);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    checkArgAgainst(*call.args[1].value, typeString(), "as the destination host");
+    requireInteger(inferExpr(*call.args[2].value), call.args[2].value->span,
+                   "The destination port");
+    checkArgAgainst(*call.args[3].value, typeString(), "as the datagram");
+    return typeInt(64, true);
+  }
+  if (name == "net_udp_recv") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typeTuple({typeString(), typeString(), typeInt(64, true)});
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The maximum byte count");
+    return typeTuple({typeString(), typeString(), typeInt(64, true)});
+  }
+  if (name == "net_tls_available") {
+    if (!call.args.empty()) {
+      arityError(0);
+      inferArgs();
+    }
+    return typeBool();
+  }
+
+  // ---------------------------------------------------------- http module
+  if (name == "http_get" || name == "http_post") {
+    const std::size_t expected = name == "http_get" ? 1 : 2;
+    TypePtr response = typeTuple(
+        {typeInt(64, true), typeMap(typeString(), typeString()), typeString()});
+    if (call.args.size() != expected) {
+      arityError(expected);
+      inferArgs();
+      return response;
+    }
+    checkArgAgainst(*call.args[0].value, typeString(), "as the URL");
+    if (name == "http_post") checkArgAgainst(*call.args[1].value, typeString(), "as the body");
+    return response;
+  }
+  if (name == "http_request") {
+    TypePtr response = typeTuple(
+        {typeInt(64, true), typeMap(typeString(), typeString()), typeString()});
+    if (call.args.size() != 5) {
+      arityError(5);
+      inferArgs();
+      return response;
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The socket handle");
+    checkArgAgainst(*call.args[1].value, typeString(), "as the HTTP method");
+    checkArgAgainst(*call.args[2].value, typeString(), "as the request path");
+    checkArgAgainst(*call.args[3].value, typeMap(typeString(), typeString()),
+                    "as the request headers");
+    checkArgAgainst(*call.args[4].value, typeString(), "as the request body");
+    return response;
+  }
+  if (name == "http_serve" || name == "http_serve_once") {
+    TypePtr handler = typeFunction(
+        {typeString(), typeString(), typeMap(typeString(), typeString()), typeString()},
+        typeTuple({typeInt(64, true), typeMap(typeString(), typeString()), typeString()}));
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return name == "http_serve" ? typeVoid() : typeBool();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The listening socket handle");
+    checkArgAgainst(*call.args[1].value, handler, "in the HTTP handler");
+    return name == "http_serve" ? typeVoid() : typeBool();
   }
 
   if (isMathBuiltin(name)) {

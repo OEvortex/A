@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+#include "name-resolution/native_modules.hpp"
+
 namespace a {
 namespace {
 
@@ -1214,6 +1216,9 @@ bool checkSupportedExpr(const Expr& expr) {
       const auto& c = static_cast<const CallExpr&>(expr);
       if (c.callee->kind != ExprKind::Ident) return false;
       const std::string& name = static_cast<const IdentExpr&>(*c.callee).name;
+      // Standard-library builtins (json, binary, testing, log, metrics,
+      // trace, net, http) only exist in the interpreter.
+      if (isStdlibBuiltin(name)) return false;
       // Native runtime functions are handled by interpreter or native backend
       if (name == "write_file" || name == "read_file" || name == "append_file" ||
           name == "file_exists" || name == "remove_file" || name == "flush" ||

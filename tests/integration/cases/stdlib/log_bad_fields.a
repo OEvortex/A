@@ -1,0 +1,6 @@
+import log
+
+fn main() -> void:
+    log.info("message", 42)
+
+main()

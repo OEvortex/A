@@ -1,0 +1,21 @@
+# Serialize configuration documents with the json and binary modules.
+import json
+import binary
+
+fn describe(doc: Json) -> void:
+    print(json.kind(doc) + " with " + str(json.len(doc)) + " members")
+
+settings = json.parse("\{\"name\": \"queue\", \"replicas\": 3, \"tags\": [\"a\", \"b\"], \"debug\": false\}")
+
+describe(settings)
+print(json.get(settings, "replicas"))
+print(json.keys(settings))
+print(json.pretty(settings))
+
+packed = binary.encode(settings)
+print("encoded " + str(len(packed)) + " bytes")
+restored = binary.decode(packed)!
+print(json.stringify(restored) == json.stringify(settings))
+
+text = binary.encode("hello")
+print(json.as_str((binary.decode(text))!))

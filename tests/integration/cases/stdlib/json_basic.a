@@ -1,0 +1,34 @@
+import json
+
+fn main() -> void:
+    doc = json.parse("\{\"name\": \"Ada\", \"scores\": [1, 2, 3], \"active\": true, \"score\": 9.5, \"parent\": null\}")
+    print(json.kind(doc))
+    print(json.has(doc, "name"))
+    print(json.has(doc, "missing"))
+    print((json.get(doc, "name"))!)
+    print(json.as_str((json.get(doc, "name"))!)!)
+    print(json.as_int((json.at((json.get(doc, "scores"))!, 1))!)!)
+    print(json.as_float((json.get(doc, "score"))!)!)
+    print(json.as_bool((json.get(doc, "active"))!)!)
+    print(json.get(doc, "missing"))
+    print(json.at((json.get(doc, "scores"))!, 9))
+    print(json.keys(doc))
+    print(json.len((json.get(doc, "scores"))!))
+    print(json.stringify(doc))
+    print(json.pretty(json.parse("\{\"a\": [1, 2]\}")))
+    print(json.is_valid("[1, 2]"))
+    print(json.is_valid("[1, 2"))
+    print(json.stringify(json.parse("null")))
+    print(json.kind(json.parse("null")))
+    print(json.stringify(json.parse("  12  ")))
+    print(json.stringify(json.parse("\{\"b\": \"\\u00e9\", \"c\": \"\\ud83d\\ude00\"\}")))
+    nested = json.parse("[[1, [2]], \{\"k\": []\}]")
+    print(json.kind(nested))
+    print(json.len(nested))
+    print(json.stringify((json.at(nested, 1))!))
+    array = json.as_array((json.get(doc, "scores"))!)!
+    print(len(array))
+    map = json.as_map(doc)!
+    print(len(map))
+
+main()

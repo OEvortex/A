@@ -1,0 +1,36 @@
+import net
+import http
+
+fn handler(method: String, path: String, headers: {String: String}, body: String) -> (i64, {String: String}, String):
+    out_headers = {"Content-Type": "text/plain"}
+    if path == "/ping":
+        return (200, out_headers, "pong " + method)
+    if path == "/echo":
+        return (201, out_headers, "echo:" + body)
+    return (404, out_headers, "missing")
+
+fn main() -> void:
+    print(net.resolve("127.0.0.1"))
+    listener = net.tcp_listen("127.0.0.1", 0)
+    port = net.local_port(listener)
+    print(port > 0)
+
+    client = net.tcp_connect("127.0.0.1", port)
+    sent = net.send(client, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    print(sent > 0)
+    print(http.serve_once(listener, handler))
+    response = net.recv(client, 4096)
+    print(response.contains("HTTP/1.1 200 OK"))
+    print(response.contains("pong GET"))
+    print(response.contains("Content-Type: text/plain"))
+    net.close(client)
+
+    client2 = net.tcp_connect("127.0.0.1", port)
+    net.send(client2, "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+    print(http.serve_once(listener, handler))
+    response2 = net.recv(client2, 4096)
+    print(response2.contains("echo:hello"))
+    net.close(client2)
+    net.close(listener)
+
+main()

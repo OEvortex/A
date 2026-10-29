@@ -2683,6 +2683,7 @@ Value Interpreter::callBuiltinFast(BuiltinId id, const std::string& name, ArgLis
 }
 
 Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span) {
+  if (isStdlibBuiltin(name)) return callStdlibBuiltin(name, args, span);
   // Hottest builtins first: numeric conversion, math, and string/collection
   // helpers otherwise sit behind dozens of name comparisons in this chain.
   if (name == "f64") {

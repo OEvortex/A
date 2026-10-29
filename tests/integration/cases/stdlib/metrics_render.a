@@ -1,0 +1,16 @@
+import metrics
+
+fn main() -> void:
+    metrics.reset()
+    metrics.counter("http_requests", 2, "route", "/home", "method", "GET")
+    metrics.counter("http_requests", 1, "route", "/home", "method", "GET")
+    metrics.counter("http_requests", 3, {"route": "/about", "method": "GET"})
+    metrics.gauge("queue_depth", 5)
+    metrics.gauge("queue_depth", 7.5)
+    metrics.histogram("latency_ms", 12.5, "route", "/home")
+    metrics.histogram("latency_ms", 250.0, "route", "/home")
+    print(metrics.render())
+    metrics.reset()
+    print("[" + metrics.render() + "]")
+
+main()

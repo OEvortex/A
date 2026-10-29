@@ -186,10 +186,24 @@ int buildFile(const std::string& path, const std::string& outputPath,
   if (sink.hasErrors()) return kExitCompileError;
 
   if (backend == "llvm") {
+    if (!isLLVMSupported(graph)) {
+      err << "error: the LLVM backend cannot compile this program. Closures, dot methods, "
+             "and the standard-library modules (json, binary, testing, log, metrics, trace, "
+             "net, http) run only in the interpreter: use 'a run'. For anything else, "
+             "'--backend=native' may still work.\n";
+      return kExitCompileError;
+    }
     if (!buildLLVMModule(graph, result, outputPath, err)) {
       return kExitCompileError;
     }
   } else {
+    if (!isNativeSupported(graph)) {
+      err << "error: the native backend cannot compile this program. Closures, dot methods, "
+             "and the standard-library modules (json, binary, testing, log, metrics, trace, "
+             "net, http) run only in the interpreter: use 'a run'. For anything else, "
+             "'--backend=llvm' may still work.\n";
+      return kExitCompileError;
+    }
     if (!buildNativeBinary(graph, result, outputPath, err)) {
       return kExitCompileError;
     }

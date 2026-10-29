@@ -1,0 +1,31 @@
+import net
+
+fn main() -> void:
+    receiver = net.udp_socket()
+    net.udp_bind(receiver, "127.0.0.1", 0)
+    port = net.local_port(receiver)
+    print(port > 0)
+
+    sender = net.udp_socket()
+    print(net.udp_send(sender, "127.0.0.1", port, "hello") == 5)
+    ready = net.poll([receiver, sender], 1000)
+    print(len(ready) == 1)
+    print(ready[0] == receiver)
+
+    (payload, peer_host, peer_port) = net.udp_recv(receiver, 64)
+    print(payload)
+    print(peer_host)
+    print(peer_port > 0)
+
+    idle = net.poll([sender], 10)
+    print(len(idle) == 0)
+
+    net.set_nonblocking(sender, true)
+    (empty, would_host, would_port) = net.udp_recv(sender, 16)
+    print(empty == "")
+    print(would_host == "")
+    print(would_port == -1)
+    net.close(sender)
+    net.close(receiver)
+
+main()
