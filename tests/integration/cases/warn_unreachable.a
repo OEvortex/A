@@ -1,0 +1,8 @@
+fn pick(flag: bool) -> i32:
+    if flag:
+        return 1
+    else:
+        return 2
+    print("never")
+
+print(pick(true))

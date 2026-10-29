@@ -469,7 +469,19 @@ TypePtr Sema::instantiateType(TypePtr type, const std::unordered_map<TypePtr, Ty
 void Sema::pushScope() { scopes_.push_back({}); }
 
 void Sema::popScope() {
-  if (scopes_.size() > 1) scopes_.pop_back();
+  if (scopes_.size() > 1) {
+    reportUnusedLocals(scopes_.back());
+    scopes_.pop_back();
+  }
+}
+
+void Sema::reportUnusedLocals(const StringMap<VarSym>& scope) {
+  for (const auto& entry : scope) {
+    const VarSym& sym = entry.second;
+    if (!sym.warnUnused || sym.used) continue;
+    sink_.warning(sym.span, "W0001", "Unused variable '" + sym.name + "'.",
+                  "Remove it or use it; prefix the name with '_' to silence this warning.");
+  }
 }
 
 Sema::VarSym* Sema::lookupVar(const std::string& name) {
@@ -503,7 +515,17 @@ void Sema::declareVar(const std::string& name, Span span, TypePtr type, bool mut
       return;
     }
   }
-  scope[name] = VarSym{std::move(type), mutableBinding, constant};
+  VarSym sym;
+  sym.type = std::move(type);
+  sym.mutableBinding = mutableBinding;
+  sym.constant = constant;
+  sym.name = name;
+  sym.span = span;
+  // Loop variables and parameters are frequently intentional even when
+  // unread, so only plain local declarations produce W0001.
+  sym.warnUnused = !constant && std::string(what) == "variable" && scopes_.size() > 1 &&
+                   !name.empty() && name[0] != '_';
+  scope[name] = std::move(sym);
   DeclaredVarInfo info;
   info.name = name;
   info.span = span;
@@ -749,6 +771,7 @@ void Sema::checkFunctionBody(FnDecl& decl, const FnSig& sig) {
     declareVar(decl.params[i].name, decl.params[i].span, sig.paramTypes[i], false, "parameter");
   }
   checkStatements(decl.body);
+  reportUnusedLocals(scopes_.back());
 
   if (!sawReturn_) {
     TypePtr ret = resolveType(sig.retType);
@@ -1030,8 +1053,38 @@ void Sema::analyzeModule(Module& module) {
 
 // ------------------------------------------------------------- statement checks
 
+namespace {
+
+// True when control can never continue past this statement.
+bool terminatesFlow(const Stmt& stmt) {
+  if (dynamic_cast<const ReturnStmt*>(&stmt)) return true;
+  if (dynamic_cast<const BreakStmt*>(&stmt)) return true;
+  if (dynamic_cast<const ContinueStmt*>(&stmt)) return true;
+  if (dynamic_cast<const LoopStmt*>(&stmt)) return true;  // loop ... only exits via break
+  if (const auto* node = dynamic_cast<const IfStmt*>(&stmt)) {
+    if (node->elseBody.empty()) return false;
+    for (const auto& branch : node->branches) {
+      if (branch.body.empty() || !terminatesFlow(*branch.body.back())) return false;
+    }
+    return terminatesFlow(*node->elseBody.back());
+  }
+  return false;
+}
+
+}  // namespace
+
 void Sema::checkStatements(std::vector<StmtPtr>& statements) {
-  for (auto& stmt : statements) checkStatement(*stmt);
+  bool terminated = false;
+  bool warned = false;
+  for (auto& stmt : statements) {
+    if (terminated && !warned) {
+      sink_.warning(stmt->span, "W0002", "Unreachable statement.",
+                    "Control cannot reach this statement because an earlier one always exits.");
+      warned = true;
+    }
+    checkStatement(*stmt);
+    if (!terminated && terminatesFlow(*stmt)) terminated = true;
+  }
 }
 
 void Sema::checkStatement(Stmt& stmt) {
@@ -1180,6 +1233,7 @@ void Sema::checkAssign(AssignStmt& stmt) {
 
     TypePtr valueType = inferExpr(*stmt.value);
     if (stmt.op != "=") {
+      sym->used = true;
       std::string baseOp = stmt.op.substr(0, stmt.op.size() - 1);
       if (!checkCompoundOp(baseOp, sym->type, stmt.opSpan)) return;
     }
@@ -1451,7 +1505,10 @@ TypePtr Sema::inferStringLiteral(StringLitExpr& expr) {
 }
 
 TypePtr Sema::inferIdent(IdentExpr& expr) {
-  if (VarSym* sym = lookupVar(expr.name)) return sym->type;
+  if (VarSym* sym = lookupVar(expr.name)) {
+    sym->used = true;
+    return sym->type;
+  }
   if (expr.name == "None") {
     TypePtr element = freshVar(Constraint::None, expr.span, "the value type of 'None'");
     element->allowUnresolved = true;
@@ -1519,6 +1576,7 @@ TypePtr Sema::inferUnary(UnaryExpr& expr) {
                     "Declare the variable with 'var " + ident->name + " = ...' to make it mutable.");
         return typeError();
       }
+      sym->used = true;
     } else {
       sink_.error(expr.operand->span, "Operand of '" + expr.op + "' must be a variable.");
       return typeError();
@@ -1546,6 +1604,7 @@ TypePtr Sema::inferUnary(UnaryExpr& expr) {
                     "Declare the variable with 'var " + ident->name + " = ...' to make it mutable.");
         return typeError();
       }
+      sym->used = true;
     } else {
       sink_.error(expr.operand->span, "Operand of '" + expr.op + "' must be a variable.");
       return typeError();
@@ -2988,50 +3047,20 @@ TypePtr Sema::inferArrayLiteral(ArrayLitExpr& expr) {
 }
 
 TypePtr Sema::inferMapLiteral(MapLitExpr& expr) {
-  if (expr.entries.empty()) {
-    TypePtr keyType = freshVar(Constraint::None, expr.span, "the key type of an empty map");
-    TypePtr valueType = freshVar(Constraint::None, expr.span, "the value type of an empty map");
-    return typeMap(keyType, valueType);
+  sink_.error(expr.span, "Map literals are not supported yet.",
+              "A has no map runtime value; use parallel arrays or a struct instead.");
+  for (auto& entry : expr.entries) {
+    inferExpr(*entry.first);
+    inferExpr(*entry.second);
   }
-
-  TypePtr keyType = inferExpr(*expr.entries[0].first);
-  TypePtr valueType = inferExpr(*expr.entries[0].second);
-  for (std::size_t i = 1; i < expr.entries.size(); ++i) {
-    TypePtr nextKey = inferExpr(*expr.entries[i].first);
-    TypePtr nextValue = inferExpr(*expr.entries[i].second);
-    if (!unify(keyType, nextKey)) {
-      sink_.error(expr.entries[i].first->span,
-                  "All map keys must have the same type, found " + typeName(keyType) +
-                      " and " + typeName(nextKey) + ".");
-      return typeError();
-    }
-    if (!unify(valueType, nextValue)) {
-      sink_.error(expr.entries[i].second->span,
-                  "All map values must have the same type, found " + typeName(valueType) +
-                      " and " + typeName(nextValue) + ".");
-      return typeError();
-    }
-  }
-  return typeMap(keyType, valueType);
+  return typeError();
 }
 
 TypePtr Sema::inferSetLiteral(SetLitExpr& expr) {
-  if (expr.elements.empty()) {
-    TypePtr elementType = freshVar(Constraint::None, expr.span, "the element type of an empty set");
-    return typeSet(elementType);
-  }
-
-  TypePtr elementType = inferExpr(*expr.elements[0]);
-  for (std::size_t i = 1; i < expr.elements.size(); ++i) {
-    TypePtr nextType = inferExpr(*expr.elements[i]);
-    if (!unify(elementType, nextType)) {
-      sink_.error(expr.elements[i]->span,
-                  "All set elements must have the same type, found " + typeName(elementType) +
-                      " and " + typeName(nextType) + ".");
-      return typeError();
-    }
-  }
-  return typeSet(elementType);
+  sink_.error(expr.span, "Set literals are not supported yet.",
+              "A has no set runtime value; use an array and 'contains' instead.");
+  for (auto& element : expr.elements) inferExpr(*element);
+  return typeError();
 }
 
 TypePtr Sema::inferTuple(TupleExpr& expr) {
@@ -3414,7 +3443,14 @@ void Sema::checkReturnPaths() {
 
 bool Sema::blockReturns(const std::vector<StmtPtr>& body) {
   if (body.empty()) return false;
-  return statementReturns(*body.back());
+  // Statements after a terminator are unreachable; the last reachable one
+  // decides whether the block returns.
+  const Stmt* last = nullptr;
+  for (const auto& stmt : body) {
+    if (last && terminatesFlow(*last)) break;
+    last = stmt.get();
+  }
+  return last && statementReturns(*last);
 }
 
 bool Sema::statementReturns(const Stmt& stmt) {

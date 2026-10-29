@@ -23,6 +23,30 @@ std::string repeat(char c, int count) {
   return std::string(static_cast<std::size_t>(count), c);
 }
 
+std::string escapeJson(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (char c : text) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          const char* hex = "0123456789abcdef";
+          out += "\\u00";
+          out += hex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+          out += hex[static_cast<unsigned char>(c) & 0xF];
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 FileId DiagnosticSink::addFile(std::shared_ptr<const SourceFile> source) {
@@ -36,12 +60,15 @@ const SourceFile* DiagnosticSink::file(FileId id) const {
 }
 
 void DiagnosticSink::error(Span span, std::string message, std::string help) {
-  diagnostics_.push_back(Diagnostic{Severity::Error, span, std::move(message), std::move(help)});
+  diagnostics_.push_back(
+      Diagnostic{Severity::Error, {}, span, std::move(message), std::move(help)});
   ++errors_;
 }
 
-void DiagnosticSink::warning(Span span, std::string message, std::string help) {
-  diagnostics_.push_back(Diagnostic{Severity::Warning, span, std::move(message), std::move(help)});
+void DiagnosticSink::warning(Span span, std::string code, std::string message,
+                             std::string help) {
+  diagnostics_.push_back(
+      Diagnostic{Severity::Warning, std::move(code), span, std::move(message), std::move(help)});
 }
 
 void DiagnosticSink::flush(std::ostream& os, bool useColor) {
@@ -51,8 +78,9 @@ void DiagnosticSink::flush(std::ostream& os, bool useColor) {
     const bool isError = diagnostic.severity == Severity::Error;
 
     os << colors.bold << (isError ? colors.red : colors.yellow)
-       << (isError ? "error" : "warning") << colors.reset << colors.bold << ": "
-       << diagnostic.message << colors.reset << "\n";
+       << (isError ? "error" : "warning");
+    if (!diagnostic.code.empty()) os << "[" << diagnostic.code << "]";
+    os << colors.reset << colors.bold << ": " << diagnostic.message << colors.reset << "\n";
 
     if (!diagnostic.span.valid()) continue;
 
@@ -86,6 +114,25 @@ void DiagnosticSink::flush(std::ostream& os, bool useColor) {
     }
     os << "\n";
   }
+  os.flush();
+}
+
+void DiagnosticSink::writeJson(std::ostream& os) const {
+  os << "{\"diagnostics\":[";
+  bool first = true;
+  for (const Diagnostic& diagnostic : diagnostics_) {
+    if (!first) os << ",";
+    first = false;
+    const SourceFile* source = file(diagnostic.span.fileId);
+    os << "{\"severity\":\""
+       << (diagnostic.severity == Severity::Error ? "error" : "warning") << "\""
+       << ",\"code\":\"" << escapeJson(diagnostic.code) << "\""
+       << ",\"file\":\"" << escapeJson(source ? source->path() : std::string()) << "\""
+       << ",\"line\":" << diagnostic.span.line << ",\"column\":" << diagnostic.span.col
+       << ",\"message\":\"" << escapeJson(diagnostic.message) << "\""
+       << ",\"help\":\"" << escapeJson(diagnostic.help) << "\"}";
+  }
+  os << "]}\n";
   os.flush();
 }
 

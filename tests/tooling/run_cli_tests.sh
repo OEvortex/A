@@ -78,4 +78,40 @@ assert data["module"] == "sample", data
 assert any(item["name"] == "add" for item in data["items"]), data
 PY
 
-echo "OK: fmt and doc CLI"
+WARNABLE="$WORK_DIR/warn.a"
+cat >"$WARNABLE" <<'EOF'
+fn f() -> i32:
+    var unused = 1
+    return 0
+
+print(f())
+EOF
+"$A_BIN" check --json "$WARNABLE" >"$WORK_DIR/check.json"
+python3 - "$WORK_DIR/check.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+codes = [item["code"] for item in data["diagnostics"]]
+assert "W0001" in codes, data
+assert all(item["severity"] == "warning" for item in data["diagnostics"]), data
+PY
+
+TESTS="$WORK_DIR/tests.a"
+cat >"$TESTS" <<'EOF'
+fn test_ok() -> void:
+    assert_eq(1 + 1, 2)
+
+fn test_bad() -> void:
+    assert_eq(1, 2, "one is not two")
+EOF
+if "$A_BIN" test "$TESTS" >"$WORK_DIR/test.out" 2>"$WORK_DIR/test.err"; then
+  echo "error: 'a test' succeeded despite a failing test" >&2
+  exit 1
+fi
+grep -q "FAILED test_bad:" "$WORK_DIR/test.out"
+grep -q "ok test_ok" "$WORK_DIR/test.out"
+grep -q "1 passed, 1 failed" "$WORK_DIR/test.out"
+
+echo "OK: fmt, doc, check, and test CLI"

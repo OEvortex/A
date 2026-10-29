@@ -1,7 +1,8 @@
 # A lang — TODO List
 
 Features listed in `Plan.md` that are **not yet implemented** in A lang.
-Check off items as they are completed.
+Check off items as they are completed. Status is kept in sync with an audit
+against the compiler (2026-10-29).
 
 > ✅ = Implemented | ⬜ = Missing/Not implemented
 
@@ -18,28 +19,32 @@ Check off items as they are completed.
 
 ## 2. Syntax Features
 
-- [ ] Multiline comments `"""..."""` — currently only `#` single-line (Plan §3.2)
-- [ ] Triple-quoted raw strings `"""..."""` — for SQL/docs/templates (Plan §3.14)
-- [ ] Open-ended ranges `items[1..]` — slicing without end (Plan §3.14)
-- [ ] `class` inheritance — `class User(Entity):` (Plan §8.4)
+- [x] Multiline comments `"""..."""` — a standalone raw string statement is
+      evaluated and discarded (Plan §3.2)
+- [x] Triple-quoted raw strings `"""..."""` — for SQL/docs/templates (Plan §3.14)
+- [x] Open-ended ranges `items[1..]` — slicing without end (Plan §3.14)
+- [x] `class` inheritance — `class User(Entity):` (Plan §8.4)
 
 ---
 
 ## 3. Operators
 
-- [X] `++` / `—` — increment/decrement
+- [X] `++` / `--` — increment/decrement
 - [ ] `pub` — public visibility keyword (Plan §8.5)
-- [ ] `?` — error propagation operator (Plan §9.2)
+- [ ] `?` — error propagation over `Result` types (Plan §9.2).
+      Optional unwrap with `!`, `?.`, and `??` is implemented; `?` after a
+      `Result` call is not.
 
 ---
 
 ## 4. Type System
 
-- [ ] Generics `<T>` — `fn first<T>(items: T[]) -> T` (Plan §7.3)
-- [ ] Generic code generation / monomorphization (Plan §7.4)
+- [x] Generics `<T>` — `fn first<T>(items: [T]) -> T` (Plan §7.3)
+- [ ] Generic code generation / monomorphization (Plan §7.4) — generic calls
+      execute through the interpreter; LLVM/native codegen does not specialize them
 - [ ] Interfaces / Traits — `trait Printable`, `impl ... for ...` (Plan §7.5)
 - [ ] `Result<T, E>` — fallible return type syntax (Plan §9.1)
-- [ ] Type aliases — `type Kilograms = f64` (Plan §7.8)
+- [x] Type aliases — `type Kilograms = f64` (Plan §7.8)
 - [ ] Algebraic enums with payloads — `enum Result<T, E>: Ok(value: T)` (Plan §7.6)
 
 ---
@@ -50,12 +55,14 @@ Check off items as they are completed.
 - [ ] Multidimensional arrays (Plan §3.10)
 - [ ] Views over existing storage (Plan §3.10)
 - [ ] Unchecked indexing — unsafe interface (Plan §3.10)
+- [ ] Map (`{k: v}`) and set (`{1, 2}`) literals — rejected with a clear
+      diagnostic because no runtime value representation exists yet
 
 ---
 
 ## 6. Object-Oriented Programming
 
-- [ ] Class inheritance (Plan §8.4)
+- [x] Class inheritance (Plan §8.4)
 - [ ] `pub` visibility modifier (Plan §8.5)
 
 ---
@@ -119,10 +126,10 @@ Check off items as they are completed.
 
 ## 13. CLI Toolchain
 
-- [ ] `a check` — compilation checks without producing executable (Plan §16)
-- [ ] `a fmt` — source code formatter (Plan §16)
-- [ ] `a doc` — documentation generator (Plan §16)
-- [ ] `a test` — test runner (Plan §16)
+- [x] `a check` — compilation checks without producing executable (Plan §16)
+- [x] `a fmt` — source code formatter (Plan §16)
+- [x] `a doc` — documentation generator (Plan §16)
+- [x] `a test` — test runner for `fn test_*()` (Plan §16)
 - [ ] `a package` — package manager commands (Plan §16)
 
 ---
@@ -130,7 +137,7 @@ Check off items as they are completed.
 ## 14. Compiler Backend & IR
 
 - [ ] Intermediate Representation (IR) — typed IR, SSA, control-flow blocks (Plan §5)
-- [ ] Native code generation — LLVM backend, machine code (Plan §4.7, §10)
+- [x] Native code generation — LLVM backend and native C++ backend (Plan §4.7, §10)
 - [ ] Optimization passes — constant folding, DCE, inlining, loop optimization (Plan §10)
 - [ ] Ownership & lifetime analysis — borrow checker, move semantics (Plan §6)
 - [ ] Custom allocator APIs — arena, pool, region allocators (Plan §6.7)
@@ -139,9 +146,10 @@ Check off items as they are completed.
 
 ## 15. Developer Experience
 
-- [ ] Compiler warnings — unused vars, unreachable code, etc. with stable IDs (Plan §17.2)
-- [ ] Suggested fixes — "How the developer might fix the problem" (Plan §17.1)
-- [ ] Machine-readable diagnostic output — for editor integrations (Plan §16)
+- [x] Compiler warnings — unused variables (`W0001`), unreachable code (`W0002`)
+      with stable IDs (Plan §17.2)
+- [x] Suggested fixes — diagnostics carry a `help:` line for common errors (Plan §17.1)
+- [x] Machine-readable diagnostic output — `a check --json` (Plan §16)
 
 ---
 
@@ -163,7 +171,18 @@ Check off items as they are completed.
 
 ## Recently Completed
 
-- [x] `++` / `++` prefix/postfix increment and `--` / `--` decrement (2026-10-28)
+- [x] Python-compatible `str`/`list` method surface (2026-10-29)
+- [x] Free `int(x)` / `float(x)` conversions (2026-10-29)
+- [x] Compiler warnings with stable codes: `W0001` unused variable, `W0002`
+      unreachable statement (2026-10-29)
+- [x] Machine-readable diagnostics: `a check --json` (2026-10-29)
+- [x] `a test` runner for `fn test_*()` functions (2026-10-29)
+- [x] Map/set literals rejected at compile time instead of failing at runtime
+      with an internal error (2026-10-29)
+- [x] TODO audit: confirmed implemented — raw strings, open-ended ranges,
+      class inheritance, generics, type aliases, enum values, `a check/fmt/doc`
+      (2026-10-29)
+- [x] `++` / `--` prefix/postfix increment and decrement (2026-10-28)
 - [x] All four loop types: `while`, `do...while`, `for ... in`, `loop`
 - [x] `break` / `continue` loop control
 - [x] `match` pattern matching

@@ -8,6 +8,7 @@ namespace a {
 
 struct DriverConfig {
   bool checkOnly = false;
+  bool jsonDiagnostics = false;  // `a check --json`: render diagnostics as JSON
   bool useColor = false;
   std::string backend = "llvm";          // "llvm" (default), "native", or "interpreter"
   std::vector<std::string> modulePaths;  // -I search directories
@@ -24,6 +25,10 @@ int runFile(const std::string& path, const DriverConfig& config, std::istream& i
 // diagnostics only.
 int runSource(const std::string& displayPath, std::string source, const DriverConfig& config,
               std::istream& in, std::ostream& out, std::ostream& err);
+
+// Compiles a program and runs its zero-argument `test_*` functions (`a test`).
+int testFile(const std::string& path, const DriverConfig& config, std::istream& in,
+             std::ostream& out, std::ostream& err);
 
 // Compiles a program to a native binary executable (`a build`).
 int buildFile(const std::string& path, const std::string& outputPath,

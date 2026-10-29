@@ -1,0 +1,7 @@
+fn compute() -> i32:
+    var unused = 41
+    var _ignored = 1
+    var used = 2
+    return used
+
+print(compute())

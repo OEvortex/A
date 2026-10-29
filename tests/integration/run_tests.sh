@@ -46,8 +46,12 @@ for source in "${case_sources[@]}"; do
   base="${source%.a}"
 
   command="run"
-  if [[ -f "$base.flags" ]] && grep -q "check" "$base.flags"; then
-    command="check"
+  if [[ -f "$base.flags" ]]; then
+    if grep -q "test" "$base.flags"; then
+      command="test"
+    elif grep -q "check" "$base.flags"; then
+      command="check"
+    fi
   fi
 
   expected_exit=0

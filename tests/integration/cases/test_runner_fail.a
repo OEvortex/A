@@ -1,0 +1,5 @@
+fn test_ok() -> void:
+    assert_eq(2 * 3, 6)
+
+fn test_bad() -> void:
+    assert_eq(1, 2, "one is not two")

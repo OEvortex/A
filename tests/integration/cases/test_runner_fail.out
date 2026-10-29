@@ -1,0 +1,4 @@
+FAILED test_bad: Assertion failed: expected 1, found 2 (one is not two)
+ok test_ok
+
+1 passed, 1 failed

@@ -755,6 +755,65 @@ int Interpreter::run() {
   }
 }
 
+int Interpreter::runTests(std::ostream& out) {
+  moduleEnvs_.resize(graph_.modules.size());
+  try {
+    for (int id : graph_.order) {
+      Env& env = moduleEnv(id);
+      env.parent = nullptr;
+      currentModule_ = id;
+      execStatements(graph_.at(id).program->statements, env);
+    }
+  } catch (RuntimeError& error) {
+    sink_.error(error.span, std::move(error.message), std::move(error.help));
+    return 2;
+  } catch (std::exception& error) {
+    sink_.error(Span{}, std::string("Internal error: ") + error.what());
+    return 2;
+  }
+
+  std::vector<const FnDecl*> tests;
+  for (const auto& entry : sema_.functions) {
+    const FnDecl* decl = entry.second;
+    if (!decl || decl->moduleId != graph_.entry) continue;
+    if (decl->name.rfind("test_", 0) != 0) continue;
+    tests.push_back(decl);
+  }
+  std::sort(tests.begin(), tests.end(),
+            [](const FnDecl* a, const FnDecl* b) { return a->name < b->name; });
+
+  if (tests.empty()) {
+    out << "No tests found (expected functions named test_*).\n";
+    return 1;
+  }
+
+  int passed = 0;
+  int failed = 0;
+  for (const FnDecl* decl : tests) {
+    if (!decl->params.empty()) {
+      out << "FAILED " << decl->name << ": test functions must take no arguments\n";
+      ++failed;
+      continue;
+    }
+    returning_ = false;
+    callDepth_ = 0;
+    try {
+      callFunction(*decl, ArgList{}, decl->nameSpan);
+      out << "ok " << decl->name << "\n";
+      ++passed;
+    } catch (RuntimeError& error) {
+      out << "FAILED " << decl->name << ": " << error.message << "\n";
+      ++failed;
+    } catch (std::exception& error) {
+      out << "FAILED " << decl->name << ": " << error.what() << "\n";
+      ++failed;
+    }
+  }
+  out << "\n" << passed << " passed, " << failed << " failed\n";
+  out.flush();
+  return failed == 0 ? 0 : 1;
+}
+
 // ---------------------------------------------------------------- execution
 
 void Interpreter::execStatements(const std::vector<StmtPtr>& statements, Env& env) {

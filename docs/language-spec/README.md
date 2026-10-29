@@ -20,6 +20,8 @@ and indented consistently; braces are not used for blocks.
 - Raw string literals use triple double quotes (`"""..."""`). They span lines,
   perform no escape processing and no interpolation, and strip exactly one
   newline immediately after the opening quotes. Dedenting is not performed.
+  A triple-quoted string used as a statement is the idiomatic multi-line
+  comment: it is evaluated and discarded.
 - Character literals use single quotes, cover one Unicode code point, and
   accept the same escapes as strings.
 - Operators (27+): `+ - * / % ** & | ^ ~ << >> .. in not in == != < <= > >= = += -= *= /= %=
@@ -634,9 +636,35 @@ the full member list is in
 [docs/standard-library](../standard-library/README.md). Modules may also be
 written in A under `stdlib/`, such as `stdlib/test/test.a`.
 
+## Tooling and diagnostics
+
+The `a` binary provides `run`, `build`, `check`, `test`, `fmt`, and `doc`.
+Diagnostics carry stable codes; warnings never change the exit code.
+
+| Command | Purpose |
+| ------- | ------- |
+| `a run <file.a>` | compile and execute a program |
+| `a build <file.a> [-o out]` | compile to a native binary |
+| `a check <file.a>` | type-check without running |
+| `a check --json <file.a>` | emit `{"diagnostics":[...]}` as JSON |
+| `a test <file.a>` | run every zero-argument `fn test_*()` |
+| `a fmt <file.a>` | format source |
+| `a doc <file.a>` | generate documentation |
+
+| Code | Warning |
+| ---- | ------- |
+| `W0001` | unused local variable |
+| `W0002` | unreachable statement |
+
+Prefix a local binding with `_` to silence `W0001`. `a test` runs the entry
+module's `test_*` functions in name order, prints `ok name` or
+`FAILED name: reason`, ends with a `<passed> passed, <failed> failed` summary,
+and exits with code 1 when any test fails.
+
 ## Not yet supported
 
-Generics, interfaces/traits, `Result` types, default parameters, tuple
-indexing, tuple equality, native code generation, and garbage collection tuning
-are future work. The compiler reports a clear diagnostic for syntax it
-recognizes but does not support yet.
+Interfaces/traits, `?` error propagation over `Result` types, map and set
+values, fixed-size and multidimensional arrays, `i128`/`u128`/`f16`/`bf16`,
+package management, and concurrency primitives are future work. Generics,
+type aliases, class inheritance, open-ended ranges, and raw triple-quoted
+strings are supported.

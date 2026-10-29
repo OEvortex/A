@@ -28,6 +28,11 @@ class Interpreter {
   // Returns the process exit code: 0 on success, 2 on a runtime error.
   int run();
 
+  // Runs every zero-argument function whose name starts with "test_" in the
+  // entry module, reporting results to `out`. Returns 0 when all pass, 1 when
+  // any fail, and 2 when the program fails before the tests start.
+  int runTests(std::ostream& out);
+
  private:
   struct Binding {
     Value value;

@@ -25,6 +25,7 @@ void printUsage(std::ostream& os) {
       << "  run <file.a>     compile and execute a program\n"
       << "  build <file.a>   compile program to native binary (-o <bin>)\n"
       << "  check <file.a>   type-check a program without running it\n"
+      << "  test <file.a>    run every fn test_*() in a program\n"
       << "  fmt <file.a>     format a source file (prints to stdout)\n"
       << "  doc <file.a>     generate documentation (markdown, prints to stdout)\n"
       << "  version          print the toolchain version\n"
@@ -35,7 +36,7 @@ void printUsage(std::ostream& os) {
      << "  -w, --write      rewrite the source file in place (for 'fmt')\n"
      << "  --check          exit nonzero if the file needs formatting (for 'fmt')\n"
      << "  --indent <n>     indentation width in spaces (for 'fmt', default 4)\n"
-     << "  --json           emit structured JSON (for 'doc')\n"
+     << "  --json           emit structured JSON (for 'doc' and 'check')\n"
      << "  --backend <name> compilation backend: 'native' (default) or 'llvm'\n"
      << "  --emit-llvm      emit textual LLVM IR (.ll) file instead of executable\n"
      << "  -I <dir>         add a module search directory (repeatable)\n"
@@ -166,7 +167,8 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
     return false;
   }
 
-  static const std::vector<std::string> kCommands = {"run", "build", "check", "fmt", "doc", "version", "help"};
+  static const std::vector<std::string> kCommands = {"run",  "build", "check", "test",
+                                                     "fmt",  "doc",   "version", "help"};
   bool known = false;
   for (const auto& command : kCommands) {
     if (positional[0] == command) {
@@ -231,6 +233,7 @@ int main(int argc, char** argv) {
 
   a::DriverConfig config;
   config.checkOnly = options.command == "check";
+  config.jsonDiagnostics = options.jsonOutput && options.command == "check";
   config.useColor = options.useColor;
   config.backend = options.backend;
   config.modulePaths = options.modulePaths;
@@ -279,10 +282,14 @@ int main(int argc, char** argv) {
 
   if (options.command == "check") {
     int code = a::runFile(options.path, config, std::cin, std::cout, std::cerr);
-    if (code == 0) {
+    if (code == 0 && !options.jsonOutput) {
       std::cout << options.path << ": File is valid\n";
     }
     return code;
+  }
+
+  if (options.command == "test") {
+    return a::testFile(options.path, config, std::cin, std::cout, std::cerr);
   }
 
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);

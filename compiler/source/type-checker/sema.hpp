@@ -49,6 +49,10 @@ class Sema {
     TypePtr type;
     bool mutableBinding = false;
     bool constant = false;
+    bool used = false;
+    bool warnUnused = false;
+    std::string name;
+    Span span;
   };
 
   struct FnSig {
@@ -126,6 +130,7 @@ class Sema {
   // scopes
   void pushScope();
   void popScope();
+  void reportUnusedLocals(const StringMap<VarSym>& scope);
   VarSym* lookupVar(const std::string& name);
   void declareVar(const std::string& name, Span span, TypePtr type, bool mutableBinding,
                   const char* what = "variable", bool constant = false);

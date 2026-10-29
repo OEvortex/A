@@ -1,6 +1,7 @@
 #include "backend/native/native_codegen.hpp"
 
 #include <cmath>
+#include <charconv>
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
@@ -98,17 +99,85 @@ class NativeEmitter {
     out_ << "#include <cstdint>\n";
     out_ << "#include <iomanip>\n";
     out_ << "#include <algorithm>\n";
-    out_ << "#include <functional>\n\n";
+    out_ << "#include <functional>\n";
+    out_ << "#include <charconv>\n";
+    out_ << "#include <sstream>\n\n";
   }
 
   void emitRuntimeHelpers() {
     out_ << "using int_t = std::int64_t;\n";
     out_ << "using float_t_ = double;\n\n";
 
+    out_ << "namespace {\n";
+    out_ << "std::string a_quoteString(const std::string& text) {\n";
+    out_ << "  std::string out;\n";
+    out_ << "  out.reserve(text.size() + 2);\n";
+    out_ << "  out.push_back('\"');\n";
+    out_ << "  for (char c : text) {\n";
+    out_ << "    switch (c) {\n";
+    out_ << "      case '\"': out += \"\\\\\\\"\"; break;\n";
+    out_ << "      case '\\\\': out += \"\\\\\\\\\"; break;\n";
+    out_ << "      case '\\n': out += \"\\\\\\n\"; break;\n";
+    out_ << "      case '\\t': out += \"\\\\\\t\"; break;\n";
+    out_ << "      case '\\r': out += \"\\\\\\r\"; break;\n";
+    out_ << "      default: out.push_back(c); break;\n";
+    out_ << "    }\n";
+    out_ << "  }\n";
+    out_ << "  out.push_back('\"');\n";
+    out_ << "  return out;\n";
+    out_ << "}\n";
+    out_ << "std::string a_formatDouble(double value) {\n";
+    out_ << "  if (std::isnan(value)) return \"nan\";\n";
+    out_ << "  if (std::isinf(value)) return value < 0 ? \"-inf\" : \"inf\";\n";
+    out_ << "  char buffer[64];\n";
+    out_ << "  auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);\n";
+    out_ << "  std::string text(buffer, result.ptr);\n";
+    out_ << "  if (text.find_first_of(\".eE\") == std::string::npos) text += \".0\";\n";
+    out_ << "  return text;\n";
+    out_ << "}\n";
     out_ << "template <typename T>\n";
-    out_ << "void a_print(const T& val) { std::cout << std::fixed << std::setprecision(1) << val << std::endl; }\n";
-    out_ << "inline void a_print(int_t val) { std::cout << val << std::endl; }\n";
-    out_ << "inline void a_print(const std::string& val) { std::cout << val << std::endl; }\n\n";
+    out_ << "std::string a_format(const T& value, bool quoteStrings = false) {\n";
+    out_ << "  if constexpr (std::is_floating_point_v<T>) {\n";
+    out_ << "    return a_formatDouble(static_cast<double>(value));\n";
+    out_ << "  }\n";
+    out_ << "  if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {\n";
+    out_ << "    char buffer[32];\n";
+    out_ << "    auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);\n";
+    out_ << "    return std::string(buffer, result.ptr);\n";
+    out_ << "  }\n";
+    out_ << "  std::ostringstream s;\n";
+    out_ << "  s << value;\n";
+    out_ << "  return s.str();\n";
+    out_ << "}\n";
+    out_ << "inline std::string a_format(bool value, bool quoteStrings = false) {\n";
+    out_ << "  return value ? \"true\" : \"false\";\n";
+    out_ << "}\n";
+    out_ << "inline std::string a_format(const std::string& value, bool quoteStrings = false) {\n";
+    out_ << "  return quoteStrings ? a_quoteString(value) : value;\n";
+    out_ << "}\n";
+    out_ << "template <typename T>\n";
+    out_ << "std::string a_format(const std::vector<T>& value, bool quoteStrings = false) {\n";
+    out_ << "  std::string out = \"[\";\n";
+    out_ << "  for (std::size_t i = 0; i < value.size(); ++i) {\n";
+    out_ << "    if (i) out += \", \";\n";
+    out_ << "    out += a_format(value[i], true);\n";
+    out_ << "  }\n";
+    out_ << "  out += \"]\";\n";
+    out_ << "  return out;\n";
+    out_ << "}\n";
+    out_ << "template <typename... Args>\n";
+    out_ << "void a_print(const Args&... args) {\n";
+    out_ << "  std::string out;\n";
+    out_ << "  bool first = true;\n";
+    out_ << "  auto append = [&](const auto& v) {\n";
+    out_ << "    if (!first) out += ' ';\n";
+    out_ << "    first = false;\n";
+    out_ << "    out += a_format(v);\n";
+    out_ << "  };\n";
+    out_ << "  (append(args), ...);\n";
+    out_ << "  std::cout << out << '\\n';\n";
+    out_ << "}\n";
+    out_ << "}  // namespace\n\n";
 
     out_ << "inline void a_fail_div() {\n";
     out_ << "    std::cerr << \"Division by zero.\\nCheck the divisor before dividing.\" << std::endl;\n";
@@ -429,7 +498,10 @@ class NativeEmitter {
           const auto& calleeName = static_cast<const IdentExpr&>(*call.callee).name;
           if (calleeName == "print") {
             out_ << "a_print(";
-            if (!call.args.empty()) emitExpr(*call.args[0].value);
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+              if (i) out_ << ", ";
+              emitExpr(*call.args[i].value);
+            }
             out_ << ")";
             return;
           }
@@ -681,9 +753,13 @@ bool checkNativeExpr(const Expr& expr) {
     const auto& c = static_cast<const CallExpr&>(expr);
     if (c.callee->kind != ExprKind::Ident) return false;  // closures unsupported
     const std::string& name = static_cast<const IdentExpr&>(*c.callee).name;
-    // `print` only forwards its first argument; extra args are silently dropped.
-    if (name == "print")
-      return c.args.size() == 1 && checkNativeExpr(*c.args[0].value);
+    // `print` forwards every argument to the native `a_print` helper, which
+    // formats values the same way the interpreter does (including arrays).
+    if (name == "print") {
+      for (const auto& arg : c.args)
+        if (!checkNativeExpr(*arg.value)) return false;
+      return true;
+    }
     // These builtins are not provided by the native runtime helpers; they
     // would produce an undeclared-identifier error, so route them to the
     // interpreter instead.

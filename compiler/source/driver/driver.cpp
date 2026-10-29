@@ -42,12 +42,24 @@ int runSource(const std::string& displayPath, std::string source, const DriverCo
   ModuleLoader loader(std::move(options), sink);
   ModuleGraph graph = loader.load(displayPath, std::move(source));
 
-  sink.flush(err, config.useColor);
-  if (sink.hasErrors()) return kExitCompileError;
+  const bool json = config.jsonDiagnostics && config.checkOnly;
+  if (sink.hasErrors()) {
+    if (json) {
+      sink.writeJson(out);
+    } else {
+      sink.flush(err, config.useColor);
+    }
+    return kExitCompileError;
+  }
+  if (!json) sink.flush(err, config.useColor);
 
   Sema sema(graph, sink);
   SemaResult result = sema.analyze();
-  sink.flush(err, config.useColor);
+  if (json) {
+    sink.writeJson(out);
+  } else {
+    sink.flush(err, config.useColor);
+  }
   if (sink.hasErrors()) return kExitCompileError;
 
   if (config.checkOnly) return kExitOk;
@@ -90,6 +102,42 @@ int runFile(const std::string& path, const DriverConfig& config, std::istream& i
   }
 
   return runSource(path, buffer.str(), config, in, out, err);
+}
+
+int testFile(const std::string& path, const DriverConfig& config, std::istream& in,
+             std::ostream& out, std::ostream& err) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    err << "error: cannot open '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+  if (file.bad()) {
+    err << "error: failed to read '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  DiagnosticSink sink;
+  ModuleLoaderOptions options;
+  options.modulePaths = config.modulePaths;
+  options.stdlibRoot = config.stdlibRoot;
+  ModuleLoader loader(std::move(options), sink);
+  ModuleGraph graph = loader.load(path, buffer.str());
+
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  Sema sema(graph, sink);
+  SemaResult result = sema.analyze();
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  Interpreter interp(graph, result, sink, in, out, err);
+  int code = interp.runTests(out);
+  sink.flush(err, config.useColor);
+  return code;
 }
 
 int buildFile(const std::string& path, const std::string& outputPath,

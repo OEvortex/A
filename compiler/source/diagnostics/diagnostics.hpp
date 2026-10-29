@@ -17,6 +17,7 @@ enum class Severity { Error, Warning };
 
 struct Diagnostic {
   Severity severity = Severity::Error;
+  std::string code;  // stable identifier when available, e.g. "W0001"
   Span span;
   std::string message;
   std::string help;
@@ -34,7 +35,9 @@ class DiagnosticSink {
   const SourceFile* file(FileId id) const;
 
   void error(Span span, std::string message, std::string help = {});
-  void warning(Span span, std::string message, std::string help = {});
+  // Warnings carry a stable code (for example "W0001") so tooling and
+  // documentation can refer to them unambiguously.
+  void warning(Span span, std::string code, std::string message, std::string help = {});
 
   bool hasErrors() const { return errors_ > 0; }
   int errorCount() const { return errors_; }
@@ -47,6 +50,10 @@ class DiagnosticSink {
   // Prints diagnostics added since the previous flush. This lets each
   // pipeline stage flush without reprinting earlier output.
   void flush(std::ostream& os, bool useColor);
+
+  // Writes every collected diagnostic as a JSON object
+  // ({"diagnostics":[...]}), for machine-readable editor/tooling output.
+  void writeJson(std::ostream& os) const;
 
  private:
   std::vector<std::shared_ptr<const SourceFile>> files_;
