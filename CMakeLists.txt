@@ -45,13 +45,16 @@ endif()
 
 # ------------------------------------------------------------------ modules
 
+# SourceFile lives with diagnostics because DiagnosticSink stores source
+# files to render context. Keeping it here avoids a dependency cycle between
+# a_diagnostics and a_lexer (the lexer consumes diagnostics for errors).
 add_library(a_diagnostics STATIC
   compiler/source/diagnostics/diagnostics.cpp
+  compiler/source/lexer/source.cpp
 )
 target_link_libraries(a_diagnostics PUBLIC a_project_options)
 
 add_library(a_lexer STATIC
-  compiler/source/lexer/source.cpp
   compiler/source/lexer/lexer.cpp
 )
 target_link_libraries(a_lexer PUBLIC a_diagnostics)

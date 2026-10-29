@@ -245,6 +245,48 @@ class LLVMEmitter {
             std::string prod = nextTemp();
             out_ << "  " << prod << " = mul nsw i64 " << cur << ", " << val << "\n";
             out_ << "  store i64 " << prod << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "/=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string quot = nextTemp();
+            out_ << "  " << quot << " = sdiv i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << quot << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "%=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string rem = nextTemp();
+            out_ << "  " << rem << " = srem i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << rem << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "&=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string res = nextTemp();
+            out_ << "  " << res << " = and i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << res << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "|=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string res = nextTemp();
+            out_ << "  " << res << " = or i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << res << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "^=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string res = nextTemp();
+            out_ << "  " << res << " = xor i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << res << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == "<<=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string res = nextTemp();
+            out_ << "  " << res << " = shl i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << res << ", ptr " << locals_[id.name] << ", align 8\n";
+          } else if (assign.op == ">>=") {
+            std::string cur = nextTemp();
+            out_ << "  " << cur << " = load i64, ptr " << locals_[id.name] << ", align 8\n";
+            std::string res = nextTemp();
+            out_ << "  " << res << " = ashr i64 " << cur << ", " << val << "\n";
+            out_ << "  store i64 " << res << ", ptr " << locals_[id.name] << ", align 8\n";
           }
         }
         break;
@@ -583,9 +625,30 @@ class X86Emitter {
   void collectFromStmt(const Stmt& stmt) {
     if (stmt.kind == StmtKind::Expr) {
       collectFromExpr(*static_cast<const ExprStmt&>(stmt).expr);
+    } else if (stmt.kind == StmtKind::Let) {
+      const auto& let = static_cast<const LetStmt&>(stmt);
+      if (let.init) collectFromExpr(*let.init);
+    } else if (stmt.kind == StmtKind::Assign) {
+      const auto& a = static_cast<const AssignStmt&>(stmt);
+      if (a.value) collectFromExpr(*a.value);
     } else if (stmt.kind == StmtKind::FnDecl) {
       const auto& fn = static_cast<const FnDecl&>(stmt);
       for (const auto& s : fn.body) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::If) {
+      const auto& ifs = static_cast<const IfStmt&>(stmt);
+      for (const auto& br : ifs.branches) {
+        if (br.cond) collectFromExpr(*br.cond);
+        for (const auto& s : br.body) collectFromStmt(*s);
+      }
+      for (const auto& s : ifs.elseBody) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::While) {
+      const auto& wh = static_cast<const WhileStmt&>(stmt);
+      if (wh.cond) collectFromExpr(*wh.cond);
+      for (const auto& s : wh.body) collectFromStmt(*s);
+    } else if (stmt.kind == StmtKind::For) {
+      const auto& fo = static_cast<const ForStmt&>(stmt);
+      if (fo.iterable) collectFromExpr(*fo.iterable);
+      for (const auto& s : fo.body) collectFromStmt(*s);
     }
   }
 
@@ -662,6 +725,30 @@ class X86Emitter {
             out_ << "  mov rcx, [rbp - " << slot << "]\n";
             out_ << "  imul rax, rcx\n";
             out_ << "  mov [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "/=") {
+            out_ << "  mov rbx, rax\n";
+            out_ << "  mov rax, [rbp - " << slot << "]\n";
+            out_ << "  cqo\n";
+            out_ << "  idiv rbx\n";
+            out_ << "  mov [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "%=") {
+            out_ << "  mov rbx, rax\n";
+            out_ << "  mov rax, [rbp - " << slot << "]\n";
+            out_ << "  cqo\n";
+            out_ << "  idiv rbx\n";
+            out_ << "  mov [rbp - " << slot << "], rdx\n";
+          } else if (assign.op == "&=") {
+            out_ << "  and [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "|=") {
+            out_ << "  or [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "^=") {
+            out_ << "  xor [rbp - " << slot << "], rax\n";
+          } else if (assign.op == "<<=") {
+            out_ << "  mov rcx, rax\n";
+            out_ << "  shl qword ptr [rbp - " << slot << "], cl\n";
+          } else if (assign.op == ">>=") {
+            out_ << "  mov rcx, rax\n";
+            out_ << "  sar qword ptr [rbp - " << slot << "], cl\n";
           }
         }
         break;
@@ -1012,6 +1099,145 @@ int runLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
   std::filesystem::remove(tmpBase + ".ll");
 
   return WIFEXITED(status) ? WEXITSTATUS(status) : 2;
+}
+
+namespace {
+bool checkSupportedExpr(const Expr& expr);
+bool checkSupportedStmt(const Stmt& stmt, bool isGlobal = false) {
+  switch (stmt.kind) {
+    case StmtKind::Let: {
+      if (isGlobal) return false;
+      const auto& s = static_cast<const LetStmt&>(stmt);
+      return !s.init || checkSupportedExpr(*s.init);
+    }
+    case StmtKind::Assign: {
+      const auto& s = static_cast<const AssignStmt&>(stmt);
+      return s.target->kind == ExprKind::Ident && checkSupportedExpr(*s.value);
+    }
+    case StmtKind::Expr: {
+      const auto& s = static_cast<const ExprStmt&>(stmt);
+      return checkSupportedExpr(*s.expr);
+    }
+    case StmtKind::Return: {
+      const auto& s = static_cast<const ReturnStmt&>(stmt);
+      return !s.value || checkSupportedExpr(*s.value);
+    }
+    case StmtKind::If: {
+      const auto& s = static_cast<const IfStmt&>(stmt);
+      for (const auto& br : s.branches) {
+        if (!checkSupportedExpr(*br.cond)) return false;
+        for (const auto& st : br.body) if (!checkSupportedStmt(*st, false)) return false;
+      }
+      for (const auto& st : s.elseBody) if (!checkSupportedStmt(*st, false)) return false;
+      return true;
+    }
+    case StmtKind::While: {
+      const auto& s = static_cast<const WhileStmt&>(stmt);
+      if (!checkSupportedExpr(*s.cond)) return false;
+      for (const auto& st : s.body) if (!checkSupportedStmt(*st, false)) return false;
+      return true;
+    }
+    case StmtKind::For: {
+      const auto& s = static_cast<const ForStmt&>(stmt);
+      if (s.iterable->kind != ExprKind::Range) return false;
+      const auto& r = static_cast<const RangeExpr&>(*s.iterable);
+      if (r.step) return false;
+      if (!checkSupportedExpr(*r.start) || !checkSupportedExpr(*r.end)) return false;
+      // Scoped shadowing check: if any nested statement declares a variable with loop var's name,
+      // fallback to interpreter
+      std::vector<const Stmt*> queue;
+      for (const auto& st : s.body) queue.push_back(st.get());
+      while (!queue.empty()) {
+        const Stmt* cur = queue.back();
+        queue.pop_back();
+        if (cur->kind == StmtKind::Let) {
+          const auto& let = static_cast<const LetStmt&>(*cur);
+          if (let.name == s.var) return false;
+        } else if (cur->kind == StmtKind::If) {
+          const auto& ifs = static_cast<const IfStmt&>(*cur);
+          for (const auto& br : ifs.branches) {
+            for (const auto& st : br.body) queue.push_back(st.get());
+          }
+          for (const auto& st : ifs.elseBody) queue.push_back(st.get());
+        } else if (cur->kind == StmtKind::While) {
+          const auto& wh = static_cast<const WhileStmt&>(*cur);
+          for (const auto& st : wh.body) queue.push_back(st.get());
+        }
+      }
+      for (const auto& st : s.body) {
+        if (!checkSupportedStmt(*st, false)) return false;
+      }
+      return true;
+    }
+    case StmtKind::FnDecl: {
+      const auto& fn = static_cast<const FnDecl&>(stmt);
+      for (const auto& st : fn.body) if (!checkSupportedStmt(*st, false)) return false;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+bool checkSupportedExpr(const Expr& expr) {
+  switch (expr.kind) {
+    case ExprKind::IntLit:
+    case ExprKind::BoolLit:
+    case ExprKind::Ident:
+      return true;
+    case ExprKind::StringLit: {
+      const auto& s = static_cast<const StringLitExpr&>(expr);
+      for (const auto& p : s.parts) if (p.isExpr) return false;
+      return true;
+    }
+    case ExprKind::Binary: {
+      const auto& b = static_cast<const BinaryExpr&>(expr);
+      // Division or remainder requires runtime checks for zero, fallback to interpreter
+      if (b.op == "/" || b.op == "%") {
+        return false;
+      } else if (b.op == "<<" || b.op == ">>") {
+        if (b.rhs->kind == ExprKind::IntLit) {
+          int64_t val = static_cast<const IntLitExpr&>(*b.rhs).value;
+          if (val < 0 || val >= 64) return false;
+        } else {
+          return false;
+        }
+      }
+      return checkSupportedExpr(*b.lhs) && checkSupportedExpr(*b.rhs);
+    }
+    case ExprKind::Unary: {
+      const auto& u = static_cast<const UnaryExpr&>(expr);
+      if (u.op == "!") return false; // unwrap is handled by runtime/interpreter
+      return checkSupportedExpr(*u.operand);
+    }
+    case ExprKind::Call: {
+      const auto& c = static_cast<const CallExpr&>(expr);
+      if (c.callee->kind != ExprKind::Ident) return false;
+      const std::string& name = static_cast<const IdentExpr&>(*c.callee).name;
+      // Native runtime functions are handled by interpreter or native backend
+      if (name == "write_file" || name == "read_file" || name == "append_file" ||
+          name == "file_exists" || name == "remove_file" || name == "flush" ||
+          name == "input" || name == "read_line" || name == "len") {
+        return false;
+      }
+      for (const auto& a : c.args) if (!checkSupportedExpr(*a.value)) return false;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+}  // namespace
+
+bool isLLVMSupported(const ModuleGraph& graph) {
+  if (graph.modules.empty()) return false;
+  for (const auto& mod : graph.modules) {
+    if (!mod.program) continue;
+    for (const auto& st : mod.program->statements) {
+      if (!checkSupportedStmt(*st, true)) return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace a

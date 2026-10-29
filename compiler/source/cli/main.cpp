@@ -269,5 +269,13 @@ int main(int argc, char** argv) {
     return a::documentFile(options.path, docOptions, std::cout, std::cerr);
   }
 
+  if (options.command == "check") {
+    int code = a::runFile(options.path, config, std::cin, std::cout, std::cerr);
+    if (code == 0) {
+      std::cout << options.path << ": File is valid\n";
+    }
+    return code;
+  }
+
   return a::runFile(options.path, config, std::cin, std::cout, std::cerr);
 }

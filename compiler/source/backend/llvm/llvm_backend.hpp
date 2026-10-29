@@ -23,4 +23,7 @@ bool buildLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
 int runLLVMModule(const ModuleGraph& graph, const SemaResult& sema,
                   std::istream& in, std::ostream& out, std::ostream& err);
 
+// Returns true if the AST contains only constructs fully compiled by LLVM backend
+bool isLLVMSupported(const ModuleGraph& graph);
+
 }  // namespace a

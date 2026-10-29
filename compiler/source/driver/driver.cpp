@@ -52,11 +52,9 @@ int runSource(const std::string& displayPath, std::string source, const DriverCo
 
   if (config.checkOnly) return kExitOk;
 
-  if (config.backend == "llvm") {
-    // Run via fast LLVM compilation and native execution
-    int code = runLLVMModule(graph, result, in, out, err);
-    if (code == 0) return code;
-    // Fall back to interpreter for features still in progress in LLVM codegen
+  if (config.backend == "llvm" && isLLVMSupported(graph)) {
+    // Run directly via high-speed LLVM code generation
+    return runLLVMModule(graph, result, in, out, err);
   }
 
   Interpreter interp(graph, result, sink, in, out, err);
