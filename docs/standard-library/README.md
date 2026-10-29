@@ -28,7 +28,7 @@ Module resolution searches the importing file's directory, `-I` paths,
 | `io` | `print eprint input flush` |
 | `fs` | `read_file write_file append_file file_exists list_dir remove_file create_dir remove_dir rename current_dir` |
 | `strings` | `len str join` |
-| `collections` | `len map filter reduce any all sum join` |
+| `collections` | `len map filter reduce any all sum join set` |
 | `unsafe` | `get set address_of offset load store` — unchecked element access and raw pointers |
 | `arena` | `new pool region alloc release reset used total` |
 | `core` | `panic assert assert_eq` |
@@ -106,4 +106,6 @@ compiled backends do not lower these modules):
 | `property_testing.a` | seeded properties over ints, floats, bools, strings, and elements |
 | `observability.a` | structured log records, a Prometheus render, and span propagation |
 | `networking.a` | a loopback TCP exchange, an HTTP handler, and a UDP round trip |
-| `ip_lookup.a` | `http.get` against a public API to read this host's IP addresses |
+| `ip_lookup.a` | `http.get` against a public API to read this host's IP addresses (needs network access) |
+| `strings_methods.a` | the Python-style dot methods on strings, arrays, maps, and sets |
+| `memory_arena.a` | arena allocators alongside `unsafe` pointer arithmetic |

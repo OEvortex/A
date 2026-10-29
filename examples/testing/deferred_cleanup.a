@@ -1,0 +1,40 @@
+# Deterministic cleanup with `defer`, exercised through `a test`.
+#
+# `a test` discovers every zero-argument `fn test_*()` in a file (or every
+# `test_*.a` in a directory), runs them in name order, prints `ok <name>` /
+# `FAILED <name>: <reason>` lines, and exits nonzero if any test fails:
+#
+#   a test examples/testing/deferred_cleanup.a
+import test
+
+fn label(prefix: String) -> String:
+    return prefix + "-resource"
+
+fn steps() -> [String]:
+    seen = []
+    # Registered at declaration time, run when `steps` returns. Cleanup lives
+    # next to the resource it releases instead of trailing every exit path.
+    defer seen.append("released")
+    seen.append("working")
+    return seen
+
+fn apply(work: fn() -> i64) -> i64:
+    defer print("  defer: work finished")
+    return work()
+
+fn test_defer_runs_when_the_function_returns() -> bool:
+    return steps().join(",") == "working,released"
+
+fn test_defer_runs_before_the_caller_continues() -> bool:
+    log = steps()
+    log.append("inspected")
+    return log.last()! == "inspected" and log.count("released") == 1
+
+fn test_closure_work_and_defer_compose() -> bool:
+    return apply(fn() -> i64 => 41 + 1) == 42
+
+fn test_harness_assertions_pass() -> bool:
+    test.check("equality", 2 + 2 == 4)
+    test.check("label", label("res") == "res-resource")
+    test.require(true, "require passes on a true condition")
+    return test.failed == 0

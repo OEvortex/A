@@ -1,0 +1,51 @@
+# Dot methods on strings, arrays, maps, and sets: the Python-style surface
+# that needs no import. Hover, completion, and signature help in a-lsp know
+# every method below.
+#
+#   a run examples/stdlib/strings_methods.a
+
+# --- strings -----------------------------------------------------------------
+name = "  A Language  "
+print("strip=[" + name.strip() + "] upper=" + name.strip().upper())
+print("startswith=" + str(name.strip().startswith("A")) + " endswith=" + str(name.strip().endswith("e")))
+print("split=" + str(name.strip().split()) + " joined=" + "-".join(name.strip().split()))
+print("replace=" + str(name.strip().replace("Language", "World")))
+print("title=" + str("a language".title()) + " capitalize=" + str("a language".capitalize()))
+print("find=" + str("banana".find("na")) + " count=" + str("banana".count("a")))
+print("isalpha=" + str("abc".isalpha()) + " isdigit=" + str("123".isdigit()))
+print("centered=[" + "ab".center(6, ".") + "] zfill=" + str("42".zfill(5)))
+print("splitlines=" + str("one\ntwo".splitlines()) + " removeprefix=" + str("a_language".removeprefix("a_")))
+
+# --- arrays ------------------------------------------------------------------
+nums = [3, 1, 2]
+nums.append(4)
+nums.extend([0, 5])
+print("append/extend=" + str(nums))
+nums.insert(0, 9)
+print("insert=" + str(nums) + " first=" + str(nums.first()) + " last=" + str(nums.last()))
+print("contains=" + str(nums.contains(9)) + " index=" + str(nums.index(9)) + " count=" + str(nums.count(3)))
+ordered = nums.copy()
+ordered.sort()
+ordered.reverse()
+print("sort=" + str(ordered) + " (after reverse)")
+print("pop=" + str(ordered.pop()) + " remove_at=" + str(ordered.remove_at(0)))
+print("join=" + nums.join("-"))
+
+# --- maps --------------------------------------------------------------------
+scores = {"ada": 90, "lin": 70}
+scores.update({"bo": 80})
+print("get=" + str(scores.get("ada")) + " default=" + str(scores.get("zed", 0)))
+print("keys=" + str(scores.keys()) + " values=" + str(scores.values()))
+print("contains=" + str(scores.contains("lin")) + " items=" + str(scores.items()))
+print("pop=" + str(scores.pop("ada")) + " remaining=" + str(len(scores)))
+
+# --- sets --------------------------------------------------------------------
+flags = {"a", "b", "c"}
+flags.add("d")
+flags.discard("a")
+print("add/discard=" + str(flags))
+others = {"c", "d", "e"}
+print("union=" + str(flags.union(others)))
+print("intersection=" + str(flags.intersection(others)))
+print("difference=" + str(flags.difference(others)))
+print("issubset=" + str({"c", "d"}.issubset(flags)) + " contains=" + str(flags.contains("e")))

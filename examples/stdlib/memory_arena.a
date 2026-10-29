@@ -1,0 +1,53 @@
+# Manual memory in A: `arena` allocators for bulk scratch space and `unsafe`
+# for raw element access. Both are opt-in escape hatches — prefer ordinary
+# arrays and values when the lifetime is not the point.
+#
+#   a run examples/stdlib/memory_arena.a
+import arena
+import unsafe
+
+# --- bump allocator ------------------------------------------------------------
+# `arena.new` hands out byte offsets from one contiguous buffer. Nothing is
+# freed individually; `reset` throws the whole buffer away at once, which is
+# what you want for per-frame or per-request scratch data.
+scratch = arena.new(4096)
+header = arena.alloc(scratch, 32)
+payload = arena.alloc(scratch, 128)
+print("bump: header=" + str(header) + " payload=" + str(payload))
+print("bump: used=" + str(arena.used(scratch)) + " total=" + str(arena.total(scratch)))
+arena.reset(scratch)
+print("bump: after reset used=" + str(arena.used(scratch)))
+
+# --- pool allocator --------------------------------------------------------------
+# `arena.pool` recycles released blocks, so repeated allocations of the same
+# size reuse the same offsets instead of growing the buffer.
+pool = arena.pool(1024)
+a = arena.alloc(pool, 64)
+b = arena.alloc(pool, 64)
+arena.release(pool, a)
+c = arena.alloc(pool, 64)
+print("pool: reused=" + str(c == a) + " distinct=" + str(b != a))
+print("pool: used=" + str(arena.used(pool)))
+
+# --- region allocator -------------------------------------------------------------
+# `arena.region` releases in reverse allocation order (LIFO), like a stack
+# frame. Releasing out of order is a runtime error, so cleanup is checked.
+region = arena.region(1024)
+first = arena.alloc(region, 16)
+second = arena.alloc(region, 16)
+arena.release(region, second)
+arena.release(region, first)
+print("region: both blocks released in LIFO order, used=" + str(arena.used(region)))
+
+# --- unsafe: unchecked element access and pointer arithmetic ---------------------
+# Values created by the language stay in charge of their own memory; `unsafe`
+# only borrows a view of an existing array's elements. Out-of-range access via
+# `unsafe.get`/`unsafe.set` is *not* checked — that is the trade.
+values = [10, 20, 30]
+cursor = unsafe.address_of(values, 1)
+unsafe.store(cursor, 99)
+print("unsafe: store/load=" + str(unsafe.load(cursor)) + " array=" + str(values))
+print("unsafe: offset(-1)=" + str(unsafe.load(unsafe.offset(cursor, -1))))
+print("unsafe: get=" + str(unsafe.get(values, 2)))
+unsafe.set(values, 2, 7)
+print("unsafe: after set=" + str(values))
