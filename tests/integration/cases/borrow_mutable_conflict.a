@@ -1,0 +1,4 @@
+xs = [1, 2, 3]
+shared = borrow(xs)
+exclusive = borrow_mut(xs)
+print(exclusive)

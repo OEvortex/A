@@ -1,5 +1,6 @@
 #include "ownership/ownership.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,46 @@ struct OwnershipState {
   bool moved = false;
   Span movedAt;
 };
+
+enum class BorrowKind { View, Shared, Mutable };
+
+// True when `expr` is a well-formed `borrow(x)` / `borrow_mut(x)` call whose
+// result can be tied to the binding being initialized.
+bool isBorrowExpression(const Expr& expr) {
+  if (expr.kind != ExprKind::Call) return false;
+  const auto& call = static_cast<const CallExpr&>(expr);
+  if (call.callee->kind != ExprKind::Ident) return false;
+  const auto& callee = static_cast<const IdentExpr&>(*call.callee);
+  if (callee.name != "borrow" && callee.name != "borrow_mut") return false;
+  if (call.args.size() != 1) return false;
+  return call.args[0].value->kind == ExprKind::Ident;
+}
+
+// The variable at the root of a member/index chain, e.g. `a` for `a[i].name`.
+std::string rootIdentName(const Expr& expr) {
+  const Expr* current = &expr;
+  while (current) {
+    switch (current->kind) {
+      case ExprKind::Ident:
+        return static_cast<const IdentExpr&>(*current).name;
+      case ExprKind::Field:
+        current = static_cast<const FieldExpr&>(*current).object.get();
+        break;
+      case ExprKind::Index:
+        current = static_cast<const IndexExpr&>(*current).object.get();
+        break;
+      case ExprKind::Slice:
+        current = static_cast<const SliceExpr&>(*current).object.get();
+        break;
+      case ExprKind::SafeNav:
+        current = static_cast<const SafeNavExpr&>(*current).object.get();
+        break;
+      default:
+        return {};
+    }
+  }
+  return {};
+}
 
 struct Scope {
   StringMap<OwnershipState> vars;
@@ -66,6 +107,8 @@ class Analyzer {
     scopes_.clear();
     lenderOf_.clear();
     borrows_.clear();
+    mutableBorrows_.clear();
+    borrowKind_.clear();
   }
 
   // -------------------------------------------------------------- state
@@ -92,26 +135,34 @@ class Analyzer {
     declare(name);
   }
 
+  static void removeFromList(StringMap<std::vector<std::string>>& lists,
+                             const std::string& lender, const std::string& view) {
+    auto list = lists.find(lender);
+    if (list == lists.end()) return;
+    auto& views = list->second;
+    views.erase(std::remove(views.begin(), views.end(), view), views.end());
+    if (views.empty()) lists.erase(list);
+  }
+
   void releaseBorrow(const std::string& view) {
     auto lender = lenderOf_.find(view);
     if (lender == lenderOf_.end()) return;
-    auto list = borrows_.find(lender->second);
-    if (list != borrows_.end()) {
-      auto& views = list->second;
-      for (std::size_t i = 0; i < views.size(); ++i) {
-        if (views[i] != view) continue;
-        views.erase(views.begin() + static_cast<std::ptrdiff_t>(i));
-        break;
-      }
-      if (views.empty()) borrows_.erase(list);
-    }
+    removeFromList(borrows_, lender->second, view);
+    removeFromList(mutableBorrows_, lender->second, view);
+    borrowKind_.erase(view);
     lenderOf_.erase(lender);
   }
 
-  void addBorrow(const std::string& view, const std::string& lender) {
+  void addBorrow(const std::string& view, const std::string& lender,
+                 BorrowKind kind = BorrowKind::View) {
     releaseBorrow(view);
     lenderOf_[view] = lender;
-    borrows_[lender].push_back(view);
+    borrowKind_[view] = kind;
+    if (kind == BorrowKind::Mutable) {
+      mutableBorrows_[lender].push_back(view);
+    } else {
+      borrows_[lender].push_back(view);
+    }
   }
 
   std::string lenderChain(const std::string& name) const {
@@ -135,17 +186,47 @@ class Analyzer {
       sink_.error(ident.span, "Use of moved value '" + ident.name + "'.",
                   "Assign a new value to '" + ident.name +
                       "' before using it, or remove the earlier move().");
+      return;
+    }
+    // A mutable borrow gives its holder exclusive access: nobody else may
+    // read or write the lender while it is live.
+    const std::string root = lenderChain(ident.name);
+    auto found = mutableBorrows_.find(root);
+    if (found == mutableBorrows_.end()) return;
+    for (const std::string& borrower : found->second) {
+      if (borrower == ident.name) continue;
+      sink_.error(ident.span,
+                  "Cannot use '" + ident.name + "' while '" + borrower +
+                      "' holds a mutable borrow.",
+                  "Release the mutable borrow first, or read through '" + borrower + "'.");
+      return;
     }
   }
 
-  void requireNotBorrowed(const std::string& name, const std::string& action, Span span) {
-    const std::vector<std::string>* views = liveViews(name);
-    if (!views || views->empty()) return;
+  // First live borrower of `name` other than `except`, or empty.
+  std::string firstBorrower(const std::string& name, const std::string& except = {}) const {
+    if (const std::vector<std::string>* views = liveViews(name)) {
+      for (const std::string& view : *views) {
+        if (view != except) return view;
+      }
+    }
+    auto found = mutableBorrows_.find(name);
+    if (found != mutableBorrows_.end() && !found->second.empty()) {
+      for (const std::string& borrower : found->second) {
+        if (borrower != except) return borrower;
+      }
+    }
+    return {};
+  }
+
+  void requireNotBorrowed(const std::string& name, const std::string& action, Span span,
+                          const std::string& except = {}) {
+    const std::string borrower = firstBorrower(name, except);
+    if (borrower.empty()) return;
     sink_.error(span,
-                "Cannot " + action + " '" + name + "' while view '" + views->front() +
-                    "' borrows it.",
-                "Let '" + views->front() +
-                    "' go out of scope (or reassign it) before modifying the array's length.");
+                "Cannot " + action + " '" + name + "' while '" + borrower + "' borrows it.",
+                "Let '" + borrower +
+                    "' go out of scope (or reassign it) before modifying the value's storage.");
   }
 
   // --------------------------------------------------------- statements
@@ -167,9 +248,16 @@ class Analyzer {
     switch (stmt.kind) {
       case StmtKind::Let: {
         const auto& let = static_cast<const LetStmt&>(stmt);
-        if (let.init) useExpr(*let.init);
+        const bool borrowInit = let.init && isBorrowExpression(*let.init);
+        if (let.init && !borrowInit) useExpr(*let.init);
         releaseBorrow(let.name);
-        if (let.init) detectView(let.name, *let.init);
+        if (let.init) {
+          if (borrowInit) {
+            analyzeBorrowInit(let.name, *let.init);
+          } else {
+            detectView(let.name, *let.init);
+          }
+        }
         scopes_.back().vars[let.name] = OwnershipState{};
         return;
       }
@@ -249,17 +337,38 @@ class Analyzer {
     if (assign.target->kind == ExprKind::Ident) {
       const auto& ident = static_cast<const IdentExpr&>(*assign.target);
       if (assign.op == "=") {
-        requireNotBorrowed(lenderChain(ident.name), "reassign", assign.opSpan);
-        useExpr(*assign.value);
+        // Reassigning a borrower releases it, so it must not count as a
+        // conflicting borrow of its own lender.
+        requireNotBorrowed(lenderChain(ident.name), "reassign", assign.opSpan, ident.name);
+        const bool borrowInit = isBorrowExpression(*assign.value);
+        if (!borrowInit) useExpr(*assign.value);
         rebind(ident.name);
-        if (isViewExpression(*assign.value)) {
+        if (borrowInit) {
+          analyzeBorrowInit(ident.name, *assign.value);
+        } else if (isViewExpression(*assign.value)) {
           detectView(ident.name, *assign.value);
         }
         return;
       }
+      // Compound assignment mutates the value through the binding.
+      auto kind = borrowKind_.find(ident.name);
+      if (kind != borrowKind_.end() && kind->second == BorrowKind::Shared) {
+        sink_.error(assign.opSpan,
+                    "Cannot modify '" + ident.name + "' through a shared borrow.",
+                    "Use borrow_mut to obtain a mutable borrow.");
+      }
       useVariable(ident);
       useExpr(*assign.value);
       return;
+    }
+    const std::string root = rootIdentName(*assign.target);
+    if (!root.empty()) {
+      auto kind = borrowKind_.find(root);
+      if (kind != borrowKind_.end() && kind->second == BorrowKind::Shared) {
+        sink_.error(assign.opSpan,
+                    "Cannot modify '" + root + "' through a shared borrow.",
+                    "Use borrow_mut to obtain a mutable borrow.");
+      }
     }
     useExpr(*assign.target);
     useExpr(*assign.value);
@@ -350,7 +459,15 @@ class Analyzer {
             const auto& object = static_cast<const IdentExpr&>(*field.object);
             // Method calls on a view go through the view itself; the runtime
             // rejects structural mutation of a view on its own.
-            if (!lenderOf_.count(object.name)) {
+            if (lenderOf_.count(object.name)) {
+              auto kind = borrowKind_.find(object.name);
+              if (kind != borrowKind_.end() && kind->second == BorrowKind::Shared) {
+                sink_.error(field.fieldSpan,
+                            "Cannot call '" + field.field + "' through shared borrow '" +
+                                object.name + "'.",
+                            "Use borrow_mut to obtain a mutable borrow.");
+              }
+            } else {
               requireNotBorrowed(lenderChain(object.name), "call '" + field.field + "' on",
                                  field.fieldSpan);
             }
@@ -489,6 +606,60 @@ class Analyzer {
     useExpr(value);
   }
 
+  // ------------------------------------------------------------ borrows
+
+  // Registers `borrower` as a shared or mutable borrower of the variable named
+  // by a `borrow(...)` / `borrow_mut(...)` initializer, rejecting borrows that
+  // would alias a conflicting live borrow.
+  void analyzeBorrowInit(const std::string& borrower, const Expr& init) {
+    const auto& call = static_cast<const CallExpr&>(init);
+    const auto& callee = static_cast<const IdentExpr&>(*call.callee);
+    const BorrowKind kind =
+        callee.name == "borrow_mut" ? BorrowKind::Mutable : BorrowKind::Shared;
+    const auto& target = static_cast<const IdentExpr&>(*call.args[0].value);
+
+    OwnershipState* state = findState(target.name);
+    if (state && state->moved) {
+      sink_.error(target.span, "Use of moved value '" + target.name + "'.",
+                  "The value was already moved out of this variable.");
+      return;
+    }
+
+    const std::string lender = lenderChain(target.name);
+    if (kind == BorrowKind::Mutable) {
+      if (const std::vector<std::string>* views = liveViews(lender)) {
+        if (!views->empty()) {
+          sink_.error(init.span,
+                      "Cannot mutably borrow '" + target.name + "' while '" + views->front() +
+                          "' borrows it.",
+                      "Release every other borrow before taking a mutable one.");
+          return;
+        }
+      }
+      auto existing = mutableBorrows_.find(lender);
+      if (existing != mutableBorrows_.end() && !existing->second.empty()) {
+        sink_.error(init.span,
+                    "Cannot mutably borrow '" + target.name + "' while '" +
+                        existing->second.front() + "' holds a mutable borrow.",
+                    "Only one mutable borrow may be live at a time.");
+        return;
+      }
+    } else {
+      auto existing = mutableBorrows_.find(lender);
+      if (existing != mutableBorrows_.end() && !existing->second.empty()) {
+        sink_.error(init.span,
+                    "Cannot borrow '" + target.name + "' while '" + existing->second.front() +
+                        "' holds a mutable borrow.",
+                    "Release the mutable borrow before creating a shared one.");
+        return;
+      }
+    }
+
+    addBorrow(borrower, lender, kind);
+    scopes_.back().views.push_back(borrower);
+    scopes_.back().lenders.push_back(lender);
+  }
+
   // ------------------------------------------------------------- views
 
   bool isViewExpression(const Expr& expr) const {
@@ -516,14 +687,37 @@ class Analyzer {
     std::vector<Scope> scopes;
     StringMap<std::string> lenderOf;
     StringMap<std::vector<std::string>> borrows;
+    StringMap<std::vector<std::string>> mutableBorrows;
+    StringMap<BorrowKind> borrowKind;
   };
 
-  Snapshot snapshot() const { return Snapshot{scopes_, lenderOf_, borrows_}; }
+  Snapshot snapshot() const {
+    return Snapshot{scopes_, lenderOf_, borrows_, mutableBorrows_, borrowKind_};
+  }
 
   void restore(const Snapshot& state) {
     scopes_ = state.scopes;
     lenderOf_ = state.lenderOf;
     borrows_ = state.borrows;
+    mutableBorrows_ = state.mutableBorrows;
+    borrowKind_ = state.borrowKind;
+  }
+
+  // Union the borrow bookkeeping from `source` into the live maps.
+  void unionBorrows(const StringMap<std::vector<std::string>>& shared,
+                    const StringMap<std::vector<std::string>>& mut) {
+    auto add = [&](const StringMap<std::vector<std::string>>& lists, bool mutableBorrow) {
+      for (const auto& entry : lists) {
+        auto& target = mutableBorrow ? mutableBorrows_[entry.first] : borrows_[entry.first];
+        for (const std::string& borrower : entry.second) {
+          if (std::find(target.begin(), target.end(), borrower) == target.end()) {
+            target.push_back(borrower);
+          }
+        }
+      }
+    };
+    add(shared, false);
+    add(mut, true);
   }
 
   // Merge the branch/body state into the current state: a value moved on any
@@ -541,12 +735,9 @@ class Analyzer {
         }
       }
     }
-    for (const auto& entry : other.borrows) {
-      for (const auto& view : entry.second) {
-        if (!borrows_.count(entry.first)) borrows_[entry.first] = entry.second;
-        lenderOf_[view] = entry.first;
-      }
-    }
+    unionBorrows(other.borrows, other.mutableBorrows);
+    for (const auto& entry : other.lenderOf) lenderOf_[entry.first] = entry.second;
+    for (const auto& entry : other.borrowKind) borrowKind_[entry.first] = entry.second;
   }
 
   void mergeWith(const Snapshot& before) {
@@ -558,25 +749,24 @@ class Analyzer {
     // Conditions run against the pre-loop state; views created earlier are
     // still live, so restore their bookkeeping while keeping moved flags.
     StringMap<std::vector<std::string>> mergedBorrows = borrows_;
+    StringMap<std::vector<std::string>> mergedMut = mutableBorrows_;
     StringMap<std::string> mergedLenderOf = lenderOf_;
+    StringMap<BorrowKind> mergedKind = borrowKind_;
     borrows_ = before.borrows;
+    mutableBorrows_ = before.mutableBorrows;
     lenderOf_ = before.lenderOf;
-    for (const auto& entry : mergedBorrows) {
-      for (const auto& view : entry.second) lenderOf_[view] = entry.first;
-      auto& target = borrows_[entry.first];
-      for (const auto& view : entry.second) {
-        bool present = false;
-        for (const auto& existing : target) present = present || existing == view;
-        if (!present) target.push_back(view);
-      }
-    }
+    borrowKind_ = before.borrowKind;
+    unionBorrows(mergedBorrows, mergedMut);
     for (const auto& entry : mergedLenderOf) lenderOf_[entry.first] = entry.second;
+    for (const auto& entry : mergedKind) borrowKind_[entry.first] = entry.second;
   }
 
   DiagnosticSink& sink_;
   std::vector<Scope> scopes_;
-  StringMap<std::string> lenderOf_;                  // view -> original lender
-  StringMap<std::vector<std::string>> borrows_;      // lender -> live views
+  StringMap<std::string> lenderOf_;                  // borrower/view -> original lender
+  StringMap<std::vector<std::string>> borrows_;      // lender -> live shared borrowers
+  StringMap<std::vector<std::string>> mutableBorrows_;  // lender -> live mutable borrowers
+  StringMap<BorrowKind> borrowKind_;                 // borrower -> shared/mutable
 };
 
 }  // namespace

@@ -155,10 +155,15 @@ against the compiler (2026-10-29).
 
 ## 16. Memory Management
 
-- [ ] Ownership model — move semantics, transfer rules (Plan §6.2)
-- [ ] Borrowing rules — immutable vs mutable references, lifetimes (Plan §6.3)
-- [ ] Deterministic cleanup — destructors / scoped guards (Plan §6.4)
-- [ ] Unsafe operations — raw pointers, unchecked memory access (Plan §6.9)
+- [x] Ownership model — move semantics, transfer rules (Plan §6.2)
+      `move(x)`, `copy(x)`, use-after-move diagnostics
+- [x] Borrowing rules — immutable vs mutable references, lifetimes (Plan §6.3)
+      `borrow(x)` / `borrow_mut(x)`, conflict checks, borrowers release on
+      reassignment and scope exit
+- [x] Deterministic cleanup — destructors / scoped guards (Plan §6.4)
+      `fn drop(self)` runs on scope exit and reassignment, after `defer`
+- [x] Unsafe operations — raw pointers, unchecked memory access (Plan §6.9)
+      `unsafe.address_of/offset/load/store`, plus unchecked `unsafe.get/set`
 
 ---
 
@@ -171,6 +176,12 @@ against the compiler (2026-10-29).
 
 ## Recently Completed
 
+- [x] Ownership transfers: `copy(x)` builtin with one-level copies (2026-10-29)
+- [x] Explicit borrows: `borrow(x)` / `borrow_mut(x)` with lifetime checking
+      (2026-10-29)
+- [x] Deterministic cleanup: `fn drop(self)` destructors on scope exit and
+      reassignment (2026-10-29)
+- [x] Unsafe raw pointers: `unsafe.address_of/offset/load/store` (2026-10-29)
 - [x] Typed SSA IR with basic blocks and phi nodes; `a ir` / `a ir --opt`
       (2026-10-29)
 - [x] Optimization passes: constant folding, DCE, inlining, loop-invariant

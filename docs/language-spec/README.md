@@ -595,11 +595,104 @@ ys.append(4)   # ok
 print(xs)      # error: Use of moved value 'xs'.
 ```
 
+`copy(value)` produces an independent value while leaving the original usable.
+Arrays, views, maps, sets, structs, and tuples are copied one level deep; scalars
+and strings are value types, so `copy` returns them unchanged. Pointers are
+handles and are not cloned.
+
+```a
+a = [1, 2]
+b = copy(a)
+b.append(3)
+print(a)   # [1, 2]
+```
+
 A unit-step slice creates a **borrow** of its source. While the view is live,
 methods that change the lender's length (`append`, `extend`, `insert`, `pop`,
 `remove`, `remove_at`, `clear`) are rejected at compile time; element writes and
 `reverse`/`sort` remain allowed. Reassigning or releasing the view ends the
 borrow. Branches merge moved and borrowed state conservatively.
+
+Explicit borrows make the intent visible and are checked as lifetimes that end
+when the borrowing binding is reassigned or leaves scope:
+
+```a
+xs = [1, 2, 3]
+m = borrow_mut(xs)
+m.append(4)      # exclusive access, so mutation is allowed through m
+print(m)         # okay: reading through the borrower
+m = []           # reassigning m releases the borrow
+xs.append(5)     # now the lender is usable again
+
+s = borrow(xs)   # shared borrow
+print(len(s))
+
+xs.append(6)     # error: xs is borrowed by s
+```
+
+Rules:
+
+- `borrow(x)` takes a shared borrow. Any number of shared borrows may be live.
+- `borrow_mut(x)` takes an exclusive mutable borrow. No other borrow (shared or
+  mutable) may be live, and the lender cannot be read or mutated until the
+  mutable borrower is reassigned or goes out of scope.
+- Mutating a lender (`append`, `extend`, `insert`, `pop`, `remove`,
+  `remove_at`, `clear`, `move`, reassignment) while a shared borrow is live is
+  an error.
+- Mutating through a shared borrow (methods, element or field assignment) is
+  rejected; use `borrow_mut`.
+- A borrow of a borrow tracks the original lender.
+
+### Deterministic cleanup
+
+Structs and classes may define a `drop(self)` method. It runs when an owning
+binding leaves scope (including early `return`, `break`, `continue`, or a
+runtime error) and when an owning variable is reassigned. `defer` bodies run
+before destructors for the same block, and destructors run in reverse
+declaration order.
+
+```a
+class Resource:
+    name: str
+
+    fn drop(self) -> void:
+        print("drop " + self.name)
+
+fn use() -> void:
+    r = Resource("local")
+    defer print("defer")     # runs first
+                             # then r.drop()
+```
+
+Aliases share their storage, so `drop` runs exactly once, when the last owning
+binding is released. Values still referenced by arrays, closures, or other
+bindings are not dropped early.
+
+### Unsafe pointers
+
+The `unsafe` module can also take raw pointers into array storage for
+hand-written low-level code:
+
+```a
+import unsafe
+
+values = [10, 20, 30]
+p = unsafe.address_of(values, 1)   # no bounds test: may point anywhere
+print(unsafe.load(p))              # 20; load/store still bounds-check
+unsafe.store(p, 99)
+q = unsafe.offset(p, -1)
+print(unsafe.load(q))              # 10
+```
+
+| Builtin | Result | Notes |
+| ------- | ------ | ----- |
+| `unsafe.address_of(array, index)` | `Pointer<T>` | unchecked: keeps the raw offset |
+| `unsafe.offset(pointer, delta)` | `Pointer<T>` | unchecked arithmetic |
+| `unsafe.load(pointer)` | `T` | runtime error when the address is outside the storage |
+| `unsafe.store(pointer, value)` | `void` | runtime error when the address is outside the storage |
+
+Pointers keep their backing storage alive, print as `<pointer N>`, and are
+handles (copying a pointer does not copy the storage).
 
 ### Fixed-size and multidimensional arrays
 
@@ -715,6 +808,8 @@ not fall back).
 | `len(container)` | length of a string (code points), array, view, map, or set |
 | `str(value)` | convert any value to its display form |
 | `move(value)` | transfer ownership; the original binding becomes unusable |
+| `copy(value)` | independent shallow copy; identity for scalars, strings, and pointers |
+| `borrow(value)`, `borrow_mut(value)` | shared / exclusive borrow with a tracked lifetime |
 | `int(value)` | `i64` from an int, bool, float (truncated toward zero), or numeric string |
 | `float(value)` | `f64` from an int, bool, float, or numeric string |
 | `abs(x)` | absolute value |
@@ -733,6 +828,8 @@ not fall back).
 | `join(array, sep)` | concatenate string forms with `sep` |
 | `set([iterable])` | empty set, or a set of the iterable's elements |
 | `unsafe.get(array, index)`, `unsafe.set(array, index, value)` | unchecked element access (native module `unsafe`) |
+| `unsafe.address_of(array, index)`, `unsafe.offset(pointer, delta)` | raw `Pointer<T>` arithmetic (native module `unsafe`) |
+| `unsafe.load(pointer)`, `unsafe.store(pointer, value)` | bounds-checked access through a raw pointer |
 | `Some(value)` | wrap a value in an optional |
 | `read_file(path)` | entire file as `String` |
 | `write_file(path, text)` | overwrite a file |

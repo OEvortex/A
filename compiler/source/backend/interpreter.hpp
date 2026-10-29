@@ -37,6 +37,9 @@ class Interpreter {
   struct Binding {
     Value value;
     bool mutableBinding = true;
+    // True for `let` bindings: their value participates in deterministic
+    // cleanup when the scope exits or the binding is reassigned.
+    bool owned = false;
   };
 
   // Call arguments: the vast majority of calls pass 0–4 arguments, so keep
@@ -157,10 +160,11 @@ class Interpreter {
     iterator begin() { return iterator(this, 0); }
     iterator end() { return iterator(this, size_); }
 
-   private:
     Entry& at(std::size_t index) {
       return index < kInline ? *inline_[index] : overflow_[index - kInline];
     }
+
+   private:
 
     // `deque` never invalidates references on insertion, so a Binding* handed
     // out by find() stays valid even if the same scope gains a name later.
@@ -252,6 +256,13 @@ class Interpreter {
   Value callBuiltinMethod(const Value& object, const std::string& method, ArgList& args,
                           Span span);
 
+  // Deterministic cleanup: run `drop` on owned struct bindings in reverse
+  // declaration order.
+  void runDestructors(Env& env, bool swallowErrors);
+  void invokeDrop(const StructPtr& object);
+  bool hasMethod(const StructPtr& object, const std::string& name) const;
+  Value copyValue(const Value& value);
+
   const StructDecl* findStruct(const std::string& name) const;
   std::string qualifiedName(const std::string& name) const;
   std::string qualifiedName(int moduleId, const std::string& name) const;
@@ -268,6 +279,7 @@ class Interpreter {
   const std::string& expectString(const Value& value, Span span, const std::string& what);
   ArrayPtr expectArray(const Value& value, Span span, const std::string& what);
   AllocatorPtr expectAllocator(const Value& value, Span span, const std::string& what);
+  PointerPtr expectPointer(const Value& value, Span span, const std::string& what);
   bool arrayWindowOf(const Value& value, ArrayWindow& out) const;
 
   Value convertNumber(const std::string& typeName, const Value& value, Span span);

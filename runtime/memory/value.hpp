@@ -83,17 +83,30 @@ struct RangeValue {
   std::int64_t step = 1;
 };
 
+// An unsafe raw pointer into array storage. `index` is an element offset from
+// the start of `storage`; it is not normalized or bounds-checked when created
+// (address_of and offset are unchecked), but load and store still validate the
+// final access.
+struct PointerObj {
+  ArrayPtr storage;
+  std::int64_t index = 0;
+};
+using PointerPtr = std::shared_ptr<PointerObj>;
+
 struct Value {
   std::variant<std::monostate, bool, std::int64_t, double, char32_t, std::string,
                 ArrayPtr, MapPtr, SetPtr, ArrayViewPtr, StructPtr, RangeValue, OptionalPtr,
                ResultPtr, TuplePtr, ClosurePtr, ModulePtr, NativeFunctionPtr, EnumPtr,
-               AllocatorPtr>
+               AllocatorPtr, PointerPtr>
       data;
 };
 
 struct StructObj {
   std::string typeName;
   std::vector<std::pair<std::string, Value>> fields;
+  // Set once a destructor ran (or the object was resolved as having none), so
+  // aliases never run `drop` twice.
+  bool disposed = false;
 };
 
 struct ModuleObj {

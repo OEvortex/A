@@ -29,7 +29,7 @@ Module resolution searches the importing file's directory, `-I` paths,
 | `fs` | `read_file write_file append_file file_exists list_dir remove_file create_dir remove_dir rename current_dir` |
 | `strings` | `len str join` |
 | `collections` | `len map filter reduce any all sum join` |
-| `unsafe` | `get set` — unchecked array/view element access |
+| `unsafe` | `get set address_of offset load store` — unchecked element access and raw pointers |
 | `arena` | `new pool region alloc release reset used total` |
 | `core` | `panic assert assert_eq` |
 | `time` | `now sleep` |

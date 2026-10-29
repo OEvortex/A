@@ -136,6 +136,12 @@ Value makeAllocator(AllocatorPtr value) {
   return out;
 }
 
+Value makePointer(PointerPtr value) {
+  Value out;
+  out.data = std::move(value);
+  return out;
+}
+
 Value makeStructValue(StructPtr value) {
   Value out;
   out.data = std::move(value);
@@ -760,6 +766,9 @@ int Interpreter::run() {
       currentModule_ = id;
       execStatements(graph_.at(id).program->statements, env);
     }
+    for (auto it = graph_.order.rbegin(); it != graph_.order.rend(); ++it) {
+      runDestructors(moduleEnv(*it), true);
+    }
     return 0;
   } catch (RuntimeError& error) {
     sink_.error(error.span, std::move(error.message), std::move(error.help));
@@ -879,7 +888,13 @@ void Interpreter::execStatements(const std::vector<StmtPtr>& statements, Env& en
 void Interpreter::execBlock(const std::vector<StmtPtr>& body, Env& parent) {
   Env child;
   child.parent = &parent;
-  execStatements(body, child);
+  try {
+    execStatements(body, child);
+  } catch (...) {
+    runDestructors(child, true);
+    throw;
+  }
+  runDestructors(child, false);
 }
 
 void Interpreter::exec(const Stmt& stmt, Env& env) {
@@ -889,6 +904,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     Binding binding;
     binding.value = eval(*node->init, env);
     binding.mutableBinding = node->mutableBinding;
+    binding.owned = true;
     env.vars[node->name] = std::move(binding);
     return;
   }
@@ -949,6 +965,7 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
       Binding binding;
       binding.value = (*tuple)->items[i];
       binding.mutableBinding = node->mutableBinding;
+      binding.owned = true;
       env.vars[node->names[i]] = std::move(binding);
     }
     return;
@@ -1020,7 +1037,14 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
 
     auto runIteration = [&](Value element) {
       child.vars[node->var].value = std::move(element);
-      execStatements(node->body, child);
+      try {
+        execStatements(node->body, child);
+      } catch (...) {
+        runDestructors(child, true);
+        throw;
+      }
+      // Per-iteration declarations are released before the next pass.
+      runDestructors(child, true);
     };
 
     if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
@@ -1240,6 +1264,7 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
     if (!binding) {
       Binding fresh;
       fresh.mutableBinding = true;
+      fresh.owned = true;  // first assignment declares the variable
       env.vars[ident->name] = std::move(fresh);
       binding = &env.vars[ident->name];
     }
@@ -1324,9 +1349,16 @@ Value Interpreter::readLValue(const LValue& lvalue) {
 
 void Interpreter::writeLValue(const LValue& lvalue, Value value) {
   switch (lvalue.kind) {
-    case LValue::Kind::Variable:
-      lvalue.binding->value = std::move(value);
+    case LValue::Kind::Variable: {
+      Binding* binding = lvalue.binding;
+      if (binding->owned) {
+        if (auto* old = std::get_if<StructPtr>(&binding->value.data)) {
+          if (*old && !(*old)->disposed && (*old).use_count() == 1) invokeDrop(*old);
+        }
+      }
+      binding->value = std::move(value);
       return;
+    }
     case LValue::Kind::Field:
       lvalue.object->fields[lvalue.fieldIndex].second = std::move(value);
       return;
@@ -2334,8 +2366,16 @@ Value Interpreter::callFunction(const FnDecl& decl, ArgList args, Span span) {
 
   bool outerReturning = returning_;
   returning_ = false;
-  execStatements(decl.body, frame);
+  try {
+    execStatements(decl.body, frame);
+  } catch (...) {
+    runDestructors(frame, true);
+    returning_ = outerReturning;
+    currentModule_ = savedModule;
+    throw;
+  }
   Value result = returning_ ? std::move(returnValue_) : makeVoid();
+  runDestructors(frame, false);
   returning_ = outerReturning;
   currentModule_ = savedModule;
   return result;
@@ -2428,6 +2468,112 @@ Value Interpreter::constructStruct(const StructDecl& decl, const std::vector<Cal
     object->fields.emplace_back(allFields[i].name, std::move(values[i]));
   }
   return makeStructValue(std::move(object));
+}
+
+bool Interpreter::hasMethod(const StructPtr& object, const std::string& name) const {
+  const StructDecl* decl = findStruct(object->typeName);
+  for (const StructDecl* curr = decl; curr;
+       curr = curr->baseClass.empty()
+                  ? nullptr
+                  : findStruct(curr->baseClass.find("::") != std::string::npos
+                                   ? curr->baseClass
+                                   : qualifiedName(curr->baseClass))) {
+    for (const auto& method : curr->methods) {
+      if (method->name == name) return true;
+    }
+  }
+  for (const auto& field : object->fields) {
+    if (field.first == name && std::holds_alternative<ClosurePtr>(field.second.data)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Interpreter::invokeDrop(const StructPtr& object) {
+  if (!object || object->disposed) return;
+  object->disposed = true;
+  if (!hasMethod(object, "drop")) return;
+
+  int savedModule = currentModule_;
+  CallDepthGuard guard(callDepth_);
+  callMethod(object, "drop", ArgList{}, Span{});
+  currentModule_ = savedModule;
+}
+
+void Interpreter::runDestructors(Env& env, bool swallowErrors) {
+  for (std::size_t i = env.vars.size(); i-- > 0;) {
+    Binding& binding = env.vars.at(i).second;
+    if (!binding.owned) continue;
+    auto* object = std::get_if<StructPtr>(&binding.value.data);
+    if (!object || !*object) {
+      binding.value = Value{};
+      continue;
+    }
+    if ((*object)->disposed) {
+      binding.value = Value{};
+      continue;
+    }
+    // Aliases share the object; the last binding to exit runs `drop` once.
+    // Releasing this binding's reference first lets an earlier alias become
+    // the final owner.
+    bool lastOwner = (*object).use_count() == 1;
+    if (lastOwner) {
+      if (swallowErrors) {
+        try {
+          invokeDrop(*object);
+        } catch (...) {
+          // Cleanup during unwinding must not mask the original failure.
+        }
+      } else {
+        invokeDrop(*object);
+      }
+    }
+    binding.value = Value{};
+  }
+}
+
+Value Interpreter::copyValue(const Value& value) {
+  if (auto* array = std::get_if<ArrayPtr>(&value.data)) {
+    return makeArray(std::make_shared<std::vector<Value>>(**array));
+  }
+  if (auto* view = std::get_if<ArrayViewPtr>(&value.data)) {
+    const auto& storage = *(*view)->storage;
+    auto copy = std::make_shared<std::vector<Value>>(
+        storage.begin() + static_cast<std::ptrdiff_t>((*view)->offset),
+        storage.begin() + static_cast<std::ptrdiff_t>((*view)->offset + (*view)->length));
+    return makeArray(std::move(copy));
+  }
+  if (auto* map = std::get_if<MapPtr>(&value.data)) {
+    auto copy = std::make_shared<MapObj>();
+    copy->entries = (*map)->entries;
+    return makeMap(std::move(copy));
+  }
+  if (auto* set = std::get_if<SetPtr>(&value.data)) {
+    auto copy = std::make_shared<SetObj>();
+    copy->elements = (*set)->elements;
+    return makeSet(std::move(copy));
+  }
+  if (auto* object = std::get_if<StructPtr>(&value.data)) {
+    auto copy = std::make_shared<StructObj>();
+    copy->typeName = (*object)->typeName;
+    copy->fields = (*object)->fields;
+    return makeStructValue(std::move(copy));
+  }
+  if (auto* tuple = std::get_if<TuplePtr>(&value.data)) {
+    auto copy = std::make_shared<TupleValue>();
+    copy->items = (*tuple)->items;
+    Value out;
+    out.data = std::move(copy);
+    return out;
+  }
+  // Scalars and strings are value types already; pointers are handles.
+  return value;
+}
+
+PointerPtr Interpreter::expectPointer(const Value& value, Span span, const std::string& what) {
+  if (auto* result = std::get_if<PointerPtr>(&value.data)) return *result;
+  fail(span, what + " must be a pointer.");
 }
 
 const StructDecl* Interpreter::findStruct(const std::string& name) const {
@@ -2775,6 +2921,61 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
   if (name == "move") {
     if (args.size() != 1) fail(span, "'move' expects 1 argument.");
     return std::move(args[0]);
+  }
+
+  if (name == "copy") {
+    if (args.size() != 1) fail(span, "'copy' expects 1 argument.");
+    return copyValue(args[0]);
+  }
+
+  // A borrow is a handle to the same value; the analyzer enforces exclusivity,
+  // so the runtime only needs identity semantics.
+  if (name == "borrow" || name == "borrow_mut") {
+    if (args.size() != 1) fail(span, "'" + name + "' expects 1 argument.");
+    return std::move(args[0]);
+  }
+
+  if (name == "unsafe_address_of") {
+    if (args.size() != 2) fail(span, "'unsafe_address_of' expects 2 arguments (array, index).");
+    ArrayWindow window;
+    if (!arrayWindowOf(args[0], window)) {
+      fail(span, "'unsafe_address_of' requires an array or a view.");
+    }
+    const std::int64_t index =
+        expectInt(args[1], span, "The index passed to 'unsafe_address_of'");
+    auto pointer = std::make_shared<PointerObj>();
+    pointer->storage = window.storage;
+    pointer->index = static_cast<std::int64_t>(window.offset) + index;
+    return makePointer(std::move(pointer));
+  }
+
+  if (name == "unsafe_offset") {
+    if (args.size() != 2) fail(span, "'unsafe_offset' expects 2 arguments (pointer, delta).");
+    PointerPtr source = expectPointer(args[0], span, "The first argument of 'unsafe_offset'");
+    const std::int64_t delta = expectInt(args[1], span, "The offset passed to 'unsafe_offset'");
+    auto pointer = std::make_shared<PointerObj>();
+    pointer->storage = source->storage;
+    pointer->index = source->index + delta;
+    return makePointer(std::move(pointer));
+  }
+
+  if (name == "unsafe_load" || name == "unsafe_store") {
+    const bool writing = name == "unsafe_store";
+    if (args.size() != (writing ? 2u : 1u)) {
+      fail(span, "'" + name + "' expects " + (writing ? "2 arguments" : "1 argument") + ".");
+    }
+    PointerPtr pointer = expectPointer(args[0], span, "The argument of '" + name + "'");
+    if (!pointer->storage) fail(span, "'" + name + "' received a dangling pointer.");
+    if (pointer->index < 0 ||
+        static_cast<std::size_t>(pointer->index) >= pointer->storage->size()) {
+      fail(span, "Pointer is out of bounds for an array of length " +
+                     std::to_string(pointer->storage->size()) + ".",
+           "The pointer was created with an invalid index; check address_of and offset.");
+    }
+    Value& slot = (*pointer->storage)[static_cast<std::size_t>(pointer->index)];
+    if (!writing) return slot;
+    slot = std::move(args[1]);
+    return makeVoid();
   }
 
   if (name == "print" || name == "eprint") {

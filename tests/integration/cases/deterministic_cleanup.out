@@ -1,0 +1,9 @@
+using local
+defer inside
+drop local
+using first
+drop first
+using second
+drop second
+after
+drop outer

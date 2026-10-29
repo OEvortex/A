@@ -37,7 +37,9 @@ bool isKnownBuiltin(const std::string& name) {
        "all",      "sum",      "join",      "random",   "random_int", "atan2",
        "set",      "unsafe_get", "unsafe_set",
        "arena_new", "arena_pool", "arena_region", "arena_alloc", "arena_release",
-       "arena_reset", "arena_used", "arena_total", "move",
+       "arena_reset", "arena_used", "arena_total", "move", "copy",
+       "borrow", "borrow_mut", "unsafe_address_of", "unsafe_load", "unsafe_store",
+       "unsafe_offset",
        "Some",     "Ok",       "Err"};
   for (const char* n : names) {
     if (name == n) return true;
@@ -2840,6 +2842,110 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
       sink_.error(call.args[0].value->span, "Cannot move a void value.");
     }
     return type;
+  }
+
+  if (name == "copy") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(type);
+    if (resolved->kind == TypeKind::Void) {
+      sink_.error(call.args[0].value->span, "Cannot copy a void value.");
+      return typeError();
+    }
+    if (resolved->kind == TypeKind::Var) {
+      sink_.error(call.args[0].value->span, "Cannot infer the type of the copied value.",
+                  "Add a type annotation to the argument.");
+    }
+    return type;
+  }
+
+  if (name == "borrow" || name == "borrow_mut") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeError();
+    }
+    if (call.args[0].value->kind != ExprKind::Ident) {
+      sink_.error(call.args[0].value->span,
+                  "The argument of '" + name + "' must be a variable.",
+                  "Borrows are tied to a binding so the analyzer can track its lifetime.");
+      for (auto& arg : call.args) inferExpr(*arg.value);
+      return typeError();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(type);
+    if (resolved->kind == TypeKind::Void || resolved->kind == TypeKind::Int ||
+        resolved->kind == TypeKind::Float || resolved->kind == TypeKind::Bool ||
+        resolved->kind == TypeKind::Char) {
+      sink_.error(call.args[0].value->span,
+                  "'" + name + "' requires a reference-like value, found " + typePhrase(resolved) +
+                      ".",
+                  "Borrowing applies to arrays, maps, sets, strings, and structs.");
+      return typeError();
+    }
+    return type;
+  }
+
+  if (name == "unsafe_address_of") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typePointer(typeError());
+    }
+    TypePtr sequence = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(sequence);
+    if (resolved->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'unsafe_address_of' requires an array, found " + typePhrase(resolved) + ".");
+      inferExpr(*call.args[1].value);
+      return typePointer(typeError());
+    }
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The index passed to 'unsafe_address_of'");
+    return typePointer(resolved->elem);
+  }
+
+  if (name == "unsafe_offset") {
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return typePointer(typeError());
+    }
+    TypePtr pointer = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(pointer);
+    if (resolved->kind != TypeKind::Pointer) {
+      sink_.error(call.args[0].value->span,
+                  "'unsafe_offset' requires a pointer, found " + typePhrase(resolved) + ".");
+      inferExpr(*call.args[1].value);
+      return typePointer(typeError());
+    }
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The offset passed to 'unsafe_offset'");
+    return pointer;
+  }
+
+  if (name == "unsafe_load" || name == "unsafe_store") {
+    const bool writing = name == "unsafe_store";
+    if (call.args.size() != (writing ? 2u : 1u)) {
+      arityError(writing ? 2 : 1);
+      inferArgs();
+      return writing ? typeVoid() : typeError();
+    }
+    TypePtr pointer = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(pointer);
+    if (resolved->kind != TypeKind::Pointer) {
+      sink_.error(call.args[0].value->span,
+                  "'" + name + "' requires a pointer, found " + typePhrase(resolved) + ".");
+      for (std::size_t i = 1; i < call.args.size(); ++i) inferExpr(*call.args[i].value);
+      return writing ? typeVoid() : typeError();
+    }
+    if (!writing) return resolved->elem;
+    checkArgAgainst(*call.args[1].value, resolved->elem, "in 'unsafe_store'");
+    return typeVoid();
   }
 
   if (name == "str") {

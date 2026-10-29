@@ -134,6 +134,9 @@ std::string formatValue(const Value& value, bool quoteStrings) {
     return "<" + std::string(kind) + " " + std::to_string((*allocator)->used) + "/" +
            std::to_string((*allocator)->capacity) + ">";
   }
+  if (auto* pointer = std::get_if<PointerPtr>(&value.data)) {
+    return "<pointer " + std::to_string((*pointer)->index) + ">";
+  }
   if (std::holds_alternative<ClosurePtr>(value.data)) return "<function>";
   if (auto* module = std::get_if<ModulePtr>(&value.data)) {
     if (!(*module)->nativeName.empty()) return "<module " + (*module)->nativeName + ">";

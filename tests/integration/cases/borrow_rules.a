@@ -1,0 +1,17 @@
+xs = [1, 2, 3]
+m = borrow_mut(xs)
+m.append(4)
+print(m)
+m = []
+xs.append(5)
+print(xs)
+
+s = borrow(xs)
+print(len(s))
+s = []
+xs = [9]
+print(xs)
+
+text = "hello"
+shared = borrow(text)
+print(len(shared))

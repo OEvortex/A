@@ -1,0 +1,29 @@
+class Box:
+    value: int
+
+    fn bump(self) -> void:
+        self.value = self.value + 1
+
+a = [1, 2, 3]
+b = copy(a)
+b.append(4)
+print(a)
+print(b)
+
+mapping = {"k": 1}
+mapping_copy = copy(mapping)
+mapping_copy["j"] = 2
+print(mapping)
+print(mapping_copy)
+
+box = Box(5)
+box_copy = copy(box)
+box_copy.bump()
+print(box.value, box_copy.value)
+
+moved = move(a)
+moved.append(9)
+print(moved)
+
+text = copy("hi")
+print(text)

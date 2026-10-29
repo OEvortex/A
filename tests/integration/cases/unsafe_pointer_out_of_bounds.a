@@ -1,0 +1,5 @@
+import unsafe
+
+xs = [10, 20]
+p = unsafe.offset(unsafe.address_of(xs, 1), 5)
+print(unsafe.load(p))

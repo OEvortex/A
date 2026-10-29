@@ -1,0 +1,14 @@
+import unsafe
+
+xs = [10, 20, 30]
+p = unsafe.address_of(xs, 1)
+print(p)
+print(unsafe.load(p))
+unsafe.store(p, 99)
+print(xs)
+
+q = unsafe.offset(p, -1)
+print(unsafe.load(q))
+
+back = unsafe.offset(q, 2)
+print(unsafe.load(back))

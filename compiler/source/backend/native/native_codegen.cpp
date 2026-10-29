@@ -771,7 +771,9 @@ bool checkNativeExpr(const Expr& expr) {
         name == "unsafe_get" || name == "unsafe_set" || name == "move" ||
         name == "arena_new" || name == "arena_pool" || name == "arena_region" ||
         name == "arena_alloc" || name == "arena_release" || name == "arena_reset" ||
-        name == "arena_used" || name == "arena_total")
+        name == "arena_used" || name == "arena_total" || name == "copy" ||
+        name == "borrow" || name == "borrow_mut" || name == "unsafe_address_of" ||
+        name == "unsafe_load" || name == "unsafe_store" || name == "unsafe_offset")
       return false;
     for (const auto& a : c.args)
       if (!checkNativeExpr(*a.value)) return false;
