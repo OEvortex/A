@@ -14,6 +14,16 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DA_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build -j
+      - name: Version is consistent
+        run: |
+          cmake_version="$(sed -n 's/^project(Alang VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          a_version="$(./build/a --version | sed 's/.* //')"
+          lsp_version="$(./build/a-lsp --version | sed 's/.* //')"
+          package_version="$(node -e 'console.log(require("./tools/vscode-a/package.json").version)')"
+          echo "CMake=$cmake_version a=$a_version a-lsp=$lsp_version package=$package_version"
+          [ "$cmake_version" = "$a_version" ] || exit 1
+          [ "$cmake_version" = "$lsp_version" ] || exit 1
+          [ "$cmake_version" = "$package_version" ] || exit 1
       - name: Test
         run: ctest --test-dir build --output-on-failure
 

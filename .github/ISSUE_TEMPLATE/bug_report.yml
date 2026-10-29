@@ -1,0 +1,45 @@
+name: Bug report
+description: A crash, wrong diagnostic, wrong output, or tooling defect
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: |
+        The smallest `.a` program that shows the problem. Please paste source
+        directly, not a screenshot.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: Compiler/interpreter/LSP output, verbatim.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: A version
+      description: Output of `a --version`
+      placeholder: "A language toolchain 0.0.1"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, architecture, and compiler used to build the toolchain
+      placeholder: "Linux x86_64, GCC 14"
+    validations:
+      required: true

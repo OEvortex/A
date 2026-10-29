@@ -1,0 +1,42 @@
+name: Feature request
+description: A proposal for the language, toolchain, standard library, or tooling
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem this solves
+      description: What can you not do (or cannot do well) today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        Syntax, standard-library API, or tool behaviour you would like. Show a
+        small example program in A if it is a language or library change.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other designs, including writing it yourself in user code.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Language / parser
+        - Type checker
+        - Interpreter
+        - Native backend
+        - LLVM backend
+        - Standard library
+        - Tooling (CLI, formatter, docs, a-lsp, VS Code)
+    validations:
+      required: true

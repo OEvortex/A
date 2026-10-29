@@ -5,9 +5,10 @@ read and write files and consume CPU and memory through the standard library.
 
 ## Reporting
 
-Please report suspected vulnerabilities privately to the maintainer rather than
-opening a public issue. Include a minimal reproducer, the A version
-(`a version`), and the host platform.
+Please report suspected vulnerabilities privately rather than opening a public
+issue. Use GitHub's [private vulnerability reporting](https://github.com/OEvortex/A/security/advisories/new)
+on this repository; the maintainers receive it as a private advisory. Include a
+minimal reproducer, the A version (`a --version`), and the host platform.
 
 ## Scope
 

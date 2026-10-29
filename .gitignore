@@ -17,3 +17,5 @@ compile_commands.json
 .cache/
 Plan.md
 .kilo/
+__pycache__/
+*.pyc
