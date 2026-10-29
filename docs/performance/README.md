@@ -19,7 +19,7 @@ Related reading:
 
 ---
 
-## 1. Baseline (v0.3.0)
+## 1. Baseline (v0.0.1, pre-1.0 development)
 
 Measured 2026-10-28 on:
 
@@ -27,7 +27,7 @@ Measured 2026-10-28 on:
 | --- | --- |
 | CPU | AMD Ryzen 5 7520U (8 logical cores) |
 | OS | Linux x86-64 |
-| A | v0.3.0, Release build (`build/a`), LTO on |
+| A | v0.0.1 (pre-1.0 development baseline), Release build (`build/a`), LTO on |
 | C++ | g++ 13.3.0, `-O2` and `-O3`, no `-march=native`, no PGO |
 | Python | CPython 3.13.14 |
 
@@ -63,7 +63,7 @@ than C++.
 The first optimization phase has landed. Same machine, same harness, best of 7.
 A compute time subtracts the measured 3.7 ms startup.
 
-| Benchmark | v0.3.0 | after P1 | speedup | vs C++ `-O2` | vs CPython |
+| Benchmark | v0.0.1 (pre-1.0 development baseline) | after P1 | speedup | vs C++ `-O2` | vs CPython |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `arithmetic/sum` | 150.3 ms | **23.2 ms** | 6.5× | 225× slower | 1.9× slower |
 | `collections/pipeline` | 14.1 ms | **4.4 ms** | 3.2× | 327× slower | 8.0× slower |

@@ -66,6 +66,8 @@ Measured over 7 runs against **C++ (`g++ -O2`)** and **CPython 3.13** on identic
 ### Prerequisites
 * CMake 3.20+
 * C++20 compiler (GCC 11+, Clang 14+, or MSVC 19.29+)
+* `g++` on `PATH` for `a build` — the native backend emits C++ and shells out
+  to `g++ -O3 -std=c++20`
 
 ### Build
 ```bash
@@ -81,15 +83,21 @@ cmake --build build -j
 # 2. Standard execution:
 ./build/a run program.a
 
-# 3. Compile to optimized standalone native binary:
+# 3. Type-check without running:
+./build/a check program.a
+
+# 4. Run every `fn test_*()` in a program:
+./build/a test program.a
+
+# 5. Compile to an optimized standalone native binary:
 ./build/a build program.a -o my_app
 ./my_app
 
-# 4. Format and document it:
+# 6. Format and document it:
 ./build/a fmt -w program.a
 ./build/a doc -o docs/program.md program.a
 
-# 5. Inspect the typed SSA IR (optionally after optimization):
+# 7. Inspect the typed SSA IR (optionally after optimization):
 ./build/a ir program.a
 ./build/a ir --opt program.a
 ```
@@ -154,6 +162,37 @@ user_theme = user?.settings?.theme ?? "dark"
 
 ---
 
+## 📚 Standard Library
+
+`import math`, `from json import parse` — the toolchain resolves modules
+against the file's directory, `-I` paths, `A_PATH`, and the stdlib root
+(`--stdlib <dir>` to override). Native modules are built into the toolchain;
+`stdlib/` additionally holds A-file modules and per-module notes.
+
+| Module | Provides |
+| :--- | :--- |
+| `math` | `sqrt` `sin` `log` `round` `random` … plus `PI`, `E` |
+| `io` | `print` `eprint` `input` `flush` |
+| `fs` | read/write/append files, directory listing, rename |
+| `strings` | `len` `str` `join` (plus Python-style dot methods on `String`) |
+| `collections` | `map` `filter` `reduce` `any` `all` `sum` `set` (dot methods on arrays/maps/sets) |
+| `core` | `panic` `assert` `assert_eq` |
+| `time` | `now` `sleep` |
+| `unsafe` `arena` | raw pointer access; bump/pool/region allocators |
+| `json` `binary` | parsing, reading, pretty-printing; big-endian byte encode/decode |
+| `testing` | seeded property testing (`for_all_int`, …) |
+| `log` `metrics` `trace` | structured logging, Prometheus counters/gauges/histograms, span propagation |
+| `net` `http` | TCP/UDP sockets, optional TLS, `get`/`post`/`serve` |
+| `test` (A-file) | assertion harness: `check` `equal` `require` `report` |
+
+Interpreter-backed modules (json, binary, testing, log, metrics, trace, net,
+http) run under `a run` and `a test`; `a build` reports when a compiled backend
+cannot lower them. The full member tables and semantics live in
+[`docs/standard-library/`](docs/standard-library/README.md), and
+[`examples/README.md`](examples/README.md) indexes runnable programs.
+
+---
+
 ## 📂 Project Organization
 
 ```
@@ -171,16 +210,16 @@ user_theme = user?.settings?.theme ?? "dark"
 │   │   │   ├── interpreter.cpp # High-speed tagged development interpreter
 │   │   │   └── native/         # Native AOT codegen hitting C++ parity
 │   │   ├── tooling/            # AST formatter, doc generator, shared printers
-│   │   └── cli/                # Command line interface (`a run`, `a fmt`, `a doc`, `a ir`)
+│   │   └── cli/                # `a run|build|check|test|fmt|doc|ir`
 ├── runtime/                    # Values, memory models, UTF-8 strings, and file I/O
-├── stdlib/                     # Standard library modules (math, fs, io, net)
+├── stdlib/                     # Module notes + A-file modules (math, json, net, …)
 ├── benchmarks/                 # Verification suites with cross-language equivalents
-├── examples/                   # Curated code examples
+├── examples/                   # Runnable programs, indexed by examples/README.md
 ├── docs/                       # Language spec, type system, compiler design, performance
 ├── tools/
 │   ├── formatter/              # a fmt documentation
 │   ├── documentation/          # a doc documentation
-│   ├── language-server/        # a-lsp: diagnostics, navigation, formatting, rename
+│   ├── language-server/        # a-lsp: diagnostics, navigation, completion, hover
 │   └── vscode-a/               # VS Code extension (grammar + LSP client)
 └── tests/                      # Automated golden test suite
 ```
@@ -191,6 +230,34 @@ user_theme = user?.settings?.theme ?? "dark"
 
 The toolchain ships with first-party developer tools built on the same lexer,
 parser, and AST as the compiler.
+
+### Command line: `a`
+
+```
+a <command> [options] <file.a>
+
+  run <file.a>     compile and execute a program
+  build <file.a>   compile to a native binary (-o <bin>)
+  check <file.a>   type-check without running (--json for structured output)
+  test <file.a>    run every `fn test_*()` in a program
+  fmt <file.a>     format a source file (prints to stdout)
+  doc <file.a>     generate documentation (markdown, prints to stdout)
+  ir <file.a>      print the typed SSA intermediate representation
+  version | help
+
+Options:
+  -o <file>        output path (for 'build' and 'doc')
+  -w, --write      rewrite the source file in place (for 'fmt')
+  --check          exit nonzero if the file needs formatting (for 'fmt')
+  --indent <n>     indentation width in spaces (for 'fmt', default 4)
+  --json           emit structured JSON (for 'doc' and 'check')
+  --opt            run optimization passes when printing IR (for 'ir')
+  --backend <name> 'native' (default, emits C++ and invokes g++) or 'llvm'
+  --emit-llvm      emit textual LLVM IR (.ll) instead of an executable
+  -I <dir>         add a module search directory (repeatable)
+  --stdlib <dir>   override the standard library directory
+  --no-color       disable colored diagnostics
+```
 
 ### Formatter: `a fmt`
 
@@ -245,8 +312,9 @@ with no third-party dependencies.
 | **Diagnostics** | Live lex, parse, and type errors with spans, messages, and compiler help text |
 | **Go to definition** | Locals, parameters, functions, structs/classes, fields, methods, enum variants, and imported module members |
 | **Find references** | Every use of a symbol, including across imported modules |
-| **Hover** | Declared signatures and types, plus documentation for builtins |
-| **Completion** | Keywords, builtins, visible bindings, module members, and struct/enum members after `.` |
+| **Hover** | Signatures and types for symbols, plus documentation for builtins, native module members (`json.parse`), and dot methods (`"abc".strip`) |
+| **Completion** | Keywords, builtins, visible bindings, module members after `.` — including native modules (`json.`) and the string/array/map/set method sets — plus `import`/`from … import` candidates; docs load on demand via `completionItem/resolve` |
+| **Signature help** | Call signature with the active parameter highlighted for user functions, builtins, module members, and dot methods (triggered by `(` and `,`) |
 | **Document symbols** | Outline of functions, structs, fields, methods, enums, variants, and top-level bindings |
 | **Workspace symbols** | `Ctrl+T` / `Cmd+T` search across open A documents |
 | **Formatting** | Full-document formatting through the same AST formatter as `a fmt` |
@@ -267,11 +335,15 @@ cmake --build build --target a-lsp -j
 `tools/vscode-a/` adds TextMate syntax highlighting and connects VS Code to
 `a-lsp`:
 
-- Keywords, declarations, types, builtins, numbers, operators, and comments
+- Keywords (`var` `const` `pvt` `type` `fn` `struct` `class` `enum` `import` …),
+  declarations, types (`Json`, fixed arrays, `T?` optionals), builtins, numbers,
+  operators (`..`, `++`, `--`, `|>`, `??`, `?.`), and comments
 - Strings with `{interpolation}`, raw `"""` strings, char literals, and escapes
-- `#` line comments, bracket matching, auto-closing pairs, and indentation rules
+- `#` line comments, bracket matching, auto-closing pairs, completion triggers
+  (`.`, `"`, `(`, `,`), and indentation rules for colon-introduced blocks
 - Diagnostics, go to definition (`F12`), references (`Shift+F12`), hover,
-  completion, document outline, and workspace symbols
+  completion with documentation on expand, signature help, document outline,
+  and workspace symbols
 - Format Document (`Shift+Alt+F`), Rename Symbol (`F2`), document
   highlights, and folding ranges
 
@@ -281,15 +353,20 @@ Try it in development:
 # Open tools/vscode-a in VS Code / VS Code Insiders, then press F5.
 ```
 
-Or package and install it:
+Or install the prebuilt extension from the [GitHub
+Release](https://github.com/OEvortex/A/releases) assets:
+
+```bash
+# Use whichever CLI you have installed:
+code --install-extension a-language-0.0.1.vsix
+code-insiders --install-extension a-language-0.0.1.vsix
+```
+
+To package it from a checkout instead:
 
 ```bash
 cd tools/vscode-a
 npx --yes @vscode/vsce package
-
-# Use whichever CLI you have installed:
-code --install-extension a-language-0.2.0.vsix
-code-insiders --install-extension a-language-0.2.0.vsix
 ```
 
 The extension finds `a-lsp` in this order:

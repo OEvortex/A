@@ -28,6 +28,13 @@ over stdio.
 
 ## Quick start
 
+The quickest path is the prebuilt `a-language-0.0.1.vsix` asset attached to the
+[v0.0.1 release](https://github.com/OEvortex/A/releases); install it with
+`code --install-extension a-language-0.0.1.vsix` and point `a.server.path` at a
+local `a-lsp` build (or keep it on `PATH`).
+
+To run the extension straight from this checkout instead:
+
 1. Build the toolchain and language server from the repository root:
 
    ```sh
@@ -41,7 +48,7 @@ over stdio.
    ```sh
    cd tools/vscode-a
    npx @vscode/vsce package
-   code --install-extension a-language-0.2.0.vsix
+   code --install-extension a-language-0.0.1.vsix
    ```
 
 3. Open any `.a` file. Syntax highlighting works immediately. If `a-lsp` is

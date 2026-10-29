@@ -1,8 +1,8 @@
 {
   "name": "a-language",
   "displayName": "A Language",
-  "description": "Syntax highlighting, diagnostics, navigation, completion, formatting, and rename for the A programming language.",
-  "version": "0.2.0",
+  "description": "Syntax highlighting, diagnostics, navigation, hover documentation, completion, signature help, formatting, and rename for the A programming language.",
+  "version": "0.0.1",
   "publisher": "a-lang",
   "license": "MIT",
   "repository": {

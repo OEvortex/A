@@ -30,7 +30,7 @@ the C++ bounds are `volatile` so the optimizer cannot fold the benchmark away.
 
 ## Baseline and targets
 
-The v0.3 baseline, methodology, and the roadmap to C++ parity are documented in
+The v0.0.1 (pre-1.0 development) baseline, methodology, and the roadmap to C++ parity are documented in
 [`docs/performance/README.md`](../docs/performance/README.md). Only native
 `a build` binaries are eligible for the parity gates; `a run` measurements
 describe the interpreter and VM.

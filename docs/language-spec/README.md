@@ -1,4 +1,4 @@
-# The A Language Reference (v0.3)
+# The A Language Reference (v0.0.1)
 
 A is indentation-based and statically typed. Blocks are introduced by a colon
 and indented consistently; braces are not used for blocks.
