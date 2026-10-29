@@ -1,0 +1,8 @@
+import http
+
+fn main() -> void:
+    (status, _, body) = http.get("http://127.0.0.1:99999/ping")
+    print(status)
+    print(body)
+
+main()

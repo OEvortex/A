@@ -1,0 +1,29 @@
+# Look up this machine's public IP addresses (and their geolocation) by
+# requesting public HTTP APIs. Run with: a run examples/stdlib/ip_lookup.a
+import http
+import json
+
+fn fetch(url: String) -> Json:
+    (status, _, body) = http.get(url)
+    if status != 200:
+        panic("request to " + url + " returned status " + str(status))
+    return json.parse(body)
+
+fn field(doc: Json, key: String) -> String:
+    if json.has(doc, key):
+        return json.as_str((json.get(doc, key))!) ?? "n/a"
+    return "n/a"
+
+fn main() -> void:
+    # api.ipify.org answers with the address the API saw, per address family.
+    print("IPv4: " + field(fetch("https://api.ipify.org?format=json"), "ip"))
+    print("IPv6: " + field(fetch("https://api64.ipify.org?format=json"), "ip"))
+
+    # ip-api.com adds the network this address belongs to.
+    where = fetch("http://ip-api.com/json/?fields=status,message,query,country,city,isp")
+    print("Public address: " + field(where, "query"))
+    print("  " + field(where, "status") + " " + field(where, "message"))
+    print("  " + field(where, "city") + ", " + field(where, "country") +
+          " (" + field(where, "isp") + ")")
+
+main()

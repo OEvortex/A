@@ -105,3 +105,4 @@ compiled backends do not lower these modules):
 | `property_testing.a` | seeded properties over ints, floats, bools, strings, and elements |
 | `observability.a` | structured log records, a Prometheus render, and span propagation |
 | `networking.a` | a loopback TCP exchange, an HTTP handler, and a UDP round trip |
+| `ip_lookup.a` | `http.get` against a public API to read this host's IP addresses |

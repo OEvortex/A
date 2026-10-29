@@ -1,0 +1,8 @@
+import http
+
+fn main() -> void:
+    (status, _, body) = http.get("ftp://example.com/file")
+    print(status)
+    print(body)
+
+main()

@@ -1576,10 +1576,20 @@ bool parseUrl(const std::string& url, ParsedUrl& out, std::string& error) {
   out.tls = scheme == "https";
   out.port = out.tls ? 443 : 80;
   std::size_t pos = schemeEnd + 3;
-  std::size_t pathStart = url.find('/', pos);
+  std::size_t pathStart = url.find_first_of("/?#", pos);
   std::string authority =
       pathStart == std::string::npos ? url.substr(pos) : url.substr(pos, pathStart - pos);
-  out.path = pathStart == std::string::npos ? "/" : url.substr(pathStart);
+  out.path = "/";
+  if (pathStart != std::string::npos) {
+    if (url[pathStart] == '/') {
+      out.path = url.substr(pathStart);
+    } else if (url[pathStart] == '?') {
+      out.path = "/" + url.substr(pathStart);
+    }
+  }
+  // A fragment is local to the client and never sent on the wire.
+  std::size_t fragment = out.path.find('#');
+  if (fragment != std::string::npos) out.path.erase(fragment);
   if (authority.empty()) {
     error = "URL is missing a host";
     return false;

@@ -28,8 +28,10 @@ Responses are a tuple of the status code, the header map, and the body string.
 Header names are lower-cased in the map that `request`/`get`/`post` return, and
 lookups of a missing key are a runtime error, so check with `contains` first.
 URLs accept `http://host[:port]/path` and `https://host[:port]/path`; HTTPS needs
-a build with TLS support (see `net.tls_available`). Requests always send
-`Host`, and a `Content-Length` is added when the handler does not set one.
+a build with TLS support (see `net.tls_available`). A query string is sent with
+the request target and a `#fragment` is dropped, which the server never sees.
+Requests always send `Host`, and a `Content-Length` is added when the handler
+does not set one.
 
 On the server side, request header names are also lower-cased for the handler.
 Request bodies may use `Content-Length` or `Transfer-Encoding: chunked`; chunked
