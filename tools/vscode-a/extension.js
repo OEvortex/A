@@ -86,7 +86,7 @@ class LanguageClient {
 
     this.request("initialize", {
       processId: process.pid,
-      clientInfo: { name: "a-vscode", version: "0.1.0" },
+      clientInfo: { name: "a-vscode", version: "0.0.1" },
       rootUri: root,
       workspaceFolders: vscode.workspace.workspaceFolders
         ? vscode.workspace.workspaceFolders.map((folder) => ({
@@ -98,7 +98,13 @@ class LanguageClient {
         workspace: { workspaceFolders: true },
         textDocument: {
           synchronization: { didSave: true, dynamicRegistration: false },
-          completion: { completionItem: { snippetSupport: false } },
+          completion: {
+            completionItem: {
+              snippetSupport: false,
+              resolveSupport: { properties: ["documentation"] },
+            },
+          },
+          signatureHelp: {},
           hover: { contentFormat: ["markdown", "plaintext"] },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           definition: { linkSupport: true },
@@ -470,6 +476,41 @@ function locationsFrom(result) {
   return locations.length ? locations : null;
 }
 
+function documentationToMarkdown(documentation) {
+  if (!documentation) return undefined;
+  if (typeof documentation === "string") return new vscode.MarkdownString(documentation);
+  return new vscode.MarkdownString(documentation.value || "");
+}
+
+function signatureHelpFrom(result) {
+  if (!result || !Array.isArray(result.signatures) || !result.signatures.length) return null;
+  const signatures = result.signatures.map((entry) => {
+    const signature = new vscode.SignatureInformation(entry.label);
+    if (entry.documentation) signature.documentation = documentationToMarkdown(entry.documentation);
+    if (Array.isArray(entry.parameters)) {
+      signature.parameters = entry.parameters.map((parameter) => {
+        const info = new vscode.ParameterInformation(parameter.label);
+        if (parameter.documentation) info.documentation = documentationToMarkdown(parameter.documentation);
+        return info;
+      });
+    }
+    return signature;
+  });
+  const help = new vscode.SignatureHelp(signatures);
+  help.activeSignature = Math.max(
+    0,
+    Math.min(result.activeSignature || 0, signatures.length - 1)
+  );
+  const active = signatures[help.activeSignature];
+  if (active && typeof result.activeParameter === "number") {
+    help.activeParameter = Math.max(
+      0,
+      Math.min(result.activeParameter, (active.parameters || []).length - 1)
+    );
+  }
+  return help;
+}
+
 // --------------------------------------------------------------- providers
 
 function registerProviders(context, getClient) {
@@ -530,22 +571,45 @@ function registerProviders(context, getClient) {
           const items = entries.map((entry) => {
             const item = new vscode.CompletionItem(entry.label, toCompletionKind(entry.kind));
             if (entry.detail) item.detail = entry.detail;
-            if (entry.documentation) {
-              item.documentation = new vscode.MarkdownString(
-                typeof entry.documentation === "string" ? entry.documentation : entry.documentation.value
-              );
-            }
+            if (entry.documentation) item.documentation = documentationToMarkdown(entry.documentation);
             item.insertText = typeof entry.insertText === "string" ? entry.insertText : entry.label;
             if (entry.filterText) item.filterText = entry.filterText;
             if (entry.sortText) item.sortText = entry.sortText;
+            if (entry.data) item.data = entry.data;
             return item;
           });
           return new vscode.CompletionList(items, Boolean(result.isIncomplete));
         },
+        async resolveCompletionItem(item) {
+          const active = getClient();
+          if (!active || !item.data) return item;
+          const result = await active.request("completionItem/resolve", {
+            label: item.label,
+            data: item.data,
+          });
+          if (result && result.documentation) {
+            item.documentation = documentationToMarkdown(result.documentation);
+          }
+          return item;
+        },
       },
       ".",
-      "\""
+      "\"",
+      "(",
+      ","
     ),
+
+    vscode.languages.registerSignatureHelpProvider(selector, {
+      async provideSignatureHelp(document, position) {
+        const active = getClient();
+        if (!active) return null;
+        const result = await active.request("textDocument/signatureHelp", {
+          textDocument: { uri: document.uri.toString() },
+          position: { line: position.line, character: position.character },
+        });
+        return signatureHelpFrom(result);
+      },
+    }),
 
     vscode.languages.registerDocumentSymbolProvider(selector, {
       async provideDocumentSymbols(document) {

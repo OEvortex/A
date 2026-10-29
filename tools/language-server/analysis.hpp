@@ -111,6 +111,18 @@ struct FileIndex {
   std::vector<ImportDef> imports;
 };
 
+// A member of a native module: `json.parse`, `math.PI`, ... Names are ordered
+// as the editor should present them, with signature and documentation taken
+// from the shared builtin table.
+struct MemberInfo {
+  std::string name;
+  std::string signature;
+  std::string documentation;
+  bool isConstant = false;
+};
+
+std::vector<MemberInfo> nativeModuleMembers(const std::string& alias);
+
 struct Compilation {
   std::string path;
   std::string text;

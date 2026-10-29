@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "name-resolution/native_modules.hpp"
+#include "type-checker/method_signatures.hpp"
 
 namespace a {
 namespace {
@@ -2333,10 +2334,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     }
     sink_.error(field.fieldSpan,
                 "Array has no method named '" + method + "'.",
-                "Available array methods: append(v), extend(xs), insert(i, v), "
-                "remove_at(i), pop([i]), remove(v), clear(), copy(), count(v), "
-                "index(v[, start[, end]]), contains(v), sort(), reverse(), "
-                "first(), last(), join(sep).");
+                availableMethodsHelp("array", arrayMethods()));
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -2416,8 +2414,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     }
     sink_.error(field.fieldSpan,
                 "Map has no method named '" + method + "'.",
-                "Available map methods: get(k[, default]), pop(k[, default]), contains(k), "
-                "keys(), values(), items(), update(other), copy(), clear().");
+                availableMethodsHelp("map", mapMethods()));
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -2486,8 +2483,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     }
     sink_.error(field.fieldSpan,
                 "Set has no method named '" + method + "'.",
-                "Available set methods: add(v), remove(v), discard(v), contains(v), union(s), "
-                "intersection(s), difference(s), issubset(s), issuperset(s), copy(), clear().");
+                availableMethodsHelp("set", setMethods()));
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -2634,20 +2630,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     }
     sink_.error(field.fieldSpan,
                 "String has no method named '" + method + "'.",
-                "Available string methods: capitalize(), casefold(), lower(), upper(), "
-                "swapcase(), title(), center(width[, fill]), ljust(width[, fill]), "
-                "rjust(width[, fill]), zfill(width), count(sub[, start[, end]]), "
-                "find(sub[, start[, end]]), rfind(sub[, start[, end]]), "
-                "index(sub[, start[, end]]), rindex(sub[, start[, end]]), "
-                "startswith(prefix[, start[, end]]), endswith(suffix[, start[, end]]), "
-                "expandtabs([tabsize]), strip([chars]), lstrip([chars]), "
-                "rstrip([chars]), partition(sep), rpartition(sep), "
-                "removeprefix(affix), removesuffix(affix), replace(old, new[, count]), "
-                "split([sep[, maxsplit]]), rsplit([sep[, maxsplit]]), "
-                "splitlines([keepends]), join(parts), isalnum(), isalpha(), isascii(), "
-                "isdecimal(), isdigit(), isidentifier(), islower(), isnumeric(), "
-                "isprintable(), isspace(), istitle(), isupper(), "
-                "contains(sub), repeat(n), chars().");
+                availableMethodsHelp("string", stringMethods()));
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }

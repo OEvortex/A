@@ -14,7 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-SOURCE = """## A two-dimensional point.
+SOURCE = """import json
+
+## A two-dimensional point.
 struct Point:
     x: i32
     y: i32
@@ -28,7 +30,10 @@ fn add(a: i32, b: i32) -> i32:
 
 point = Point(3, 4)
 total=add(point.x,point.y)
+doc = json.parse("[1, 2]")
+words = "abc"
 print("total = {total}")
+print(doc, words.strip())
 """
 
 
@@ -227,13 +232,84 @@ def main() -> int:
         folding = client.request(
             "textDocument/foldingRange", {"textDocument": {"uri": uri}}
         )["result"]
-        if not any(entry["startLine"] == 1 for entry in folding):
+        struct_line = next(i for i, text in enumerate(lines) if text.startswith("struct Point:"))
+        if not any(entry["startLine"] == struct_line for entry in folding):
             fail(f"folding ranges did not include the struct body: {folding}")
+
+        def position_of(fragment: str) -> tuple[int, int]:
+            for i, text in enumerate(lines):
+                offset = text.find(fragment)
+                if offset >= 0:
+                    return i, offset
+            raise AssertionError(f"fragment not found in source: {fragment!r}")
+
+        # Native module members complete after `json.`.
+        json_line, json_col = position_of("json.parse(")
+        items = client.request(
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": {"line": json_line, "character": json_col + 5}},
+        )["result"]["items"]
+        labels = {item["label"] for item in items}
+        if not {"parse", "stringify", "as_int"}.issubset(labels):
+            fail(f"json. completion missing members: {sorted(labels)[:20]}")
+
+        # Primitive methods complete after a bound string's dot.
+        words_line, words_col = position_of("words.strip()")
+        items = client.request(
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": {"line": words_line, "character": words_col + 6}},
+        )["result"]["items"]
+        labels = {item["label"] for item in items}
+        if not {"strip", "startswith", "join"}.issubset(labels):
+            fail(f"string completion missing methods: {sorted(labels)[:20]}")
+
+        # Hover explains module members and primitive methods from the tables.
+        _, parse_col = position_of("json.parse(")
+        hover = client.request(
+            "textDocument/hover",
+            {"textDocument": {"uri": uri}, "position": {"line": json_line, "character": parse_col + 6}},
+        )["result"]
+        if not hover or "json.parse(text)" not in hover["contents"]["value"]:
+            fail("hover did not describe json.parse")
+
+        _, strip_col = position_of("words.strip()")
+        hover = client.request(
+            "textDocument/hover",
+            {"textDocument": {"uri": uri}, "position": {"line": words_line, "character": strip_col + 7}},
+        )["result"]
+        if not hover or "strip([chars])" not in hover["contents"]["value"]:
+            fail("hover did not describe the string method strip")
+
+        # Signature help inside `json.parse(` names the parameter.
+        signature = client.request(
+            "textDocument/signatureHelp",
+            {"textDocument": {"uri": uri}, "position": {"line": json_line, "character": parse_col + 11}},
+        )["result"]
+        if (
+            not signature
+            or "json.parse(text)" not in signature["signatures"][0]["label"]
+            or signature["activeParameter"] != 0
+        ):
+            fail(f"signature help inside json.parse(: {signature}")
+
+        # After the comma in `add(point.x, ...)` the active parameter advances.
+        add_line, add_col = position_of("add(point.x,")
+        signature = client.request(
+            "textDocument/signatureHelp",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": add_line, "character": add_col + len("add(point.x,")},
+            },
+        )["result"]
+        if not signature or signature["activeParameter"] != 1:
+            fail(f"signature help after the comma in add(...): {signature}")
+        if "fn add(a: i32, b: i32)" not in signature["signatures"][0]["label"]:
+            fail(f"signature help did not use the declared signature: {signature}")
 
         client.stop()
         print(
             "OK: diagnostics, definition, hover, symbols, completion, formatting, "
-            "rename, highlights, folding"
+            "rename, highlights, folding, module/string completion, signature help"
         )
 
     return 0

@@ -2,6 +2,7 @@
   "comments": {
     "lineComment": "#"
   },
+  "completionTriggerCharacters": [".", "\"", "(", ","],
   "brackets": [
     ["{", "}"],
     ["[", "]"],

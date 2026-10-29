@@ -8,6 +8,9 @@
 #include <sstream>
 #include <unordered_set>
 
+#include "name-resolution/builtin_docs.hpp"
+#include "name-resolution/native_modules.hpp"
+
 namespace a::lsp {
 namespace {
 
@@ -93,6 +96,8 @@ std::string exprTypeName(const Expr* expr) {
     case ExprKind::CharLit: return "char";
     case ExprKind::StringLit: return "String";
     case ExprKind::ArrayLit: return "array";
+    case ExprKind::MapLit: return "map";
+    case ExprKind::SetLit: return "set";
     case ExprKind::Tuple: return "tuple";
     case ExprKind::Lambda: return "fn";
     case ExprKind::Call: {
@@ -808,6 +813,29 @@ std::unique_ptr<Compilation> analyzeDocument(const std::string& path, const std:
   }
 
   return compilation;
+}
+
+std::vector<MemberInfo> nativeModuleMembers(const std::string& moduleName) {
+  std::vector<MemberInfo> members;
+  const NativeModuleSpec* spec = nativeModuleSpec(moduleName);
+  if (!spec) return members;
+  auto add = [&](const StringMap<std::string>& entries, bool isConstant) {
+    for (const auto& entry : entries) {
+      MemberInfo info;
+      info.name = entry.first;
+      info.isConstant = isConstant;
+      if (const BuiltinDoc* doc = findBuiltinDoc(entry.second)) {
+        info.signature = doc->signature;
+        info.documentation = doc->documentation;
+      }
+      members.push_back(std::move(info));
+    }
+  };
+  add(spec->functions, false);
+  add(spec->constants, true);
+  std::sort(members.begin(), members.end(),
+            [](const MemberInfo& a, const MemberInfo& b) { return a.name < b.name; });
+  return members;
 }
 
 }  // namespace a::lsp

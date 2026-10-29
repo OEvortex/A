@@ -20,7 +20,10 @@
 
 #include "analysis.hpp"
 #include "json.hpp"
+#include "name-resolution/builtin_docs.hpp"
+#include "name-resolution/native_modules.hpp"
 #include "tooling/formatter.hpp"
+#include "type-checker/method_signatures.hpp"
 
 namespace {
 
@@ -210,45 +213,47 @@ std::vector<std::string> readStringArray(const Value* value) {
   return result;
 }
 
-// ------------------------------------------------------------------ builtins
+// --------------------------------------------------------------- shared docs
+// Hover, completion, and signature help all read the tables that the type
+// checker uses: builtinDocs() for interpreter builtins and the primitive
+// method tables in method_signatures.hpp.
 
-struct BuiltinInfo {
-  const char* name;
-  const char* signature;
-  const char* documentation;
-};
+constexpr const char* kServerVersion = "0.0.1";
 
-const BuiltinInfo kBuiltins[] = {
-    {"print", "print(value)", "Write a value to standard output, followed by a newline."},
-    {"eprint", "eprint(value)", "Write a value to standard error, followed by a newline."},
-    {"len", "len(value) -> i32", "Length of a string, array, tuple, or range."},
-    {"str", "str(value) -> String", "Convert a value to its string representation."},
-    {"sqrt", "sqrt(x: f64) -> f64", "Square root."},
-    {"f64", "f64(value) -> f64", "Convert a number to f64."},
-    {"i64", "i64(value) -> i64", "Convert a number to i64 (truncating)."},
-    {"abs", "abs(value) -> number", "Absolute value."},
-    {"round", "round(x) -> number", "Round to the nearest integer."},
-    {"floor", "floor(x) -> number", "Round down."},
-    {"ceil", "ceil(x) -> number", "Round up."},
-    {"pow", "pow(base, exponent) -> number", "Raise a number to a power."},
-    {"join", "join(values, separator) -> String", "Join string values with a separator."},
-    {"map", "map(values, fn) -> array", "Apply a function to every element."},
-    {"filter", "filter(values, fn) -> array", "Keep elements for which the predicate is true."},
-    {"sum", "sum(values) -> number", "Sum an array of numbers."},
-    {"reduce", "reduce(values, fn, initial) -> value", "Fold an array from left to right."},
-    {"any", "any(values, fn) -> bool", "True when the predicate holds for any element."},
-    {"all", "all(values, fn) -> bool", "True when the predicate holds for every element."},
-    {"Some", "Some(value) -> T?", "Wrap a value in an optional."},
-    {"panic", "panic(message)", "Abort execution with a runtime error."},
-    {"assert", "assert(condition)", "Abort when the condition is false."},
-    {"assert_eq", "assert_eq(actual, expected)", "Abort when the two values differ."},
-};
+const std::vector<a::MethodSig>* methodTableForType(const std::string& typeName) {
+  if (typeName == "array") return &a::arrayMethods();
+  if (typeName == "map") return &a::mapMethods();
+  if (typeName == "set") return &a::setMethods();
+  if (typeName == "String") return &a::stringMethods();
+  return nullptr;
+}
 
-const BuiltinInfo* findBuiltin(const std::string& name) {
-  for (const BuiltinInfo& builtin : kBuiltins) {
-    if (name == builtin.name) return &builtin;
+const a::MethodSig* findMethodSig(const std::vector<a::MethodSig>& table,
+                                  const std::string& name) {
+  for (const a::MethodSig& method : table) {
+    if (name == method.name) return &method;
   }
   return nullptr;
+}
+
+// Maps an import alias (`json`, or `import json as j` → `j`) to the native
+// module it refers to; empty when the alias is not a native module.
+std::string nativeModuleForAlias(const a::lsp::FileIndex& file, const std::string& alias) {
+  for (const a::lsp::ImportDef& import : file.imports) {
+    if (import.alias == alias && a::isNativeModule(import.modulePath)) return import.modulePath;
+  }
+  return {};
+}
+
+Value hoverMarkdown(const std::string& signature, const std::string& documentation) {
+  std::string markdown = "```a\n" + signature + "\n```";
+  if (!documentation.empty()) markdown += "\n\n" + documentation;
+  Value contents = Value::object();
+  contents["kind"] = "markdown";
+  contents["value"] = std::move(markdown);
+  Value result = Value::object();
+  result["contents"] = std::move(contents);
+  return result;
 }
 
 const char* const kKeywords[] = {
@@ -442,6 +447,14 @@ class LanguageServer {
       completion(idValue ? *idValue : Value(), params);
       return true;
     }
+    if (method == "completionItem/resolve") {
+      completionResolve(idValue ? *idValue : Value(), params);
+      return true;
+    }
+    if (method == "textDocument/signatureHelp") {
+      signatureHelp(idValue ? *idValue : Value(), params);
+      return true;
+    }
     if (method == "textDocument/references") {
       references(idValue ? *idValue : Value(), params);
       return true;
@@ -537,14 +550,20 @@ class LanguageServer {
     triggers.push(".");
     triggers.push("\"");
     completion["triggerCharacters"] = std::move(triggers);
-    completion["resolveProvider"] = false;
+    completion["resolveProvider"] = true;
     capabilities["completionProvider"] = std::move(completion);
+    Value signatureHelp = Value::object();
+    Value signatureTriggers = Value::array();
+    signatureTriggers.push("(");
+    signatureTriggers.push(",");
+    signatureHelp["triggerCharacters"] = std::move(signatureTriggers);
+    capabilities["signatureHelpProvider"] = std::move(signatureHelp);
 
     Value result = Value::object();
     result["capabilities"] = std::move(capabilities);
     Value info = Value::object();
     info["name"] = "a-language-server";
-    info["version"] = "0.3.0";
+    info["version"] = kServerVersion;
     result["serverInfo"] = std::move(info);
     reply(id, std::move(result));
   }
@@ -1032,17 +1051,47 @@ class LanguageServer {
 
     const Token* token = tokenAt(*tokens, line + 1, byteColumn);
     if (token && token->kind == Tok::Ident) {
-      if (const BuiltinInfo* builtin = findBuiltin(token->lexeme)) {
-        std::string markdown = "```a\n";
-        markdown += builtin->signature;
-        markdown += "\n```\n\n";
-        markdown += builtin->documentation;
-        Value result = Value::object();
-        Value contents = Value::object();
-        contents["kind"] = "markdown";
-        contents["value"] = markdown;
-        result["contents"] = std::move(contents);
-        reply(id, std::move(result));
+      int index = tokenIndexAt(*tokens, line + 1, byteColumn);
+
+      // `module.member` and primitive `receiver.method` forms.
+      if (index >= 2) {
+        const Token& dot = (*tokens)[static_cast<std::size_t>(index - 1)];
+        const Token& baseToken = (*tokens)[static_cast<std::size_t>(index - 2)];
+        if ((dot.kind == Tok::Dot || dot.kind == Tok::QuestionDot) &&
+            baseToken.kind == Tok::Ident) {
+          const std::string moduleName = nativeModuleForAlias(*file, baseToken.lexeme);
+          if (!moduleName.empty()) {
+            const std::string* builtinName = a::nativeFunction(moduleName, token->lexeme);
+            if (!builtinName) builtinName = a::nativeConstant(moduleName, token->lexeme);
+            if (builtinName) {
+              if (const a::BuiltinDoc* doc = a::findBuiltinDoc(*builtinName)) {
+                reply(id, hoverMarkdown(doc->signature, doc->documentation));
+                return;
+              }
+            }
+          }
+          ResolvedSymbol base =
+              a::lsp::resolveToken(compilation, *file, *tokens, index - 2);
+          if (base.valid()) {
+            if (const std::vector<a::MethodSig>* table =
+                    methodTableForType(base.symbol->typeName)) {
+              if (const a::MethodSig* method = findMethodSig(*table, token->lexeme)) {
+                reply(id, hoverMarkdown(method->signature, method->documentation));
+                return;
+              }
+            }
+          }
+        }
+      }
+
+      if (!nativeModuleForAlias(*file, token->lexeme).empty()) {
+        const std::string moduleName = nativeModuleForAlias(*file, token->lexeme);
+        reply(id, hoverMarkdown("import " + moduleName,
+                                "Native standard-library module."));
+        return;
+      }
+      if (const a::BuiltinDoc* doc = a::findBuiltinDoc(token->lexeme)) {
+        reply(id, hoverMarkdown(doc->signature, doc->documentation));
         return;
       }
     }
@@ -1254,14 +1303,26 @@ class LanguageServer {
     std::unordered_set<std::string> seen;
     Value items = Value::array();
 
-    auto pushItem = [&](const std::string& name, int kind, const std::string& detail) {
+    auto pushItem = [&](const std::string& name, int kind, const std::string& detail,
+                        const std::string& documentation = {}) {
       if (!seen.insert(name).second) return;
       Value item = Value::object();
       item["label"] = name;
       item["kind"] = kind;
       item["insertText"] = name;
       if (!detail.empty()) item["detail"] = detail;
+      if (!documentation.empty()) {
+        Value data = Value::object();
+        data["documentation"] = documentation;
+        item["data"] = std::move(data);
+      }
       items.push(std::move(item));
+    };
+
+    auto pushMethods = [&](const std::vector<a::MethodSig>& table) {
+      for (const a::MethodSig& method : table) {
+        pushItem(method.name, 2, method.signature, method.documentation);
+      }
     };
 
     // Member completion after "." or "?.".
@@ -1280,7 +1341,7 @@ class LanguageServer {
       }
     }
 
-    if (base >= 0 && (*tokens)[static_cast<std::size_t>(base)].kind == Tok::Ident) {
+    if (base >= 0) {
       const Token& baseToken = (*tokens)[static_cast<std::size_t>(base)];
       for (const a::lsp::ImportDef& import : file->imports) {
         if (!import.wholeModule || import.alias != baseToken.lexeme || import.moduleId < 0) continue;
@@ -1292,40 +1353,334 @@ class LanguageServer {
           }
         }
       }
-      ResolvedSymbol resolved =
-          a::lsp::resolveToken(compilation, *file, *tokens, base);
-      if (resolved.valid()) {
-        std::string typeName = resolved.symbol->typeName;
-        if (typeName.empty() &&
-            (resolved.symbol->kind == SymbolKind::Struct ||
-             resolved.symbol->kind == SymbolKind::Class ||
-             resolved.symbol->kind == SymbolKind::Enum)) {
-          typeName = resolved.symbol->name;
-        }
-        if (!typeName.empty()) {
-          for (const SymbolDef* member :
-               a::lsp::structMembers(compilation, *resolved.file, typeName)) {
-            pushItem(member->name, completionKind(member->kind), member->detail);
+
+      if (baseToken.kind == Tok::Ident) {
+        const std::string moduleName = nativeModuleForAlias(*file, baseToken.lexeme);
+        if (!moduleName.empty()) {
+          for (const a::lsp::MemberInfo& member : a::lsp::nativeModuleMembers(moduleName)) {
+            pushItem(member.name, member.isConstant ? 21 : 3, member.signature,
+                     member.documentation);
           }
         }
+        ResolvedSymbol resolved =
+            a::lsp::resolveToken(compilation, *file, *tokens, base);
+        if (resolved.valid()) {
+          std::string typeName = resolved.symbol->typeName;
+          if (typeName.empty() &&
+              (resolved.symbol->kind == SymbolKind::Struct ||
+               resolved.symbol->kind == SymbolKind::Class ||
+               resolved.symbol->kind == SymbolKind::Enum)) {
+            typeName = resolved.symbol->name;
+          }
+          if (const std::vector<a::MethodSig>* table = methodTableForType(typeName)) {
+            pushMethods(*table);
+          } else if (!typeName.empty()) {
+            for (const SymbolDef* member :
+                 a::lsp::structMembers(compilation, *resolved.file, typeName)) {
+              pushItem(member->name, completionKind(member->kind), member->detail);
+            }
+          }
+        }
+      } else if (baseToken.kind == Tok::String) {
+        pushMethods(a::stringMethods());
+      } else if (baseToken.kind == Tok::RBracket) {
+        pushMethods(a::arrayMethods());
+      } else if (baseToken.kind == Tok::RBrace) {
+        // Distinguish `{key: value}` maps from `{element}` sets by looking
+        // for a colon at the literal's top level.
+        bool isMap = false;
+        int depth = 0;
+        for (int i = base - 1; i >= 0; --i) {
+          const Token& inner = (*tokens)[static_cast<std::size_t>(i)];
+          if (inner.kind == Tok::RBrace || inner.kind == Tok::RBracket ||
+              inner.kind == Tok::RParen) {
+            ++depth;
+          } else if (inner.kind == Tok::LBrace) {
+            if (depth == 0) break;
+            --depth;
+          } else if (inner.kind == Tok::LBracket || inner.kind == Tok::LParen) {
+            --depth;
+          } else if (inner.kind == Tok::Colon && depth == 0) {
+            isMap = true;
+            break;
+          }
+        }
+        pushMethods(isMap ? a::mapMethods() : a::setMethods());
       }
-    } else {
-      for (const char* keyword : kKeywords) pushItem(keyword, 14, "keyword");
-      for (const BuiltinInfo& builtin : kBuiltins) {
-        pushItem(builtin.name, 3, builtin.signature);
-      }
-      for (const SymbolDef* symbol :
-           a::lsp::visibleSymbols(compilation, *file, line + 1, byteColumn)) {
-        pushItem(symbol->name, completionKind(symbol->kind), symbol->detail);
-      }
-      for (const a::lsp::ImportDef& import : file->imports) {
-        pushItem(import.alias, import.wholeModule ? 9 : 18, import.modulePath);
+
+      // Never fall back to the global list after a dot; empty is correct
+      // for receivers with no members.
+      Value result = Value::object();
+      result["isIncomplete"] = false;
+      result["items"] = std::move(items);
+      reply(id, std::move(result));
+      return;
+    }
+
+    for (const char* keyword : kKeywords) pushItem(keyword, 14, "keyword");
+    for (const auto& entry : a::builtinDocs()) {
+      const std::string& name = entry.first;
+      if (a::isStdlibBuiltin(name) || name == "PI" || name == "E") continue;
+      pushItem(name, 3, entry.second.signature);
+    }
+    for (const SymbolDef* symbol :
+         a::lsp::visibleSymbols(compilation, *file, line + 1, byteColumn)) {
+      pushItem(symbol->name, completionKind(symbol->kind), symbol->detail);
+    }
+    for (const a::lsp::ImportDef& import : file->imports) {
+      pushItem(import.alias, import.wholeModule ? 9 : 18, import.modulePath);
+    }
+
+    // `import <TAB>`, `from <TAB>`, and `from module import <TAB>`.
+    std::string currentLine = lineText(document->text, line + 1);
+    std::string prefix = currentLine.substr(
+        0, std::min<std::size_t>(byteColumn - 1, currentLine.size()));
+    const bool insideWord =
+        !prefix.empty() && !std::isspace(static_cast<unsigned char>(prefix.back()));
+    std::vector<std::string> words;
+    {
+      std::istringstream stream(prefix);
+      std::string word;
+      while (stream >> word) words.push_back(word);
+    }
+    std::string previousWord;
+    if (!words.empty()) {
+      previousWord =
+          insideWord && words.size() >= 2 ? words[words.size() - 2] : words.back();
+    }
+    if (previousWord == "import" || previousWord == "from") {
+      if (previousWord == "from" && words.size() >= 2) {
+        const std::size_t needed = insideWord ? 3 : 2;
+        if (words.size() >= needed) {
+          const std::size_t moduleIndex = insideWord ? words.size() - 3 : words.size() - 2;
+          if (a::isNativeModule(words[moduleIndex])) {
+            for (const a::lsp::MemberInfo& member :
+                 a::lsp::nativeModuleMembers(words[moduleIndex])) {
+              pushItem(member.name, member.isConstant ? 21 : 3, member.signature,
+                       member.documentation);
+            }
+          }
+        }
+      } else {
+        for (const auto& module : a::nativeModules()) {
+          pushItem(module.first, 9, "native module");
+        }
       }
     }
 
     Value result = Value::object();
     result["isIncomplete"] = false;
     result["items"] = std::move(items);
+    reply(id, std::move(result));
+  }
+
+  void completionResolve(const Value& id, const Value* params) {
+    if (!params || !params->isObject()) return replyNull(id);
+    const Value* item = params;
+    if (const Value* nested = params->find("item"); nested && nested->isObject()) item = nested;
+    Value result = *item;
+    const Value* data = item->find("data");
+    const Value* documentation = data && data->isObject() ? data->find("documentation") : nullptr;
+    if (documentation && documentation->isString()) {
+      Value contents = Value::object();
+      contents["kind"] = "markdown";
+      contents["value"] = documentation->asString();
+      result["documentation"] = std::move(contents);
+    }
+    reply(id, std::move(result));
+  }
+
+  void signatureHelp(const Value& id, const Value* params) {
+    Document* document = documentFrom(params);
+    if (!document || !document->compilation) return replyNull(id);
+    const Compilation& compilation = *document->compilation;
+    const FileIndex* file = compilation.entryIndex();
+    const std::vector<Token>* tokens = compilation.entryTokens();
+    if (!file || !tokens) return replyNull(id);
+
+    int line = 0;
+    int character = 0;
+    if (!positionFrom(params, &line, &character)) return replyNull(id);
+    const int cursorLine = line + 1;
+    const int byteColumn = utf16ToByteColumn(lineText(document->text, cursorLine), character) + 1;
+
+    // Innermost unmatched bracket whose opening is before the cursor.
+    std::vector<int> stack;
+    for (int i = 0; i < static_cast<int>(tokens->size()); ++i) {
+      const Token& token = (*tokens)[static_cast<std::size_t>(i)];
+      if (token.kind == Tok::Eof) break;
+      if (token.span.line > cursorLine ||
+          (token.span.line == cursorLine && token.span.col >= byteColumn)) {
+        break;
+      }
+      if (token.kind == Tok::LParen || token.kind == Tok::LBracket || token.kind == Tok::LBrace) {
+        stack.push_back(i);
+      } else if (token.kind == Tok::RParen || token.kind == Tok::RBracket ||
+                 token.kind == Tok::RBrace) {
+        if (!stack.empty()) stack.pop_back();
+      }
+    }
+    if (stack.empty() || (*tokens)[static_cast<std::size_t>(stack.back())].kind != Tok::LParen) {
+      return replyNull(id);
+    }
+    const int openIndex = stack.back();
+    if (openIndex == 0) return replyNull(id);
+
+    // Callee: `name(`, `module.member(`, or `receiver.method(`.
+    std::string label;
+    const Token& callee = (*tokens)[static_cast<std::size_t>(openIndex - 1)];
+    if (callee.kind != Tok::Ident) return replyNull(id);
+    const bool qualified = openIndex >= 3 &&
+                           ((*tokens)[static_cast<std::size_t>(openIndex - 2)].kind == Tok::Dot ||
+                            (*tokens)[static_cast<std::size_t>(openIndex - 2)].kind ==
+                                Tok::QuestionDot);
+    const Token& baseToken =
+        qualified ? (*tokens)[static_cast<std::size_t>(openIndex - 3)] : callee;
+    const bool qualifiedOnDot =
+        qualified && (baseToken.kind == Tok::Ident || baseToken.kind == Tok::String ||
+                      baseToken.kind == Tok::RBracket || baseToken.kind == Tok::RBrace);
+    if (!qualified && baseToken.kind != Tok::Ident) return replyNull(id);
+
+    const std::string moduleAlias =
+        qualifiedOnDot && baseToken.kind == Tok::Ident ? nativeModuleForAlias(*file, baseToken.lexeme)
+                                                       : std::string();
+    if (!moduleAlias.empty()) {
+      const std::string* builtinName = a::nativeFunction(moduleAlias, callee.lexeme);
+      if (!builtinName) builtinName = a::nativeConstant(moduleAlias, callee.lexeme);
+      if (builtinName) {
+        if (const a::BuiltinDoc* doc = a::findBuiltinDoc(*builtinName)) label = doc->signature;
+      }
+    }
+    if (label.empty()) {
+      const bool primitiveBase = baseToken.kind != Tok::Ident &&
+                                 baseToken.kind != Tok::Eof &&
+                                 (baseToken.kind == Tok::String ||
+                                  baseToken.kind == Tok::RBracket ||
+                                  baseToken.kind == Tok::RBrace);
+      std::string typeName;
+      if (primitiveBase) {
+        typeName = baseToken.kind == Tok::String
+                       ? "String"
+                       : (baseToken.kind == Tok::RBracket ? "array" : "map");
+        if (baseToken.kind == Tok::RBrace) {
+          int depth = 0;
+          bool isMap = false;
+          for (int i = openIndex - 4; i >= 0; --i) {
+            const Token& inner = (*tokens)[static_cast<std::size_t>(i)];
+            if (inner.kind == Tok::RBrace || inner.kind == Tok::RBracket ||
+                inner.kind == Tok::RParen) {
+              ++depth;
+            } else if (inner.kind == Tok::LBrace) {
+              if (depth == 0) break;
+              --depth;
+            } else if (inner.kind == Tok::LBracket || inner.kind == Tok::LParen) {
+              --depth;
+            } else if (inner.kind == Tok::Colon && depth == 0) {
+              isMap = true;
+              break;
+            }
+          }
+          typeName = isMap ? "map" : "set";
+        }
+      } else if (baseToken.kind == Tok::Ident) {
+        ResolvedSymbol resolved =
+            a::lsp::resolveToken(compilation, *file, *tokens, openIndex - 3);
+        if (resolved.valid()) typeName = resolved.symbol->typeName;
+      }
+      const std::vector<a::MethodSig>* table = methodTableForType(typeName);
+      if (table) {
+        if (const a::MethodSig* method = findMethodSig(*table, callee.lexeme)) {
+          label = method->signature;
+        }
+      }
+    }
+    if (label.empty() && baseToken.kind == Tok::Ident) {
+      ResolvedSymbol resolved = a::lsp::resolveToken(compilation, *file, *tokens, openIndex - 1);
+      if (resolved.valid() && !resolved.symbol->detail.empty()) {
+        label = resolved.symbol->detail;
+      }
+    }
+    if (label.empty() && qualifiedOnDot && baseToken.kind == Tok::Ident) {
+      auto found = compilation.sema.functions.find(baseToken.lexeme + "." + callee.lexeme);
+      if (found == compilation.sema.functions.end()) {
+        found = compilation.sema.functions.find(callee.lexeme);
+      }
+      if (found != compilation.sema.functions.end() && found->second) {
+        label = a::lsp::signatureText(*found->second);
+      }
+    }
+    if (label.empty() && !qualifiedOnDot) {
+      if (const a::BuiltinDoc* doc = a::findBuiltinDoc(callee.lexeme)) label = doc->signature;
+    }
+    if (label.empty()) return replyNull(id);
+
+    // Split the parameter list of the label into display segments.
+    std::vector<std::string> parameters;
+    std::size_t start = label.find('(');
+    if (start != std::string::npos) {
+      int depth = 0;
+      std::size_t segmentStart = start + 1;
+      for (std::size_t i = start; i < label.size(); ++i) {
+        char c = label[i];
+        if (c == '(' || c == '[' || c == '{') {
+          ++depth;
+        } else if (c == ')' || c == ']' || c == '}') {
+          --depth;
+          if (depth == 0) {
+            std::string last = label.substr(segmentStart, i - segmentStart);
+            if (!last.empty()) parameters.push_back(last);
+            break;
+          }
+        } else if (c == ',' && depth == 1) {
+          parameters.push_back(label.substr(segmentStart, i - segmentStart));
+          segmentStart = i + 1;
+        }
+      }
+    }
+
+    // Active parameter: top-level commas between the open paren and cursor.
+    int activeParameter = 0;
+    int depth = 0;
+    for (int i = openIndex + 1; i < static_cast<int>(tokens->size()); ++i) {
+      const Token& token = (*tokens)[static_cast<std::size_t>(i)];
+      if (token.kind == Tok::Eof) break;
+      if (token.span.line > cursorLine ||
+          (token.span.line == cursorLine && token.span.col >= byteColumn)) {
+        break;
+      }
+      if (token.kind == Tok::LParen || token.kind == Tok::LBracket || token.kind == Tok::LBrace) {
+        ++depth;
+      } else if (token.kind == Tok::RParen || token.kind == Tok::RBracket ||
+                 token.kind == Tok::RBrace) {
+        if (depth == 0) break;
+        --depth;
+      } else if (token.kind == Tok::Comma && depth == 0) {
+        ++activeParameter;
+      }
+    }
+    if (activeParameter > 0 && parameters.empty()) activeParameter = 0;
+    if (static_cast<std::size_t>(activeParameter) >= parameters.size() && !parameters.empty()) {
+      activeParameter = static_cast<int>(parameters.size()) - 1;
+    }
+
+    Value signature = Value::object();
+    signature["label"] = label;
+    Value parameterValues = Value::array();
+    for (const std::string& parameter : parameters) {
+      Value entry = Value::object();
+      std::string text = parameter;
+      while (!text.empty() && text.front() == ' ') text.erase(text.begin());
+      entry["label"] = text;
+      parameterValues.push(std::move(entry));
+    }
+    if (!parameters.empty()) signature["parameters"] = std::move(parameterValues);
+    Value signatures = Value::array();
+    signatures.push(std::move(signature));
+
+    Value result = Value::object();
+    result["signatures"] = std::move(signatures);
+    result["activeSignature"] = 0;
+    result["activeParameter"] = activeParameter;
     reply(id, std::move(result));
   }
 
@@ -1345,15 +1700,15 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     std::string argument = argv[i];
     if (argument == "--version" || argument == "-V") {
-      std::cout << "a-language-server 0.3.0\n";
+      std::cout << "a-language-server " << kServerVersion << "\n";
       return 0;
     }
     if (argument == "--help" || argument == "-h") {
-      std::cout << "Usage: a-lsp [--stdio]\\n"
-                   "\\n"
-                   "A language server for the A programming language. It speaks the\\n"
-                   "Language Server Protocol over stdin/stdout. Editors normally start it\\n"
-                   "automatically; pass --stdio when they require an explicit transport.\\n";
+      std::cout << "Usage: a-lsp [--stdio]\n"
+                   "\n"
+                   "A language server for the A programming language. It speaks the\n"
+                   "Language Server Protocol over stdin/stdout. Editors normally start it\n"
+                   "automatically; pass --stdio when they require an explicit transport.\n";
       return 0;
     }
   }
