@@ -19,3 +19,5 @@ Plan.md
 .kilo/
 __pycache__/
 *.pyc
+dist/
+*.vsix
