@@ -130,6 +130,12 @@ Value makeView(ArrayViewPtr value) {
   return out;
 }
 
+Value makeAllocator(AllocatorPtr value) {
+  Value out;
+  out.data = std::move(value);
+  return out;
+}
+
 Value makeStructValue(StructPtr value) {
   Value out;
   out.data = std::move(value);
@@ -1941,6 +1947,9 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
   if (auto* left = std::get_if<SetPtr>(&lhs.data)) {
     return *left == std::get<SetPtr>(rhs.data);
   }
+  if (auto* left = std::get_if<AllocatorPtr>(&lhs.data)) {
+    return *left == std::get<AllocatorPtr>(rhs.data);
+  }
   if (auto* left = std::get_if<StructPtr>(&lhs.data)) {
     return *left == std::get<StructPtr>(rhs.data);
   }
@@ -2662,6 +2671,110 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
     if (!writing) return slot;
     slot = std::move(args[2]);
     return makeVoid();
+  }
+
+  if (name == "arena_new" || name == "arena_pool" || name == "arena_region") {
+    if (args.size() != 1) {
+      fail(span, "'" + name + "' expects 1 argument (capacity in bytes).");
+    }
+    const std::int64_t capacity =
+        expectInt(args[0], span, "The capacity passed to '" + name + "'");
+    if (capacity <= 0) {
+      fail(span, "'" + name + "' requires a positive capacity.");
+    }
+    auto allocator = std::make_shared<AllocatorObj>();
+    allocator->kind = name == "arena_pool"
+                          ? AllocatorObj::Kind::Pool
+                          : (name == "arena_region" ? AllocatorObj::Kind::Region
+                                                    : AllocatorObj::Kind::Arena);
+    allocator->capacity = capacity;
+    return makeAllocator(std::move(allocator));
+  }
+
+  if (name == "arena_alloc") {
+    if (args.size() != 2) fail(span, "'arena_alloc' expects 2 arguments (allocator, size).");
+    AllocatorPtr allocator = expectAllocator(args[0], span, "The first argument of 'arena_alloc'");
+    const std::int64_t size =
+        expectInt(args[1], span, "The size passed to 'arena_alloc'");
+    if (size <= 0) fail(span, "'arena_alloc' requires a positive size.");
+
+    std::int64_t handle = -1;
+    if (allocator->kind == AllocatorObj::Kind::Pool) {
+      for (std::size_t i = 0; i < allocator->free.size(); ++i) {
+        if (allocator->free[i].second < size) continue;
+        handle = allocator->free[i].first;
+        const std::int64_t blockSize = allocator->free[i].second;
+        allocator->free.erase(allocator->free.begin() + static_cast<std::ptrdiff_t>(i));
+        if (blockSize > size) {
+          allocator->free.emplace_back(handle + size, blockSize - size);
+        }
+        break;
+      }
+    }
+    if (handle < 0) {
+      if (allocator->bump + size > allocator->capacity) {
+        fail(span, "The allocator is out of space.",
+             "Capacity is " + std::to_string(allocator->capacity) + " bytes; reset it or create " +
+                 "a larger allocator.");
+      }
+      handle = allocator->bump;
+      allocator->bump += size;
+    }
+    allocator->used += size;
+    allocator->live.emplace_back(handle, size);
+    return makeInt(handle);
+  }
+
+  if (name == "arena_release") {
+    if (args.size() != 2) {
+      fail(span, "'arena_release' expects 2 arguments (allocator, handle).");
+    }
+    AllocatorPtr allocator =
+        expectAllocator(args[0], span, "The first argument of 'arena_release'");
+    const std::int64_t handle =
+        expectInt(args[1], span, "The handle passed to 'arena_release'");
+    if (allocator->kind == AllocatorObj::Kind::Arena) {
+      fail(span, "Arena allocations are released together.",
+           "Call arena.reset(allocator) instead of releasing single handles.");
+    }
+    for (std::size_t i = 0; i < allocator->live.size(); ++i) {
+      if (allocator->live[i].first != handle) continue;
+      if (allocator->kind == AllocatorObj::Kind::Region && i + 1 != allocator->live.size()) {
+        fail(span, "Region allocations are released in reverse order.",
+             "Release the most recent allocation first.");
+      }
+      const std::int64_t size = allocator->live[i].second;
+      allocator->live.erase(allocator->live.begin() + static_cast<std::ptrdiff_t>(i));
+      allocator->used -= size;
+      if (allocator->kind == AllocatorObj::Kind::Region) allocator->bump = handle;
+      if (allocator->kind == AllocatorObj::Kind::Pool) {
+        allocator->free.emplace_back(handle, size);
+      }
+      return makeVoid();
+    }
+    fail(span, "Unknown allocation handle " + std::to_string(handle) + ".",
+         "Only handles returned by arena.alloc can be released.");
+  }
+
+  if (name == "arena_reset") {
+    if (args.size() != 1) fail(span, "'arena_reset' expects 1 argument.");
+    AllocatorPtr allocator = expectAllocator(args[0], span, "The argument of 'arena_reset'");
+    allocator->used = 0;
+    allocator->bump = 0;
+    allocator->live.clear();
+    allocator->free.clear();
+    return makeVoid();
+  }
+
+  if (name == "arena_used" || name == "arena_total") {
+    if (args.size() != 1) fail(span, "'" + name + "' expects 1 argument.");
+    AllocatorPtr allocator = expectAllocator(args[0], span, "The argument of '" + name + "'");
+    return makeInt(name == "arena_used" ? allocator->used : allocator->capacity);
+  }
+
+  if (name == "move") {
+    if (args.size() != 1) fail(span, "'move' expects 1 argument.");
+    return std::move(args[0]);
   }
 
   if (name == "print" || name == "eprint") {
@@ -3688,8 +3801,7 @@ const std::string& Interpreter::expectString(const Value& value, Span span,
   fail(span, what + " must be a string.");
 }
 
-ArrayPtr Interpreter::expectArray(const Value& value, Span span, const std::string& what) {
-  if (auto* result = std::get_if<ArrayPtr>(&value.data)) return *result;
+ArrayPtr Interpreter::expectArray(const Value& value, Span span, const std::string& what) {  if (auto* result = std::get_if<ArrayPtr>(&value.data)) return *result;
   ArrayWindow window;
   if (arrayWindowOf(value, window)) {
     return std::make_shared<std::vector<Value>>(
@@ -3697,6 +3809,12 @@ ArrayPtr Interpreter::expectArray(const Value& value, Span span, const std::stri
         window.storage->begin() + static_cast<std::ptrdiff_t>(window.offset + window.length));
   }
   fail(span, what + " must be an array.");
+}
+
+AllocatorPtr Interpreter::expectAllocator(const Value& value, Span span,
+                                          const std::string& what) {
+  if (auto* result = std::get_if<AllocatorPtr>(&value.data)) return *result;
+  fail(span, what + " must be an allocator.");
 }
 
 bool Interpreter::arrayWindowOf(const Value& value, ArrayWindow& out) const {

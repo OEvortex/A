@@ -1,0 +1,4 @@
+xs = [1, 2, 3]
+ys = move(xs)
+ys.append(4)
+print(ys)

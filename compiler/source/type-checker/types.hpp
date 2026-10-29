@@ -28,6 +28,7 @@ enum class TypeKind {
   Module,
   Map,
   Set,
+  Allocator,
   Var,
 };
 
@@ -128,6 +129,8 @@ inline TypePtr typeSet(TypePtr elem) {
   return type;
 }
 
+inline TypePtr typeAllocator() { return makeType(TypeKind::Allocator); }
+
 inline TypePtr typeTuple(std::vector<TypePtr> elements) {
   auto type = makeType(TypeKind::Tuple);
   type->params = std::move(elements);
@@ -192,6 +195,7 @@ inline TypePtr builtinTypeByName(const std::string& name) {
   if (name == "int") return typeInt(64, true);
   if (name == "float") return typeFloat(64);
   if (name == "void") return typeVoid();
+  if (name == "Allocator") return typeAllocator();
   if (name == "i8") return typeInt(8, true);
   if (name == "i16") return typeInt(16, true);
   if (name == "i32") return typeInt(32, true);
@@ -232,6 +236,7 @@ inline std::string typeName(const TypePtr& type) {
     case TypeKind::Result: return "Result<" + typeName(t->elem) + ", " + typeName(t->errorType) + ">";
     case TypeKind::Map: return "map<" + typeName(t->elem) + ", " + typeName(t->params[0]) + ">";
     case TypeKind::Set: return "set<" + typeName(t->elem) + ">";
+    case TypeKind::Allocator: return "Allocator";
     case TypeKind::Tuple: {
       std::string s = "(";
       for (std::size_t i = 0; i < t->params.size(); ++i) {

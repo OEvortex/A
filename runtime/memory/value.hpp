@@ -63,6 +63,20 @@ using NativeFunctionPtr = std::shared_ptr<NativeFunction>;
 struct EnumObj;
 using EnumPtr = std::shared_ptr<EnumObj>;
 
+// Arena, pool, and region allocators share one object shape. Handles are byte
+// offsets into the allocator's capacity, which keeps them values that programs
+// can store and pass around while the interpreter models the allocation policy.
+struct AllocatorObj {
+  enum class Kind { Arena, Pool, Region };
+  Kind kind = Kind::Arena;
+  std::int64_t capacity = 0;
+  std::int64_t used = 0;   // bytes currently outstanding
+  std::int64_t bump = 0;   // high-water mark for bump allocations
+  std::vector<std::pair<std::int64_t, std::int64_t>> live;  // (handle, size), allocation order
+  std::vector<std::pair<std::int64_t, std::int64_t>> free;  // pool free list: (handle, size)
+};
+using AllocatorPtr = std::shared_ptr<AllocatorObj>;
+
 struct RangeValue {
   std::int64_t start = 0;
   std::int64_t end = 0;
@@ -72,7 +86,8 @@ struct RangeValue {
 struct Value {
   std::variant<std::monostate, bool, std::int64_t, double, char32_t, std::string,
                 ArrayPtr, MapPtr, SetPtr, ArrayViewPtr, StructPtr, RangeValue, OptionalPtr,
-               ResultPtr, TuplePtr, ClosurePtr, ModulePtr, NativeFunctionPtr, EnumPtr>
+               ResultPtr, TuplePtr, ClosurePtr, ModulePtr, NativeFunctionPtr, EnumPtr,
+               AllocatorPtr>
       data;
 };
 

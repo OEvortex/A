@@ -583,6 +583,24 @@ window and are visible in the source array; methods that change the length
 views at run time. Copy a view first (`view.copy()`) to get an independent
 array. Stepped slices (`items[0..10..2]`) always copy.
 
+### Ownership, moves, and borrows
+
+Bindings move explicitly with `move(value)`: the original binding is marked as
+moved and any later read is a compile error.
+
+```a
+xs = [1, 2, 3]
+ys = move(xs)
+ys.append(4)   # ok
+print(xs)      # error: Use of moved value 'xs'.
+```
+
+A unit-step slice creates a **borrow** of its source. While the view is live,
+methods that change the lender's length (`append`, `extend`, `insert`, `pop`,
+`remove`, `remove_at`, `clear`) are rejected at compile time; element writes and
+`reverse`/`sort` remain allowed. Reassigning or releasing the view ends the
+borrow. Branches merge moved and borrowed state conservatively.
+
 ### Fixed-size and multidimensional arrays
 
 Annotate an array with a length to require that exact size:
@@ -653,6 +671,39 @@ Both accept arrays and views, perform no normalization or bounds test, and are
 undefined behavior when the index is outside the collection. Prefer ordinary
 indexing; use `unsafe` only in tight loops that prove the index safe.
 
+### Memory allocators
+
+The `arena` native module provides explicit allocators. Handles are byte
+offsets into the allocator's backing storage, so they are cheap integers:
+
+```a
+import arena
+
+buf = arena.new(1024)        # bump/arena allocator
+handle = arena.alloc(buf, 16)
+arena.used(buf)              # bytes outstanding
+arena.total(buf)             # capacity
+arena.reset(buf)             # release everything
+
+pool = arena.pool(4096)      # free-list allocator
+arena.release(pool, handle)  # returns the block to the free list
+
+region = arena.region(4096)  # LIFO region allocator
+```
+
+| Builtin | Result | Notes |
+| ------- | ------ | ----- |
+| `arena.new(capacity)`, `arena.pool(capacity)`, `arena.region(capacity)` | `Allocator` | capacity in bytes |
+| `arena.alloc(a, size)` | int handle | runtime error when out of space |
+| `arena.release(a, handle)` | `void` | pools release individual blocks; regions must release in reverse order; arenas use `reset` |
+| `arena.reset(a)` | `void` | release every block |
+| `arena.used(a)`, `arena.total(a)` | int | outstanding bytes / capacity |
+
+Allocators are also values: `print(buf)` shows `<arena 0/1024>`. The allocator
+builtins execute in the interpreter, so `a run` falls back from the
+LLVM/native backends for programs that use the `arena` module (`a build` does
+not fall back).
+
 ## Built-in functions
 
 | Name | Description |
@@ -663,6 +714,7 @@ indexing; use `unsafe` only in tight loops that prove the index safe.
 | `input(prompt?)` | print prompt, read one line as `String` |
 | `len(container)` | length of a string (code points), array, view, map, or set |
 | `str(value)` | convert any value to its display form |
+| `move(value)` | transfer ownership; the original binding becomes unusable |
 | `int(value)` | `i64` from an int, bool, float (truncated toward zero), or numeric string |
 | `float(value)` | `f64` from an int, bool, float, or numeric string |
 | `abs(x)` | absolute value |
@@ -723,15 +775,16 @@ because integers are stored in a signed 64-bit representation.
 ## Standard library modules
 
 `import math` and friends expose builtins as namespaces. The available native
-modules are `math`, `io`, `fs`, `strings`, `collections`, `core`, and `time`;
+modules are `math`, `io`, `fs`, `strings`, `collections`, `unsafe`, `arena`,
+`core`, and `time`;
 the full member list is in
 [docs/standard-library](../standard-library/README.md). Modules may also be
 written in A under `stdlib/`, such as `stdlib/test/test.a`.
 
 ## Tooling and diagnostics
 
-The `a` binary provides `run`, `build`, `check`, `test`, `fmt`, and `doc`.
-Diagnostics carry stable codes; warnings never change the exit code.
+The `a` binary provides `run`, `build`, `check`, `test`, `fmt`, `doc`, and
+`ir`. Diagnostics carry stable codes; warnings never change the exit code.
 
 | Command | Purpose |
 | ------- | ------- |
@@ -742,6 +795,17 @@ Diagnostics carry stable codes; warnings never change the exit code.
 | `a test <file.a>` | run every zero-argument `fn test_*()` |
 | `a fmt <file.a>` | format source |
 | `a doc <file.a>` | generate documentation |
+| `a ir <file.a>` | print the typed SSA intermediate representation |
+| `a ir --opt <file.a>` | run optimization passes, then print the IR |
+
+`a ir` lowers every function plus the entry module's top-level statements into
+typed SSA with basic blocks, branches, and phi nodes. The pipeline in
+`a ir --opt` performs constant folding/propagation, dead-code elimination
+(unreachable blocks and unused pure instructions), single-block function
+inlining, and loop-invariant code motion into natural-loop preheaders.
+Short-circuiting `and`/`or` are lowered as strict binaries in this IR, and
+constructs that cannot be represented (closures, comprehensions, pattern
+matching) appear as `opaque`.
 
 | Code | Warning |
 | ---- | ------- |

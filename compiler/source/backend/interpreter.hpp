@@ -267,6 +267,7 @@ class Interpreter {
   char32_t expectChar(const Value& value, Span span, const std::string& what);
   const std::string& expectString(const Value& value, Span span, const std::string& what);
   ArrayPtr expectArray(const Value& value, Span span, const std::string& what);
+  AllocatorPtr expectAllocator(const Value& value, Span span, const std::string& what);
   bool arrayWindowOf(const Value& value, ArrayWindow& out) const;
 
   Value convertNumber(const std::string& typeName, const Value& value, Span span);

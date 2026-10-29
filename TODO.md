@@ -136,11 +136,11 @@ against the compiler (2026-10-29).
 
 ## 14. Compiler Backend & IR
 
-- [ ] Intermediate Representation (IR) — typed IR, SSA, control-flow blocks (Plan §5)
+- [x] Intermediate Representation (IR) — typed IR, SSA, control-flow blocks (Plan §5)
 - [x] Native code generation — LLVM backend and native C++ backend (Plan §4.7, §10)
-- [ ] Optimization passes — constant folding, DCE, inlining, loop optimization (Plan §10)
-- [ ] Ownership & lifetime analysis — borrow checker, move semantics (Plan §6)
-- [ ] Custom allocator APIs — arena, pool, region allocators (Plan §6.7)
+- [x] Optimization passes — constant folding, DCE, inlining, loop optimization (Plan §10)
+- [x] Ownership & lifetime analysis — borrow checker, move semantics (Plan §6)
+- [x] Custom allocator APIs — arena, pool, region allocators (Plan §6.7)
 
 ---
 
@@ -171,6 +171,14 @@ against the compiler (2026-10-29).
 
 ## Recently Completed
 
+- [x] Typed SSA IR with basic blocks and phi nodes; `a ir` / `a ir --opt`
+      (2026-10-29)
+- [x] Optimization passes: constant folding, DCE, inlining, loop-invariant
+      code motion (2026-10-29)
+- [x] Ownership analysis: `move(x)`, use-after-move, and view borrow checks
+      (2026-10-29)
+- [x] `arena` allocator module: bump arenas, pools, and LIFO regions
+      (2026-10-29)
 - [x] Fixed-size and multidimensional arrays with compile-time length checks
       (2026-10-29)
 - [x] Array views from unit-step slices, with write-through and resize

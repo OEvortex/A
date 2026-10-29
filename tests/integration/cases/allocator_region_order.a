@@ -1,0 +1,6 @@
+import arena
+
+r = arena.region(32)
+a = arena.alloc(r, 8)
+b = arena.alloc(r, 8)
+arena.release(r, a)

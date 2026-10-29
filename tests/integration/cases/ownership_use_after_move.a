@@ -1,0 +1,3 @@
+xs = [1, 2]
+ys = move(xs)
+print(xs)

@@ -19,7 +19,10 @@
 #include "tooling/docgen.hpp"
 #include "tooling/formatter.hpp"
 #include "lexer/token.hpp"
+#include "ir/ir.hpp"
 #include "name-resolution/module_loader.hpp"
+#include "optimization/optimizer.hpp"
+#include "ownership/ownership.hpp"
 #include "type-checker/sema.hpp"
 
 namespace a {
@@ -55,6 +58,16 @@ int runSource(const std::string& displayPath, std::string source, const DriverCo
 
   Sema sema(graph, sink);
   SemaResult result = sema.analyze();
+  if (sink.hasErrors()) {
+    if (json) {
+      sink.writeJson(out);
+    } else {
+      sink.flush(err, config.useColor);
+    }
+    return kExitCompileError;
+  }
+
+  analyzeOwnership(graph, sink);
   if (json) {
     sink.writeJson(out);
   } else {
@@ -131,6 +144,7 @@ int testFile(const std::string& path, const DriverConfig& config, std::istream& 
 
   Sema sema(graph, sink);
   SemaResult result = sema.analyze();
+  if (!sink.hasErrors()) analyzeOwnership(graph, sink);
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
@@ -167,6 +181,7 @@ int buildFile(const std::string& path, const std::string& outputPath,
 
   Sema sema(graph, sink);
   SemaResult result = sema.analyze();
+  if (!sink.hasErrors()) analyzeOwnership(graph, sink);
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
@@ -209,6 +224,7 @@ int emitLLVMFile(const std::string& path, const std::string& outputPath,
 
   Sema sema(graph, sink);
   SemaResult result = sema.analyze();
+  if (!sink.hasErrors()) analyzeOwnership(graph, sink);
   sink.flush(err, config.useColor);
   if (sink.hasErrors()) return kExitCompileError;
 
@@ -221,6 +237,43 @@ int emitLLVMFile(const std::string& path, const std::string& outputPath,
   if (!emitLLVMIR(graph, result, out)) {
     return kExitCompileError;
   }
+  return kExitOk;
+}
+
+int emitIRFile(const std::string& path, const DriverConfig& config, bool optimize,
+               std::ostream& out, std::ostream& err) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    err << "error: cannot open '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+  if (file.bad()) {
+    err << "error: failed to read '" << path << "'\n";
+    return kExitNoInput;
+  }
+
+  DiagnosticSink sink;
+  ModuleLoaderOptions options;
+  options.modulePaths = config.modulePaths;
+  options.stdlibRoot = config.stdlibRoot;
+  ModuleLoader loader(std::move(options), sink);
+  ModuleGraph graph = loader.load(path, buffer.str());
+
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  Sema sema(graph, sink);
+  SemaResult result = sema.analyze();
+  if (!sink.hasErrors()) analyzeOwnership(graph, sink);
+  sink.flush(err, config.useColor);
+  if (sink.hasErrors()) return kExitCompileError;
+
+  ir::Program program = ir::lowerProgram(graph, result);
+  if (optimize) ir::runAll(program);
+  out << ir::printProgram(program);
   return kExitOk;
 }
 

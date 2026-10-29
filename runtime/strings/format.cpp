@@ -127,6 +127,13 @@ std::string formatValue(const Value& value, bool quoteStrings) {
     out += ")";
     return out;
   }
+  if (auto* allocator = std::get_if<AllocatorPtr>(&value.data)) {
+    const char* kind = "arena";
+    if ((*allocator)->kind == AllocatorObj::Kind::Pool) kind = "pool";
+    if ((*allocator)->kind == AllocatorObj::Kind::Region) kind = "region";
+    return "<" + std::string(kind) + " " + std::to_string((*allocator)->used) + "/" +
+           std::to_string((*allocator)->capacity) + ">";
+  }
   if (std::holds_alternative<ClosurePtr>(value.data)) return "<function>";
   if (auto* module = std::get_if<ModulePtr>(&value.data)) {
     if (!(*module)->nativeName.empty()) return "<module " + (*module)->nativeName + ">";

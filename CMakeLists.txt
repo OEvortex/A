@@ -74,6 +74,21 @@ add_library(a_type_checker STATIC
 )
 target_link_libraries(a_type_checker PUBLIC a_name_resolution)
 
+add_library(a_ownership STATIC
+  compiler/source/ownership/ownership.cpp
+)
+target_link_libraries(a_ownership PUBLIC a_type_checker)
+
+add_library(a_ir STATIC
+  compiler/source/ir/ir.cpp
+)
+target_link_libraries(a_ir PUBLIC a_type_checker a_runtime)
+
+add_library(a_optimization STATIC
+  compiler/source/optimization/optimizer.cpp
+)
+target_link_libraries(a_optimization PUBLIC a_ir)
+
 add_library(a_runtime STATIC
   runtime/strings/utf8.cpp
   runtime/strings/format.cpp
@@ -99,7 +114,7 @@ target_link_libraries(a_tooling PUBLIC a_parser)
 add_library(a_driver STATIC
   compiler/source/driver/driver.cpp
 )
-target_link_libraries(a_driver PUBLIC a_backend a_tooling)
+target_link_libraries(a_driver PUBLIC a_backend a_ownership a_ir a_optimization a_tooling)
 
 # Namespaced aliases keep embedding projects decoupled from target names.
 add_library(a::diagnostics ALIAS a_diagnostics)
@@ -107,6 +122,9 @@ add_library(a::lexer ALIAS a_lexer)
 add_library(a::parser ALIAS a_parser)
 add_library(a::name_resolution ALIAS a_name_resolution)
 add_library(a::type_checker ALIAS a_type_checker)
+add_library(a::ownership ALIAS a_ownership)
+add_library(a::ir ALIAS a_ir)
+add_library(a::optimization ALIAS a_optimization)
 add_library(a::runtime ALIAS a_runtime)
 add_library(a::backend ALIAS a_backend)
 add_library(a::tooling ALIAS a_tooling)
@@ -147,6 +165,10 @@ endif()
 add_executable(a-tooling-tests tests/tooling/tooling_tests.cpp)
 target_link_libraries(a-tooling-tests PRIVATE a_tooling)
 add_test(NAME tooling-tests COMMAND a-tooling-tests)
+
+add_executable(a-ir-tests tests/ir/ir_tests.cpp)
+target_link_libraries(a-ir-tests PRIVATE a_ir a_optimization)
+add_test(NAME ir-tests COMMAND a-ir-tests)
 add_test(NAME tooling-cli
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/run_cli_tests.sh $<TARGET_FILE:a>)
 

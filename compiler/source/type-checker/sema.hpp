@@ -36,6 +36,8 @@ struct SemaResult {
   std::vector<ModuleExports> modules;
   std::unordered_map<const FnDecl*, int> fnModule;
   std::unordered_map<const StructDecl*, int> structModule;
+  std::unordered_map<const FnDecl*, std::vector<TypePtr>> fnParamTypes;
+  std::unordered_map<const FnDecl*, TypePtr> fnReturnTypes;
 };
 
 class Sema {
@@ -160,6 +162,7 @@ class Sema {
 
   // expressions
   TypePtr inferExpr(Expr& expr);
+  TypePtr inferExprImpl(Expr& expr);
   TypePtr inferIdent(IdentExpr& expr);
   TypePtr inferUnary(UnaryExpr& expr);
   TypePtr inferBinary(BinaryExpr& expr);
@@ -222,6 +225,8 @@ class Sema {
   StringMap<TypePtr> typeAliases_;
   std::unordered_map<const FnDecl*, int> fnModules_;
   std::unordered_map<const StructDecl*, int> structModules_;
+  std::unordered_map<const FnDecl*, std::vector<TypePtr>> fnParamTypes_;
+  std::unordered_map<const FnDecl*, TypePtr> fnReturnTypes_;
   std::vector<VarInfo> typeVariables_;
   std::vector<DeclaredVarInfo> declaredVariables_;
   std::vector<std::pair<const FnDecl*, TypePtr>> checkedFunctions_;

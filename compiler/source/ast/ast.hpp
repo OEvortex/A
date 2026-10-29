@@ -14,10 +14,12 @@ struct Stmt;
 struct TypeExpr;
 struct FnDecl;
 struct StructDecl;
+struct Type;
 
 using ExprPtr = std::unique_ptr<Expr>;
 using StmtPtr = std::unique_ptr<Stmt>;
 using TypeExprPtr = std::unique_ptr<TypeExpr>;
+using TypePtr = std::shared_ptr<Type>;
 
 // ---------------------------------------------------------------- types
 
@@ -213,6 +215,9 @@ struct ParamDecl {
 struct Expr {
   Span span;
   ExprKind kind;
+  // Filled in by Sema. The IR lowering reads it to give every SSA value a
+  // static type without re-running type inference.
+  TypePtr inferredType;
   explicit Expr(ExprKind k) : kind(k) {}
   virtual ~Expr() = default;
 };

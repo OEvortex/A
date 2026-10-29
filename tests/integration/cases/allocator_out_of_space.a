@@ -1,0 +1,4 @@
+import arena
+
+buf = arena.new(8)
+print(arena.alloc(buf, 16))

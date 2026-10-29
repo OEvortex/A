@@ -1219,7 +1219,10 @@ bool checkSupportedExpr(const Expr& expr) {
           name == "file_exists" || name == "remove_file" || name == "flush" ||
           name == "input" || name == "read_line" || name == "len" ||
           name == "int" || name == "float" || name == "set" ||
-          name == "unsafe_get" || name == "unsafe_set") {
+          name == "unsafe_get" || name == "unsafe_set" || name == "move" ||
+          name == "arena_new" || name == "arena_pool" || name == "arena_region" ||
+          name == "arena_alloc" || name == "arena_release" || name == "arena_reset" ||
+          name == "arena_used" || name == "arena_total") {
         return false;
       }
       for (const auto& a : c.args) if (!checkSupportedExpr(*a.value)) return false;

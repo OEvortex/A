@@ -88,6 +88,10 @@ cmake --build build -j
 # 4. Format and document it:
 ./build/a fmt -w program.a
 ./build/a doc -o docs/program.md program.a
+
+# 5. Inspect the typed SSA IR (optionally after optimization):
+./build/a ir program.a
+./build/a ir --opt program.a
 ```
 
 ---
@@ -160,11 +164,14 @@ user_theme = user?.settings?.theme ?? "dark"
 │   │   ├── parser/             # Recursive-descent parser
 │   │   ├── ast/                # Typed AST nodes
 │   │   ├── type-checker/       # Global Sema & unification type inference
+│   │   ├── ownership/          # Move/borrow analysis (`move(x)`, view borrows)
+│   │   ├── ir/                 # Typed SSA IR with basic blocks and phis
+│   │   ├── optimization/       # Constant folding, DCE, inlining, LICM
 │   │   ├── backend/
 │   │   │   ├── interpreter.cpp # High-speed tagged development interpreter
 │   │   │   └── native/         # Native AOT codegen hitting C++ parity
 │   │   ├── tooling/            # AST formatter, doc generator, shared printers
-│   │   └── cli/                # Command line interface (`a run`, `a fmt`, `a doc`)
+│   │   └── cli/                # Command line interface (`a run`, `a fmt`, `a doc`, `a ir`)
 ├── runtime/                    # Values, memory models, UTF-8 strings, and file I/O
 ├── stdlib/                     # Standard library modules (math, fs, io, net)
 ├── benchmarks/                 # Verification suites with cross-language equivalents

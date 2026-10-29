@@ -36,6 +36,8 @@ bool isKnownBuiltin(const std::string& name) {
       "assert_eq", "map",  "filter",   "reduce",   "any",
        "all",      "sum",      "join",      "random",   "random_int", "atan2",
        "set",      "unsafe_get", "unsafe_set",
+       "arena_new", "arena_pool", "arena_region", "arena_alloc", "arena_release",
+       "arena_reset", "arena_used", "arena_total", "move",
        "Some",     "Ok",       "Err"};
   for (const char* n : names) {
     if (name == n) return true;
@@ -813,6 +815,8 @@ void Sema::checkFunctionBody(FnDecl& decl, const FnSig& sig) {
   }
 
   checkedFunctions_.push_back({&decl, sig.retType});
+  fnParamTypes_[&decl] = sig.paramTypes;
+  fnReturnTypes_[&decl] = sig.retType;
 
   currentFunction_ = savedFunction;
   currentReturnType_ = savedReturn;
@@ -946,6 +950,8 @@ SemaResult Sema::analyze() {
   result.modules = moduleExports_;
   result.fnModule = fnModules_;
   result.structModule = structModules_;
+  result.fnParamTypes = fnParamTypes_;
+  result.fnReturnTypes = fnReturnTypes_;
   return result;
 }
 
@@ -1462,6 +1468,12 @@ void Sema::checkDefer(DeferStmt& stmt) {
 // ------------------------------------------------------------- expressions
 
 TypePtr Sema::inferExpr(Expr& expr) {
+  TypePtr type = inferExprImpl(expr);
+  expr.inferredType = resolveType(type);
+  return type;
+}
+
+TypePtr Sema::inferExprImpl(Expr& expr) {
   if (auto* node = dynamic_cast<IntLitExpr*>(&expr)) {
     (void)node;
     return freshVar(Constraint::Integer, expr.span, "an integer literal", /*allowDefault=*/true);
@@ -2759,6 +2771,75 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     if (name == "unsafe_get") return resolved->elem;
     checkArgAgainst(*call.args[2].value, resolved->elem, "in 'unsafe_set'");
     return typeVoid();
+  }
+
+  if (name == "arena_new" || name == "arena_pool" || name == "arena_region") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeAllocator();
+    }
+    requireInteger(inferExpr(*call.args[0].value), call.args[0].value->span,
+                   "The allocator capacity");
+    return typeAllocator();
+  }
+
+  if (name == "arena_alloc" || name == "arena_release") {
+    const bool allocating = name == "arena_alloc";
+    if (call.args.size() != 2) {
+      arityError(2);
+      inferArgs();
+      return allocating ? typeInt(64, true) : typeVoid();
+    }
+    TypePtr allocator = inferExpr(*call.args[0].value);
+    if (resolveType(allocator)->kind != TypeKind::Allocator) {
+      reportMismatch(allocator, typeAllocator(), call.args[0].value->span,
+                     "in the first argument to '" + name + "'");
+    }
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   allocating ? "The allocation size" : "The allocation handle");
+    return allocating ? typeInt(64, true) : typeVoid();
+  }
+
+  if (name == "arena_reset") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeVoid();
+    }
+    TypePtr allocator = inferExpr(*call.args[0].value);
+    if (resolveType(allocator)->kind != TypeKind::Allocator) {
+      reportMismatch(allocator, typeAllocator(), call.args[0].value->span,
+                     "in the argument to 'arena_reset'");
+    }
+    return typeVoid();
+  }
+
+  if (name == "arena_used" || name == "arena_total") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeInt(64, true);
+    }
+    TypePtr allocator = inferExpr(*call.args[0].value);
+    if (resolveType(allocator)->kind != TypeKind::Allocator) {
+      reportMismatch(allocator, typeAllocator(), call.args[0].value->span,
+                     "in the argument to '" + name + "'");
+    }
+    return typeInt(64, true);
+  }
+
+  if (name == "move") {
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    if (resolveType(type)->kind == TypeKind::Void) {
+      sink_.error(call.args[0].value->span, "Cannot move a void value.");
+    }
+    return type;
   }
 
   if (name == "str") {

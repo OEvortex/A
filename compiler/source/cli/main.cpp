@@ -28,6 +28,7 @@ void printUsage(std::ostream& os) {
       << "  test <file.a>    run every fn test_*() in a program\n"
       << "  fmt <file.a>     format a source file (prints to stdout)\n"
       << "  doc <file.a>     generate documentation (markdown, prints to stdout)\n"
+      << "  ir <file.a>      print the typed SSA intermediate representation\n"
       << "  version          print the toolchain version\n"
       << "  help             show this message\n"
      << "\n"
@@ -37,6 +38,7 @@ void printUsage(std::ostream& os) {
      << "  --check          exit nonzero if the file needs formatting (for 'fmt')\n"
      << "  --indent <n>     indentation width in spaces (for 'fmt', default 4)\n"
      << "  --json           emit structured JSON (for 'doc' and 'check')\n"
+     << "  --opt            run optimization passes when printing IR (for 'ir')\n"
      << "  --backend <name> compilation backend: 'native' (default) or 'llvm'\n"
      << "  --emit-llvm      emit textual LLVM IR (.ll) file instead of executable\n"
      << "  -I <dir>         add a module search directory (repeatable)\n"
@@ -67,6 +69,7 @@ struct Options {
   bool checkOnly = false;
   bool writeInPlace = false;
   bool jsonOutput = false;
+  bool optimize = false;
   int indentWidth = 4;
 };
 
@@ -86,6 +89,8 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
       options.writeInPlace = true;
     } else if (arg == "--json") {
       options.jsonOutput = true;
+    } else if (arg == "--opt") {
+      options.optimize = true;
     } else if (arg == "--indent") {
       if (i + 1 >= argc) {
         err << "error: '--indent' requires a positive number\n";
@@ -168,7 +173,8 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
   }
 
   static const std::vector<std::string> kCommands = {"run",  "build", "check", "test",
-                                                     "fmt",  "doc",   "version", "help"};
+                                                     "fmt",  "doc",   "ir",    "version",
+                                                     "help"};
   bool known = false;
   for (const auto& command : kCommands) {
     if (positional[0] == command) {
@@ -278,6 +284,10 @@ int main(int argc, char** argv) {
     docOptions.useColor = options.useColor;
     docOptions.outputPath = options.outputPath;
     return a::documentFile(options.path, docOptions, std::cout, std::cerr);
+  }
+
+  if (options.command == "ir") {
+    return a::emitIRFile(options.path, config, options.optimize, std::cout, std::cerr);
   }
 
   if (options.command == "check") {

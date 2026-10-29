@@ -38,6 +38,11 @@ int buildFile(const std::string& path, const std::string& outputPath,
 int emitLLVMFile(const std::string& path, const std::string& outputPath,
                  const DriverConfig& config, std::ostream& err);
 
+// Lowers a checked program to the typed SSA IR and writes its textual form to
+// `out`. When `optimize` is set the standard optimization pipeline runs first.
+int emitIRFile(const std::string& path, const DriverConfig& config, bool optimize,
+               std::ostream& out, std::ostream& err);
+
 // Formats a source file. By default the formatted text is written to `out`;
 // `checkOnly` reports whether the file is already formatted, and
 // `writeInPlace` rewrites the input file.

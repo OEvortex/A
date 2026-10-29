@@ -1,0 +1,24 @@
+import arena
+
+buf = arena.new(64)
+print(buf)
+a = arena.alloc(buf, 8)
+b = arena.alloc(buf, 16)
+print(a, b)
+print(arena.used(buf), arena.total(buf))
+arena.reset(buf)
+print(arena.used(buf))
+
+pool = arena.pool(64)
+p = arena.alloc(pool, 16)
+q = arena.alloc(pool, 16)
+arena.release(pool, p)
+r = arena.alloc(pool, 8)
+print(p, q, r)
+print(arena.used(pool))
+
+region = arena.region(32)
+x = arena.alloc(region, 8)
+y = arena.alloc(region, 8)
+arena.release(region, y)
+print(arena.used(region))
