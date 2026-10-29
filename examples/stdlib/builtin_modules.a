@@ -1,0 +1,207 @@
+# A tour of every builtin package, written as a script: there is no `fn main()`
+# and no `main()` call, because a module body *is* the program and its
+# statements run top to bottom. Helper functions are defined before first use,
+# exactly like in Python.
+#
+#   a run examples/stdlib/builtin_modules.a
+import math
+import io
+import core
+import strings
+import collections
+import fs
+import time
+import unsafe
+import arena
+import json
+import binary
+import testing
+import log
+import metrics
+import trace
+import net
+import http
+import test
+
+fn tour_handler(method: String, path: String, headers: {String: String}, body: String) -> (i64, {String: String}, String):
+
+    reply = method + " " + path + " note=" + headers["x-note"] + " body=" + body
+    return (200, {"Content-Type": "text/plain"}, reply)
+
+# --- math --------------------------------------------------------------------
+print(
+    "math: " + str(math.sqrt(144.0)) + " " + str(math.pow(2.0, 10.0)) + " " + str(math.max(3, 7)) + " " + str(math.floor(2.9)) + " " + str(math.round(2.5)),
+)
+print("math: pi=" + str(math.PI) + " e=" + str(math.E))
+print("math: random in [0,1) = " + str(math.random() >= 0.0 and math.random() < 1.0))
+print(
+    "math: random_int in [1,6] = " + str(math.random_int(1, 6) >= 1 and math.random_int(1, 6) <= 6),
+)
+
+# --- io and core -------------------------------------------------------------
+io.print("io: print, eprint, flush, and input are the raw stream builtins")
+io.eprint("io: this line goes to stderr")
+io.flush()
+core.assert(2 * 3 == 6, "core.assert takes a bool and an optional message")
+core.assert_eq(len("hello"), 5, "core.assert_eq compares two values")
+print("core: both assertions held")
+
+# --- conversions (free builtins, no module needed) ---------------------------
+print(
+    "conversions: " + str(int("  42  ")) + " " + str(int(3.9)) + " " + str(float("1e3")) + " " + str(float(true)) + " " + str(str([1, 2, 3])),
+)
+
+# --- strings -----------------------------------------------------------------
+name = "  Ada Lovelace  "
+print("strings: [" + name.strip() + "] startswith=" + str(name.strip().startswith("Ada")))
+print("strings: " + strings.join(["x", "y", "z"], "-") + " | " + ",".join(["p", "q"]))
+print(
+    "strings: " + "Hello".upper() + " " + "Hello".lower() + " " + "42".zfill(5) + " " + "a,b,c".replace("b", "B"),
+)
+print(
+    "strings: parts=" + str("a,b,c".split(",")) + " index=" + str("abc".index("b")) + " found=" + str("abc".contains("bc")) + " repeated=" + "ab".repeat(3),
+)
+print("strings: " + str(len("añb")) + " code points, " + str("abc".count("b")) + " copies of b")
+
+# --- collections -------------------------------------------------------------
+nums = [3, 1, 2]
+print("collections: map=" + str(collections.map(nums, fn(n: i64) -> i64 => n * 2)))
+print("collections: filter=" + str(collections.filter(nums, fn(n: i64) -> bool => n > 1)))
+print(
+    "collections: reduce=" + str(collections.reduce(nums, 0, fn(acc: i64, n: i64) -> i64 => acc + n)),
+)
+print(
+    "collections: sum=" + str(collections.sum(nums)) + " any=" + str(collections.any(nums, fn(n: i64) -> bool => n == 2)) + " all=" + str(collections.all(nums, fn(n: i64) -> bool => n > 0)),
+)
+unique = collections.set([1, 1, 2, 3])
+print("collections: set size=" + str(len(unique)) + " contains 2=" + str(unique.contains(2)))
+sorted_nums = nums.copy()
+sorted_nums.sort()
+print("collections: sorted=" + str(sorted_nums) + " pop=" + str(sorted_nums.pop()))
+
+# --- fs ----------------------------------------------------------------------
+path = "builtin_modules_tour.txt"
+fs.write_file(path, "line one\n")
+fs.append_file(path, "line two\n")
+print("fs: exists=" + str(fs.file_exists(path)) + " bytes=" + str(len(fs.read_file(path))))
+fs.rename(path, path + ".bak")
+print(
+    "fs: backup listed=" + str(fs.list_dir(".").contains(path + ".bak")) + " cwd non-empty=" + str(len(fs.current_dir()) > 0),
+)
+fs.remove_file(path + ".bak")
+print("fs: cleaned up, file gone=" + str(not fs.file_exists(path)))
+
+# --- time --------------------------------------------------------------------
+start = time.now()
+time.sleep(5)
+print("time: slept at least 5 ms = " + str(time.now() - start >= 5))
+
+# --- unsafe and arena --------------------------------------------------------
+values = [10, 20, 30]
+pointer = unsafe.address_of(values, 1)
+unsafe.store(pointer, 99)
+print(
+    "unsafe: load=" + str(unsafe.load(pointer)) + " offset=" + str(unsafe.load(unsafe.offset(pointer, -1))) + " get=" + str(unsafe.get(values, 2)),
+)
+buf = arena.new(1024)
+handle = arena.alloc(buf, 16)
+print("arena: used>0=" + str(arena.used(buf) > 0) + " total=" + str(arena.total(buf)))
+arena.reset(buf)
+print("arena: after reset used=" + str(arena.used(buf)))
+pool = arena.pool(4096)
+block = arena.alloc(pool, 32)
+arena.release(pool, block)
+region = arena.region(4096)
+first = arena.alloc(region, 8)
+arena.release(region, first)
+print("arena: pool and region released their blocks")
+
+# --- json and binary ---------------------------------------------------------
+doc = json.parse("\{\"ip\": \"203.0.113.7\", \"hops\": [1, 2, 3], \"reachable\": true\}")
+print(
+    "json: kind=" + json.kind(doc) + " keys=" + str(json.keys(doc)) + " len=" + str(json.len(doc)),
+)
+print(
+    "json: ip=" + json.as_str(json.get(doc, "ip")!)! + " hop2=" + str(json.as_int(json.at(json.get(doc, "hops")!, 1)!)!) + " malformed rejected=" + str(not json.is_valid("\{\"a\": 1")),
+)
+bytes = binary.encode(doc)
+restored = binary.decode(bytes)!
+print(
+    "binary: " + str(len(bytes)) + " bytes, round trip equal=" + str(json.stringify(restored) == json.stringify(doc)),
+)
+
+# --- testing (property-based) ------------------------------------------------
+testing.seed(11)
+print(
+    "testing: bounded ints = " + str(testing.for_all_int(25, -50, 50, fn(n: i64) -> bool => n >= -50 and n <= 50)),
+)
+print(
+    "testing: json round trip = " + str(
+        testing.for_all_int(
+            15,
+            0,
+            1000,
+            fn(n: i64) -> bool => json.as_int(json.parse(str(n)))! == n,
+        ),
+    ),
+)
+print("testing: elements = " + str(testing.for_all_elem(nums, fn(n: i64) -> bool => n != 0)))
+print(
+    "testing: strings = " + str(testing.for_all_string(10, 8, fn(s: String) -> bool => len(s) <= 8)),
+)
+
+# --- log, metrics, trace -----------------------------------------------------
+log.set_level("info")
+log.set_json(false)
+log.info("tour step", "stage", "logging")
+log.error("tour failure", "code", 500, "tags", ["a", "b"])
+metrics.reset()
+metrics.counter("tour_events_total", 1, "kind", "info")
+metrics.gauge("tour_queue_depth", 3)
+metrics.histogram("tour_duration_ms", 12.5, "route", "/tour")
+print("metrics: render is " + str(len(metrics.render())) + " bytes of Prometheus text")
+root = trace.start("tour")
+trace.set_attribute(root, "component", "stdlib")
+trace.add_event(root, "checked_in")
+carrier = trace.inject()
+trace.end(root)
+print("trace: spans=" + str(len(trace.spans())) + " traceparent length=" + str(len(carrier)))
+remote = trace.extract(carrier)
+trace.end(remote)
+print("trace: continued a remote span, spans now " + str(len(trace.spans())))
+
+# --- net and http (loopback only, no internet required) ----------------------
+print("net: localhost resolves to " + str(net.resolve("localhost")))
+print("net: tls available = " + str(net.tls_available()))
+listener = net.tcp_listen("127.0.0.1", 0)
+port = net.local_port(listener)
+client = net.tcp_connect("127.0.0.1", port)
+net.send(
+    client,
+    "GET /tour?format=text HTTP/1.1\r\nHost: localhost\r\nX-Note: builtin\r\nConnection: close\r\n\r\n",
+)
+http.serve_once(listener, tour_handler)
+print("http: " + net.recv(client, 4096))
+net.close(client)
+net.close(listener)
+receiver = net.udp_socket()
+sender = net.udp_socket()
+net.udp_bind(receiver, "127.0.0.1", 0)
+udp_port = net.local_port(receiver)
+net.udp_send(sender, "127.0.0.1", udp_port, "ping")
+(data, peer_host, peer_port) = net.udp_recv(receiver, 1024)
+print("net: udp " + data + " from " + peer_host + ":" + str(peer_port))
+net.udp_send(receiver, peer_host, peer_port, "pong")
+(answer, _, _) = net.udp_recv(sender, 1024)
+print("net: udp reply " + answer)
+net.close(sender)
+net.close(receiver)
+
+# --- test (an A-file module, not a native one) -------------------------------
+test.check("arithmetic", 1 + 1 == 2)
+test.equal("string length", 5, len("hello"))
+test.require(true, "require panics when the condition is false")
+print("test: failures=" + str(test.summary()))
+test.report()
+
+print("done: every builtin package ran in a script with no main function")

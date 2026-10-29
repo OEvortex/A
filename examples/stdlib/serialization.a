@@ -18,4 +18,4 @@ restored = binary.decode(packed)!
 print(json.stringify(restored) == json.stringify(settings))
 
 text = binary.encode("hello")
-print(json.as_str((binary.decode(text))!))
+print(json.as_str(binary.decode(text)!))

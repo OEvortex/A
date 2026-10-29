@@ -3,8 +3,8 @@
 import net
 import http
 
-fn handler(method: String, path: String, headers: {String: String},
-           body: String) -> (i64, {String: String}, String):
+fn handler(method: String, path: String, headers: {String: String}, body: String) -> (i64, {String: String}, String):
+
     reply = method + " " + path + " note=" + headers["x-note"] + " body=" + body
     return (200, {"Content-Type": "text/plain"}, reply)
 
@@ -12,7 +12,10 @@ fn tcp_round_trip() -> void:
     listener = net.tcp_listen("127.0.0.1", 0)
     port = net.local_port(listener)
     client = net.tcp_connect("127.0.0.1", port)
-    net.send(client, "GET /hello HTTP/1.1\r\nHost: localhost\r\nX-Note: raw\r\nConnection: close\r\n\r\n")
+    net.send(
+        client,
+        "GET /hello HTTP/1.1\r\nHost: localhost\r\nX-Note: raw\r\nConnection: close\r\n\r\n",
+    )
     http.serve_once(listener, handler)
     print(net.recv(client, 4096))
     net.close(client)
@@ -32,10 +35,7 @@ fn udp_round_trip() -> void:
     net.close(sender)
     net.close(receiver)
 
-fn main() -> void:
-    print(net.resolve("localhost"))
-    tcp_round_trip()
-    udp_round_trip()
-    print("tls available: " + str(net.tls_available()))
-
-main()
+print(net.resolve("localhost"))
+tcp_round_trip()
+udp_round_trip()
+print("tls available: " + str(net.tls_available()))

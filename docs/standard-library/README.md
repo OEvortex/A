@@ -101,6 +101,7 @@ compiled backends do not lower these modules):
 
 | File | Shows |
 | ---- | ----- |
+| `builtin_modules.a` | every builtin package in one script, with no `fn main()` |
 | `serialization.a` | parsing, reading, pretty-printing, and a binary round trip |
 | `property_testing.a` | seeded properties over ints, floats, bools, strings, and elements |
 | `observability.a` | structured log records, a Prometheus render, and span propagation |

@@ -868,12 +868,17 @@ because integers are stored in a signed 64-bit representation.
 - Programs in `a run` execute imported modules once (in dependency order), then
   the entry module's top-level statements. Functions and structs are registered
   before any statements run.
+- There is no entry-point function: a program is its module body, so a script
+  needs no `fn main()` and no `main()` call. `main` is an ordinary name — define
+  and call it only when you want a single labeled block. See
+  `examples/stdlib/builtin_modules.a` for a statement-level tour.
 
 ## Standard library modules
 
 `import math` and friends expose builtins as namespaces. The available native
 modules are `math`, `io`, `fs`, `strings`, `collections`, `unsafe`, `arena`,
-`core`, and `time`;
+`core`, and `time`, plus the runtime-backed `json`, `binary`, `testing`, `log`,
+`metrics`, `trace`, `net`, and `http`;
 the full member list is in
 [docs/standard-library](../standard-library/README.md). Modules may also be
 written in A under `stdlib/`, such as `stdlib/test/test.a`.
