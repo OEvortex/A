@@ -190,12 +190,22 @@ class Interpreter {
   struct ContinueSignal {};
 
   struct LValue {
-    enum class Kind { Variable, Field, Element } kind = Kind::Variable;
+    enum class Kind { Variable, Field, Element, MapEntry } kind = Kind::Variable;
     Binding* binding = nullptr;
     StructPtr object;
     std::size_t fieldIndex = 0;
     ArrayPtr array;
     std::size_t index = 0;
+    MapPtr map;
+    Value mapKey;
+  };
+
+  // `array` or `view` resolved to the storage they share.
+  struct ArrayWindow {
+    ArrayPtr storage;
+    std::size_t offset = 0;
+    std::size_t length = 0;
+    bool isView = false;
   };
 
   [[noreturn]] void fail(Span span, std::string message, std::string help = {});
@@ -214,6 +224,8 @@ class Interpreter {
   Value evalField(const FieldExpr& expr, Env& env);
   Value evalSafeNav(const SafeNavExpr& expr, Env& env);
   Value evalArray(const ArrayLitExpr& expr, Env& env);
+  Value evalMap(const MapLitExpr& expr, Env& env);
+  Value evalSet(const SetLitExpr& expr, Env& env);
   Value evalTuple(const TupleExpr& expr, Env& env);
   Value evalLambda(const LambdaExpr& expr, Env& env);
   Value evalMatch(const MatchExpr& expr, Env& env);
@@ -255,6 +267,7 @@ class Interpreter {
   char32_t expectChar(const Value& value, Span span, const std::string& what);
   const std::string& expectString(const Value& value, Span span, const std::string& what);
   ArrayPtr expectArray(const Value& value, Span span, const std::string& what);
+  bool arrayWindowOf(const Value& value, ArrayWindow& out) const;
 
   Value convertNumber(const std::string& typeName, const Value& value, Span span);
   std::int64_t normalizeIndex(std::int64_t index, std::size_t length, Span span);

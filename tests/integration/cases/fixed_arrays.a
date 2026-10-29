@@ -1,0 +1,18 @@
+numbers: i32[5] = [10, 20, 30, 40, 50]
+print(numbers)
+print(numbers[0], numbers[-1])
+print(len(numbers))
+numbers[2] = 99
+print(numbers)
+
+grid: i32[2][3] = [[1, 2, 3], [4, 5, 6]]
+print(grid)
+print(grid[1][2])
+print(len(grid), len(grid[0]))
+grid[0][0] = 9
+print(grid[0])
+
+names: [str] = ["a", "b"]
+names.append("c")
+print(names)
+print(names.copy())

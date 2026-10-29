@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -18,10 +19,24 @@ struct FnDecl;
 
 using ArrayPtr = std::shared_ptr<std::vector<Value>>;
 
-struct MapObj;
+// A non-owning window into another array's storage. Slicing an array with a
+// step of one produces a view; element writes through the view are visible in
+// the source, and the view keeps the source storage alive.
+struct ArrayView {
+  ArrayPtr storage;
+  std::size_t offset = 0;
+  std::size_t length = 0;
+};
+using ArrayViewPtr = std::shared_ptr<ArrayView>;
+
+struct MapObj {
+  std::vector<std::pair<Value, Value>> entries;  // insertion order; unique keys
+};
 using MapPtr = std::shared_ptr<MapObj>;
 
-struct SetObj;
+struct SetObj {
+  std::vector<Value> elements;  // insertion order; unique elements
+};
 using SetPtr = std::shared_ptr<SetObj>;
 
 struct StructObj;
@@ -56,17 +71,9 @@ struct RangeValue {
 
 struct Value {
   std::variant<std::monostate, bool, std::int64_t, double, char32_t, std::string,
-                ArrayPtr, StructPtr, RangeValue, OptionalPtr, ResultPtr, TuplePtr, ClosurePtr, ModulePtr,
-               NativeFunctionPtr, EnumPtr>
+                ArrayPtr, MapPtr, SetPtr, ArrayViewPtr, StructPtr, RangeValue, OptionalPtr,
+               ResultPtr, TuplePtr, ClosurePtr, ModulePtr, NativeFunctionPtr, EnumPtr>
       data;
-};
-
-struct MapObj {
-  std::vector<std::pair<Value, Value>> entries;  // key -> value
-};
-
-struct SetObj {
-  std::vector<Value> elements;
 };
 
 struct StructObj {

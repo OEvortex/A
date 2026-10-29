@@ -508,6 +508,10 @@ class Formatter {
       }
       case ExprKind::ArrayLit:
         return arrayText(static_cast<const ArrayLitExpr&>(expr), parentPrecedence, indent);
+      case ExprKind::MapLit:
+        return mapText(static_cast<const MapLitExpr&>(expr), parentPrecedence, indent);
+      case ExprKind::SetLit:
+        return setText(static_cast<const SetLitExpr&>(expr), parentPrecedence, indent);
       case ExprKind::Range:
         return rangeText(static_cast<const RangeExpr&>(expr), parentPrecedence, indent);
       case ExprKind::Ternary: {
@@ -523,10 +527,11 @@ class Formatter {
         return lambdaText(static_cast<const LambdaExpr&>(expr), parentPrecedence, indent);
       case ExprKind::Comprehension: {
         const auto& comp = static_cast<const ComprehensionExpr&>(expr);
-        std::string text = "[" + exprText(*comp.element, 0, indent) + " for " + comp.var +
+        std::string text = std::string(comp.isSet ? "{" : "[") +
+                           exprText(*comp.element, 0, indent) + " for " + comp.var +
                            " in " + exprText(*comp.iterable, 0, indent);
         if (comp.condition) text += " if " + exprText(*comp.condition, 0, indent);
-        text += "]";
+        text += comp.isSet ? "}" : "]";
         return postfixWrap(text, parentPrecedence, 17);
       }
       case ExprKind::Match:
@@ -605,32 +610,56 @@ class Formatter {
     return postfixWrap(text, parent, 17);
   }
 
-  std::string arrayText(const ArrayLitExpr& array, int parent, int indent) {
-    std::vector<std::string> elements;
-    elements.reserve(array.elements.size());
-    for (const auto& element : array.elements) {
-      elements.push_back(exprText(*element, 0, indent + 1));
-    }
-    const std::string flat = "[" + joinList("", elements, "") + "]";
+  std::string enclosedText(const std::string& open, const std::string& close,
+                           const std::vector<std::string>& parts, int parent, int indent) {
+    const std::string flat = open + joinList("", parts, "") + close;
     bool multiline = false;
-    for (const std::string& element : elements) {
-      if (element.find('\n') != std::string::npos) multiline = true;
+    for (const std::string& part : parts) {
+      if (part.find('\n') != std::string::npos) multiline = true;
     }
     if (static_cast<int>(flat.size() + indent * options_.indentWidth) > options_.maxLineWidth) {
       multiline = true;
     }
 
     std::string text;
-    if (multiline && !elements.empty()) {
-      text = "[\n";
-      for (const std::string& element : elements) {
-        text += indentText(indent + 1) + element + ",\n";
+    if (multiline && !parts.empty()) {
+      text = open + "\n";
+      for (const std::string& part : parts) {
+        text += indentText(indent + 1) + part + ",\n";
       }
-      text += indentText(indent) + "]";
+      text += indentText(indent) + close;
     } else {
       text = flat;
     }
     return postfixWrap(text, parent, 17);
+  }
+
+  std::string arrayText(const ArrayLitExpr& array, int parent, int indent) {
+    std::vector<std::string> elements;
+    elements.reserve(array.elements.size());
+    for (const auto& element : array.elements) {
+      elements.push_back(exprText(*element, 0, indent + 1));
+    }
+    return enclosedText("[", "]", elements, parent, indent);
+  }
+
+  std::string mapText(const MapLitExpr& map, int parent, int indent) {
+    std::vector<std::string> entries;
+    entries.reserve(map.entries.size());
+    for (const auto& entry : map.entries) {
+      entries.push_back(exprText(*entry.first, 0, indent + 1) + ": " +
+                        exprText(*entry.second, 0, indent + 1));
+    }
+    return enclosedText("{", "}", entries, parent, indent);
+  }
+
+  std::string setText(const SetLitExpr& set, int parent, int indent) {
+    std::vector<std::string> elements;
+    elements.reserve(set.elements.size());
+    for (const auto& element : set.elements) {
+      elements.push_back(exprText(*element, 0, indent + 1));
+    }
+    return enclosedText("{", "}", elements, parent, indent);
   }
 
   std::string tupleText(const TupleExpr& tuple, int parent, int indent) {

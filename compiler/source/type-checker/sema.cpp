@@ -35,6 +35,7 @@ bool isKnownBuiltin(const std::string& name) {
       "remove_dir", "rename", "current_dir", "now", "sleep", "panic", "assert",
       "assert_eq", "map",  "filter",   "reduce",   "any",
        "all",      "sum",      "join",      "random",   "random_int", "atan2",
+       "set",      "unsafe_get", "unsafe_set",
        "Some",     "Ok",       "Err"};
   for (const char* n : names) {
     if (name == n) return true;
@@ -214,6 +215,13 @@ bool Sema::occursIn(TypePtr var, TypePtr type) {
     case TypeKind::Optional:
     case TypeKind::Result:
       return occursIn(var, type->elem) || occursIn(var, type->errorType);
+    case TypeKind::Map:
+    case TypeKind::Set:
+      if (occursIn(var, type->elem)) return true;
+      for (const auto& p : type->params) {
+        if (occursIn(var, p)) return true;
+      }
+      return false;
     case TypeKind::Tuple:
     case TypeKind::Function: {
       for (const auto& p : type->params) {
@@ -298,9 +306,16 @@ bool Sema::unify(TypePtr a, TypePtr b) {
       }
       return true;
     case TypeKind::Array:
+      if (a->length >= 0 && b->length >= 0 && a->length != b->length) return false;
+      return unify(a->elem, b->elem);
     case TypeKind::Range:
     case TypeKind::Optional:
       return unify(a->elem, b->elem);
+    case TypeKind::Set:
+      return unify(a->elem, b->elem);
+    case TypeKind::Map:
+      return unify(a->elem, b->elem) && !a->params.empty() && !b->params.empty() &&
+             unify(a->params[0], b->params[0]);
     case TypeKind::Result:
       return unify(a->elem, b->elem) && unify(a->errorType, b->errorType);
     case TypeKind::Tuple: {
@@ -349,7 +364,7 @@ bool Sema::constrainVar(TypePtr var, Constraint constraint) {
 
 TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
   if (auto* array = dynamic_cast<ArrayTypeExpr*>(&expr)) {
-    return typeArray(resolveTypeExpr(*array->element));
+    return typeArray(resolveTypeExpr(*array->element), array->length);
   }
   if (auto* optional = dynamic_cast<OptionalTypeExpr*>(&expr)) {
     return typeOptional(resolveTypeExpr(*optional->element));
@@ -361,6 +376,12 @@ TypePtr Sema::resolveTypeExpr(TypeExpr& expr) {
       elements.push_back(resolveTypeExpr(*element));
     }
     return typeTuple(std::move(elements));
+  }
+  if (auto* map = dynamic_cast<MapTypeExpr*>(&expr)) {
+    return typeMap(resolveTypeExpr(*map->key), resolveTypeExpr(*map->value));
+  }
+  if (auto* set = dynamic_cast<SetTypeExpr*>(&expr)) {
+    return typeSet(resolveTypeExpr(*set->element));
   }
   if (auto* fn = dynamic_cast<FunctionTypeExpr*>(&expr)) {
     std::vector<TypePtr> params;
@@ -1184,6 +1205,8 @@ void Sema::checkLet(LetStmt& stmt) {
     if (!unify(initType, declared)) {
       reportMismatch(initType, declared, stmt.init->span,
                      "in the initializer for '" + stmt.name + "'");
+    } else {
+      checkFixedArrayLength(*stmt.init, declared);
     }
     variableType = declared;
   } else if (resolveType(initType)->kind == TypeKind::Void) {
@@ -1240,6 +1263,8 @@ void Sema::checkAssign(AssignStmt& stmt) {
     if (!unify(valueType, sym->type)) {
       reportMismatch(valueType, sym->type, stmt.value->span,
                      "in assignment to '" + ident->name + "'");
+    } else {
+      checkFixedArrayLength(*stmt.value, sym->type);
     }
     return;
   }
@@ -1254,6 +1279,8 @@ void Sema::checkAssign(AssignStmt& stmt) {
     }
     if (!unify(valueType, targetType)) {
       reportMismatch(valueType, targetType, stmt.value->span, "in assignment");
+    } else {
+      checkFixedArrayLength(*stmt.value, targetType);
     }
     return;
   }
@@ -1341,25 +1368,29 @@ void Sema::checkDoWhile(DoWhileStmt& stmt) {
   requireBool(condType, stmt.cond->span, "The 'while' condition");
 }
 
-void Sema::checkFor(ForStmt& stmt) {  TypePtr iterableType = inferExpr(*stmt.iterable);
+TypePtr Sema::iterableElementType(TypePtr iterableType, Span span, const std::string& hint) {
   TypePtr resolved = resolveType(iterableType);
-  TypePtr elementType;
-
   if (resolved->kind == TypeKind::Var) {
-    sink_.error(stmt.iterable->span,
-                "Cannot infer the type of the value being iterated over.",
-                "Annotate the variable, or iterate over an array, string, or range.");
-    elementType = typeError();
-  } else if (resolved->kind == TypeKind::Array || resolved->kind == TypeKind::Range) {
-    elementType = resolved->elem;
-  } else if (resolved->kind == TypeKind::String) {
-    elementType = typeChar();
-  } else {
-    sink_.error(stmt.iterable->span,
-                "Cannot iterate over " + typePhrase(resolved) + ".",
-                "Loops iterate over arrays, strings, and integer ranges ('0..10').");
-    elementType = typeError();
+    sink_.error(span, "Cannot infer the type of the value being iterated over.",
+                "Annotate the variable, or iterate over an array, string, map, set, or range.");
+    return typeError();
   }
+  if (resolved->kind == TypeKind::Array || resolved->kind == TypeKind::Range ||
+      resolved->kind == TypeKind::Set) {
+    return resolved->elem;
+  }
+  if (resolved->kind == TypeKind::Map) return resolved->elem;  // keys
+  if (resolved->kind == TypeKind::String) return typeChar();
+  sink_.error(span,
+              "Cannot iterate over " + typePhrase(resolved) + ".",
+              "Loops " + hint + " iterate over arrays, strings, maps (keys), sets, and integer "
+              "ranges ('0..10').");
+  return typeError();
+}
+
+void Sema::checkFor(ForStmt& stmt) {
+  TypePtr elementType =
+      iterableElementType(inferExpr(*stmt.iterable), stmt.iterable->span, "and comprehensions");
 
   ++loopDepth_;
   pushScope();
@@ -1401,6 +1432,8 @@ void Sema::checkReturn(ReturnStmt& stmt) {
     if (!unify(valueType, expected)) {
       reportMismatch(valueType, expected, stmt.value->span,
                      "in the return value of '" + currentFunction_->name + "'");
+    } else {
+      checkFixedArrayLength(*stmt.value, expected);
     }
   } else {
     if (resolvedExpected->kind != TypeKind::Var &&
@@ -1734,6 +1767,36 @@ TypePtr Sema::inferBinary(BinaryExpr& expr) {
   }
 
   if (op == "in" || op == "not in") {
+    TypePtr container = resolveType(rhs);
+    switch (container->kind) {
+      case TypeKind::Array:
+      case TypeKind::Set:
+        if (!unify(lhs, container->elem)) {
+          reportMismatch(lhs, container->elem, expr.lhs->span, "in the left operand of '" + op + "'");
+        }
+        break;
+      case TypeKind::Map:
+        if (!container->params.empty() && !unify(lhs, container->elem)) {
+          reportMismatch(lhs, container->elem, expr.lhs->span, "in the map key of '" + op + "'");
+        }
+        break;
+      case TypeKind::String:
+        if (!unify(lhs, typeString())) {
+          reportMismatch(lhs, typeString(), expr.lhs->span, "in the left operand of '" + op + "'");
+        }
+        break;
+      case TypeKind::Range:
+        requireInteger(lhs, expr.lhs->span, "The left operand of '" + op + "'");
+        break;
+      case TypeKind::Var:
+      case TypeKind::Error:
+        break;
+      default:
+        sink_.error(expr.rhs->span,
+                    "Right operand of '" + op + "' must be an array, map, set, string, or range, "
+                    "found " + typePhrase(container) + ".");
+        break;
+    }
     return typeBool();
   }
 
@@ -2137,16 +2200,28 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
       TypePtr type = inferExpr(*call.args[index].value);
       requireInteger(type, call.args[index].value->span, what);
     };
+    auto rejectResize = [&](const char* what) {
+      if (object->length < 0) return false;
+      sink_.error(field.fieldSpan,
+                  "'" + method + "' cannot resize a fixed-size array of type " +
+                      typeName(object) + ".",
+                  std::string(what) + " Use a dynamically sized array ('[T]') when the length "
+                  "must change.");
+      for (auto& arg : call.args) inferExpr(*arg.value);
+      return true;
+    };
 
     if (method == "append") {
       if (rejectNamed()) return typeError();
       if (!arity(1, 1, "1 argument (value)")) return typeError();
+      if (rejectResize("Appending would grow the array.")) return typeVoid();
       elementArg(0, "in 'append'");
       return typeVoid();
     }
     if (method == "extend") {
       if (rejectNamed()) return typeError();
       if (!arity(1, 1, "1 argument (array)")) return typeError();
+      if (rejectResize("Extending would grow the array.")) return typeVoid();
       TypePtr argType = inferExpr(*call.args[0].value);
       TypePtr resolved = resolveType(argType);
       if (resolved->kind != TypeKind::Array) {
@@ -2160,6 +2235,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     if (method == "insert") {
       if (rejectNamed()) return typeError();
       if (!arity(2, 2, "2 arguments (index, value)")) return typeError();
+      if (rejectResize("Inserting would grow the array.")) return typeVoid();
       indexArg(0, "The index passed to 'insert'");
       elementArg(1, "in 'insert'");
       return typeVoid();
@@ -2167,18 +2243,21 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     if (method == "pop") {
       if (rejectNamed()) return typeError();
       if (!arity(0, 1, "at most 1 argument (index)")) return typeError();
+      if (rejectResize("Popping would shrink the array.")) return object->elem;
       if (call.args.size() == 1) indexArg(0, "The index passed to 'pop'");
       return object->elem;
     }
     if (method == "remove") {
       if (rejectNamed()) return typeError();
       if (!arity(1, 1, "1 argument (value)")) return typeError();
+      if (rejectResize("Removing would shrink the array.")) return typeVoid();
       elementArg(0, "in 'remove'");
       return typeVoid();
     }
     if (method == "clear" || method == "reverse" || method == "sort") {
       if (rejectNamed()) return typeError();
       if (!arity(0, 0, "no arguments")) return typeError();
+      if (method == "clear" && rejectResize("Clearing would shrink the array.")) return typeVoid();
       if (method == "sort") {
         TypePtr element = resolveType(object->elem);
         if (element->kind != TypeKind::Var && element->kind != TypeKind::Int &&
@@ -2193,7 +2272,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     if (method == "copy") {
       if (rejectNamed()) return typeError();
       if (!arity(0, 0, "no arguments")) return typeError();
-      return typeArray(object->elem);
+      return typeArray(object->elem, object->length);
     }
     if (method == "count") {
       if (rejectNamed()) return typeError();
@@ -2229,6 +2308,7 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
     if (method == "remove_at") {
       if (rejectNamed()) return typeError();
       if (!arity(1, 1, "1 argument (index)")) return typeError();
+      if (rejectResize("Removing would shrink the array.")) return object->elem;
       indexArg(0, "The index passed to 'remove_at'");
       return object->elem;
     }
@@ -2243,6 +2323,157 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
                 "remove_at(i), pop([i]), remove(v), clear(), copy(), count(v), "
                 "index(v[, start[, end]]), contains(v), sort(), reverse(), "
                 "first(), last(), join(sep).");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+
+  if (object->kind == TypeKind::Map) {
+    if (rejectNamed()) return typeError();
+    TypePtr key = object->elem;
+    TypePtr value = object->params.empty() ? typeError() : object->params[0];
+    auto arity = [&](std::size_t low, std::size_t high, const std::string& usage) -> bool {
+      if (call.args.size() < low || call.args.size() > high) {
+        sink_.error(call.span, "Method '" + method + "' expects " + usage + ", found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return false;
+      }
+      return true;
+    };
+    auto keyArg = [&](std::size_t index) {
+      checkArgAgainst(*call.args[index].value, key, "in the key argument to '" + method + "'");
+    };
+
+    if (method == "get") {
+      if (!arity(1, 2, "1 or 2 arguments (key[, default])")) return typeError();
+      keyArg(0);
+      if (call.args.size() == 2) {
+        checkArgAgainst(*call.args[1].value, value, "in the default argument to 'get'");
+        return value;
+      }
+      return typeOptional(value);
+    }
+    if (method == "pop") {
+      if (!arity(1, 2, "1 or 2 arguments (key[, default])")) return typeError();
+      keyArg(0);
+      if (call.args.size() == 2) {
+        checkArgAgainst(*call.args[1].value, value, "in the default argument to 'pop'");
+      }
+      return value;
+    }
+    if (method == "contains") {
+      if (!arity(1, 1, "1 argument (key)")) return typeError();
+      keyArg(0);
+      return typeBool();
+    }
+    if (method == "keys") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeArray(key);
+    }
+    if (method == "values") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeArray(value);
+    }
+    if (method == "items") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeArray(typeTuple({key, value}));
+    }
+    if (method == "clear") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeVoid();
+    }
+    if (method == "copy") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return object;
+    }
+    if (method == "update") {
+      if (!arity(1, 1, "1 argument (map)")) return typeError();
+      TypePtr other = inferExpr(*call.args[0].value);
+      TypePtr resolved = resolveType(other);
+      if (resolved->kind != TypeKind::Map) {
+        sink_.error(call.args[0].value->span,
+                    "'update' expects a map, found " + typePhrase(resolved) + ".");
+      } else if (!unify(resolved, object)) {
+        sink_.error(call.args[0].value->span,
+                    "'update' requires a map with the same key and value types as " +
+                        typeName(object) + ".");
+      }
+      return typeVoid();
+    }
+    sink_.error(field.fieldSpan,
+                "Map has no method named '" + method + "'.",
+                "Available map methods: get(k[, default]), pop(k[, default]), contains(k), "
+                "keys(), values(), items(), update(other), copy(), clear().");
+    for (auto& arg : call.args) inferExpr(*arg.value);
+    return typeError();
+  }
+
+  if (object->kind == TypeKind::Set) {
+    if (rejectNamed()) return typeError();
+    TypePtr element = object->elem;
+    auto arity = [&](std::size_t low, std::size_t high, const std::string& usage) -> bool {
+      if (call.args.size() < low || call.args.size() > high) {
+        sink_.error(call.span, "Method '" + method + "' expects " + usage + ", found " +
+                                   std::to_string(call.args.size()) + ".");
+        for (auto& arg : call.args) inferExpr(*arg.value);
+        return false;
+      }
+      return true;
+    };
+    auto elementArg = [&](std::size_t index) {
+      checkArgAgainst(*call.args[index].value, element, "in the argument to '" + method + "'");
+    };
+
+    if (method == "add") {
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0);
+      return typeVoid();
+    }
+    if (method == "remove" || method == "discard") {
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0);
+      return typeVoid();
+    }
+    if (method == "contains") {
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0);
+      return typeBool();
+    }
+    if (method == "clear") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeVoid();
+    }
+    if (method == "copy") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return object;
+    }
+    if (method == "union" || method == "intersection" || method == "difference") {
+      if (!arity(1, 1, "1 argument (set)")) return typeError();
+      TypePtr other = inferExpr(*call.args[0].value);
+      TypePtr resolved = resolveType(other);
+      if (resolved->kind != TypeKind::Set) {
+        sink_.error(call.args[0].value->span,
+                    "'" + method + "' expects a set, found " + typePhrase(resolved) + ".");
+      } else if (!unify(resolved->elem, element)) {
+        reportMismatch(resolved->elem, element, call.args[0].value->span,
+                       "in '" + method + "'");
+      }
+      return object;
+    }
+    if (method == "issubset" || method == "issuperset") {
+      if (!arity(1, 1, "1 argument (set)")) return typeError();
+      TypePtr other = inferExpr(*call.args[0].value);
+      TypePtr resolved = resolveType(other);
+      if (resolved->kind != TypeKind::Set) {
+        sink_.error(call.args[0].value->span,
+                    "'" + method + "' expects a set, found " + typePhrase(resolved) + ".");
+      }
+      return typeBool();
+    }
+    sink_.error(field.fieldSpan,
+                "Set has no method named '" + method + "'.",
+                "Available set methods: add(v), remove(v), discard(v), contains(v), union(s), "
+                "intersection(s), difference(s), issubset(s), issuperset(s), copy(), clear().");
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -2467,7 +2698,8 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     }
     TypePtr type = inferExpr(*call.args[0].value);
     TypePtr resolved = resolveType(type);
-    if (resolved->kind == TypeKind::String || resolved->kind == TypeKind::Array) {
+    if (resolved->kind == TypeKind::String || resolved->kind == TypeKind::Array ||
+        resolved->kind == TypeKind::Map || resolved->kind == TypeKind::Set) {
       return typeInt(64, true);
     }
     if (resolved->kind == TypeKind::Var) {
@@ -2476,9 +2708,57 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
     } else {
       sink_.error(call.args[0].value->span,
                   "'len' cannot be applied to " + typePhrase(resolved) + ".",
-                  "'len' works on strings and arrays.");
+                  "'len' works on strings, arrays, maps, and sets.");
     }
     return typeInt(64, true);
+  }
+
+  if (name == "set") {
+    if (call.args.size() > 1) {
+      arityError(1);
+      inferArgs();
+      return typeSet(typeError());
+    }
+    if (call.args.empty()) {
+      return typeSet(freshVar(Constraint::None, call.span, "the element type of an empty set"));
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(type);
+    if (resolved->kind == TypeKind::Set) return type;
+    if (resolved->kind == TypeKind::Array || resolved->kind == TypeKind::Range) {
+      return typeSet(resolved->elem);
+    }
+    if (resolved->kind == TypeKind::String) return typeSet(typeChar());
+    if (resolved->kind == TypeKind::Var) {
+      return typeSet(freshVar(Constraint::None, call.span, "the element type of 'set'"));
+    }
+    sink_.error(call.args[0].value->span,
+                "'set' requires an array, range, set, or string, found " + typePhrase(resolved) +
+                    ".");
+    return typeSet(typeError());
+  }
+
+  if (name == "unsafe_get" || name == "unsafe_set") {
+    const std::size_t expected = name == "unsafe_get" ? 2 : 3;
+    if (call.args.size() != expected) {
+      arityError(expected);
+      inferArgs();
+      return typeError();
+    }
+    TypePtr sequence = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(sequence);
+    if (resolved->kind != TypeKind::Array) {
+      sink_.error(call.args[0].value->span,
+                  "'" + name + "' requires an array, found " + typePhrase(resolved) + ".",
+                  "Unchecked access is supported only for arrays and array views.");
+      for (std::size_t i = 1; i < call.args.size(); ++i) inferExpr(*call.args[i].value);
+      return typeError();
+    }
+    requireInteger(inferExpr(*call.args[1].value), call.args[1].value->span,
+                   "The index passed to '" + name + "'");
+    if (name == "unsafe_get") return resolved->elem;
+    checkArgAgainst(*call.args[2].value, resolved->elem, "in 'unsafe_set'");
+    return typeVoid();
   }
 
   if (name == "str") {
@@ -2919,14 +3199,26 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
 TypePtr Sema::inferIndex(IndexExpr& expr) {
   TypePtr objectType = inferExpr(*expr.object);
   TypePtr indexType = inferExpr(*expr.index);
-  requireInteger(indexType, expr.index->span, "The array index");
 
   TypePtr object = resolveType(objectType);
+  if (object->kind == TypeKind::Map && !object->params.empty()) {
+    if (!unify(indexType, object->elem)) {
+      reportMismatch(indexType, object->elem, expr.index->span, "in the map key");
+    }
+    return object->params[0];
+  }
+  if (object->kind == TypeKind::Map) return typeError();
+  requireInteger(indexType, expr.index->span, "The array index");
   if (object->kind == TypeKind::Array) return object->elem;
   if (object->kind == TypeKind::String) return typeChar();
   if (object->kind == TypeKind::Var) {
     sink_.error(expr.object->span, "Cannot infer the type being indexed.",
                 "Add a type annotation to the value.");
+    return typeError();
+  }
+  if (object->kind == TypeKind::Set) {
+    sink_.error(expr.object->span, "A set cannot be indexed.",
+                "Sets are unordered; use 'in' to test membership.");
     return typeError();
   }
   sink_.error(expr.object->span,
@@ -2950,7 +3242,9 @@ TypePtr Sema::inferSlice(SliceExpr& expr) {
   }
 
   TypePtr object = resolveType(objectType);
-  if (object->kind == TypeKind::Array) return object;
+  // A slice is a view over the source storage; its length is only known at
+  // run time, so the static type is the dynamic array form.
+  if (object->kind == TypeKind::Array) return typeArray(object->elem);
   if (object->kind == TypeKind::String) return typeString();
   if (object->kind == TypeKind::Var) {
     sink_.error(expr.object->span, "Cannot infer the type being sliced.",
@@ -3047,20 +3341,50 @@ TypePtr Sema::inferArrayLiteral(ArrayLitExpr& expr) {
 }
 
 TypePtr Sema::inferMapLiteral(MapLitExpr& expr) {
-  sink_.error(expr.span, "Map literals are not supported yet.",
-              "A has no map runtime value; use parallel arrays or a struct instead.");
-  for (auto& entry : expr.entries) {
-    inferExpr(*entry.first);
-    inferExpr(*entry.second);
+  if (expr.entries.empty()) {
+    TypePtr key = freshVar(Constraint::None, expr.span, "the key type of an empty map");
+    TypePtr value = freshVar(Constraint::None, expr.span, "the value type of an empty map");
+    return typeMap(key, value);
   }
-  return typeError();
+
+  TypePtr keyType = inferExpr(*expr.entries[0].first);
+  TypePtr valueType = inferExpr(*expr.entries[0].second);
+  for (std::size_t i = 1; i < expr.entries.size(); ++i) {
+    TypePtr nextKey = inferExpr(*expr.entries[i].first);
+    TypePtr nextValue = inferExpr(*expr.entries[i].second);
+    if (!unify(keyType, nextKey)) {
+      sink_.error(expr.entries[i].first->span,
+                  "All map keys must have the same type, found " + typeName(keyType) + " and " +
+                      typeName(nextKey) + ".");
+      keyType = typeError();
+    }
+    if (!unify(valueType, nextValue)) {
+      sink_.error(expr.entries[i].second->span,
+                  "All map values must have the same type, found " + typeName(valueType) +
+                      " and " + typeName(nextValue) + ".");
+      valueType = typeError();
+    }
+  }
+  return typeMap(keyType, valueType);
 }
 
 TypePtr Sema::inferSetLiteral(SetLitExpr& expr) {
-  sink_.error(expr.span, "Set literals are not supported yet.",
-              "A has no set runtime value; use an array and 'contains' instead.");
-  for (auto& element : expr.elements) inferExpr(*element);
-  return typeError();
+  if (expr.elements.empty()) {
+    TypePtr element = freshVar(Constraint::None, expr.span, "the element type of an empty set");
+    return typeSet(element);
+  }
+
+  TypePtr elementType = inferExpr(*expr.elements[0]);
+  for (std::size_t i = 1; i < expr.elements.size(); ++i) {
+    TypePtr nextType = inferExpr(*expr.elements[i]);
+    if (!unify(elementType, nextType)) {
+      sink_.error(expr.elements[i]->span,
+                  "All set elements must have the same type, found " + typeName(elementType) +
+                      " and " + typeName(nextType) + ".");
+      return typeError();
+    }
+  }
+  return typeSet(elementType);
 }
 
 TypePtr Sema::inferTuple(TupleExpr& expr) {
@@ -3157,7 +3481,27 @@ void Sema::checkArgAgainst(Expr& expr, TypePtr expected, const std::string& cont
   TypePtr actual = inferExpr(expr);
   if (!unify(actual, expected)) {
     reportMismatch(actual, expected, expr.span, context);
+    return;
   }
+  checkFixedArrayLength(expr, expected);
+}
+
+// A fixed-size array type with a literal initializer must match exactly. The
+// check recurses so `i32[2][3]` also validates the nested rows.
+void Sema::checkFixedArrayLength(Expr& value, TypePtr expected) {
+  TypePtr resolved = resolveType(expected);
+  if (!resolved || resolved->kind != TypeKind::Array || resolved->length < 0) return;
+  auto* literal = dynamic_cast<ArrayLitExpr*>(&value);
+  if (!literal) return;
+  const std::int64_t actual = static_cast<std::int64_t>(literal->elements.size());
+  if (actual != resolved->length) {
+    sink_.error(literal->span,
+                "Fixed-size array " + typeName(resolved) + " requires " +
+                    std::to_string(resolved->length) + " element(s), found " +
+                    std::to_string(actual) + ".");
+    return;
+  }
+  for (auto& element : literal->elements) checkFixedArrayLength(*element, resolved->elem);
 }
 
 TypePtr Sema::inferSafeNav(SafeNavExpr& expr) {
@@ -3290,25 +3634,8 @@ TypePtr Sema::inferTry(TryExpr& expr) {
 }
 
 TypePtr Sema::inferComprehension(ComprehensionExpr& expr) {
-  TypePtr iterableType = inferExpr(*expr.iterable);
-  TypePtr iterable = resolveType(iterableType);
-  TypePtr elementType;
-
-  if (iterable->kind == TypeKind::Var) {
-    sink_.error(expr.iterable->span,
-                "Cannot infer the type of the value being iterated over.",
-                "Annotate the variable, or iterate over an array, string, or range.");
-    elementType = typeError();
-  } else if (iterable->kind == TypeKind::Array || iterable->kind == TypeKind::Range) {
-    elementType = iterable->elem;
-  } else if (iterable->kind == TypeKind::String) {
-    elementType = typeChar();
-  } else {
-    sink_.error(expr.iterable->span,
-                "Cannot iterate over " + typePhrase(iterable) + ".",
-                "Comprehensions iterate over arrays, strings, and integer ranges ('0..10').");
-    elementType = typeError();
-  }
+  TypePtr elementType =
+      iterableElementType(inferExpr(*expr.iterable), expr.iterable->span, "and comprehensions");
 
   pushScope();
   declareVar(expr.var, expr.varSpan, elementType, false, "loop variable");
@@ -3321,7 +3648,7 @@ TypePtr Sema::inferComprehension(ComprehensionExpr& expr) {
     result = typeError();
   }
   popScope();
-  return typeArray(result);
+  return expr.isSet ? typeSet(result) : typeArray(result);
 }
 
 // ---------------------------------------------------------------- helpers

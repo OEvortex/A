@@ -62,6 +62,37 @@ std::string formatValue(const Value& value, bool quoteStrings) {
     out += "]";
     return out;
   }
+  if (auto* view = std::get_if<ArrayViewPtr>(&value.data)) {
+    const auto& storage = *(*view)->storage;
+    std::string out = "[";
+    for (std::size_t i = 0; i < (*view)->length; ++i) {
+      if (i) out += ", ";
+      out += formatValue(storage[(*view)->offset + i], true);
+    }
+    out += "]";
+    return out;
+  }
+  if (auto* map = std::get_if<MapPtr>(&value.data)) {
+    std::string out = "{";
+    for (std::size_t i = 0; i < (*map)->entries.size(); ++i) {
+      if (i) out += ", ";
+      out += formatValue((*map)->entries[i].first, true);
+      out += ": ";
+      out += formatValue((*map)->entries[i].second, true);
+    }
+    out += "}";
+    return out;
+  }
+  if (auto* set = std::get_if<SetPtr>(&value.data)) {
+    if ((*set)->elements.empty()) return "set()";
+    std::string out = "{";
+    for (std::size_t i = 0; i < (*set)->elements.size(); ++i) {
+      if (i) out += ", ";
+      out += formatValue((*set)->elements[i], true);
+    }
+    out += "}";
+    return out;
+  }
   if (auto* object = std::get_if<StructPtr>(&value.data)) {
     const std::string& name = (*object)->typeName;
     std::size_t sep = name.rfind("::");

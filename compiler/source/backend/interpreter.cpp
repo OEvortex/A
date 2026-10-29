@@ -112,6 +112,24 @@ Value makeArray(ArrayPtr value) {
   return out;
 }
 
+Value makeMap(MapPtr value) {
+  Value out;
+  out.data = std::move(value);
+  return out;
+}
+
+Value makeSet(SetPtr value) {
+  Value out;
+  out.data = std::move(value);
+  return out;
+}
+
+Value makeView(ArrayViewPtr value) {
+  Value out;
+  out.data = std::move(value);
+  return out;
+}
+
 Value makeStructValue(StructPtr value) {
   Value out;
   out.data = std::move(value);
@@ -1016,9 +1034,46 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
       return;
     }
 
-    if (auto* array = std::get_if<ArrayPtr>(&iterable.data)) {
-      const auto snapshot = **array;  // value snapshot: safe if the body mutates the array
+    ArrayWindow window;
+    if (arrayWindowOf(iterable, window)) {
+      const std::vector<Value> snapshot(window.storage->begin() +
+                                            static_cast<std::ptrdiff_t>(window.offset),
+                                        window.storage->begin() +
+                                            static_cast<std::ptrdiff_t>(window.offset +
+                                                                        window.length));
       for (const auto& element : snapshot) {
+        try {
+          runIteration(element);
+        } catch (BreakSignal&) {
+          break;
+        } catch (ContinueSignal&) {
+          // next iteration
+        }
+        if (returning_) return;
+      }
+      return;
+    }
+
+    if (auto* map = std::get_if<MapPtr>(&iterable.data)) {
+      std::vector<Value> keys;
+      keys.reserve((*map)->entries.size());
+      for (const auto& entry : (*map)->entries) keys.push_back(entry.first);
+      for (const Value& key : keys) {
+        try {
+          runIteration(key);
+        } catch (BreakSignal&) {
+          break;
+        } catch (ContinueSignal&) {
+          // next iteration
+        }
+        if (returning_) return;
+      }
+      return;
+    }
+
+    if (auto* set = std::get_if<SetPtr>(&iterable.data)) {
+      const std::vector<Value> snapshot = (*set)->elements;
+      for (const Value& element : snapshot) {
         try {
           runIteration(element);
         } catch (BreakSignal&) {
@@ -1222,13 +1277,22 @@ Interpreter::LValue Interpreter::resolveLValue(const Expr& target, Env& env) {
 
   if (auto* index = asExpr<IndexExpr>(target, ExprKind::Index)) {
     Value objectValue = eval(*index->object, env);
-    auto* array = std::get_if<ArrayPtr>(&objectValue.data);
-    if (!array) fail(index->span, "Index assignment requires an array.");
+    if (auto* map = std::get_if<MapPtr>(&objectValue.data)) {
+      lvalue.kind = LValue::Kind::MapEntry;
+      lvalue.map = *map;
+      lvalue.mapKey = eval(*index->index, env);
+      return lvalue;
+    }
+    ArrayWindow window;
+    if (!arrayWindowOf(objectValue, window)) {
+      fail(index->span, "Index assignment requires an array or a map.");
+    }
     Value indexValue = eval(*index->index, env);
     std::int64_t raw = expectInt(indexValue, index->index->span, "The array index");
     lvalue.kind = LValue::Kind::Element;
-    lvalue.array = *array;
-    lvalue.index = static_cast<std::size_t>(normalizeIndex(raw, lvalue.array->size(), index->span));
+    lvalue.array = window.storage;
+    lvalue.index = window.offset +
+                   static_cast<std::size_t>(normalizeIndex(raw, window.length, index->span));
     return lvalue;
   }
 
@@ -1243,6 +1307,11 @@ Value Interpreter::readLValue(const LValue& lvalue) {
       return lvalue.object->fields[lvalue.fieldIndex].second;
     case LValue::Kind::Element:
       return (*lvalue.array)[lvalue.index];
+    case LValue::Kind::MapEntry:
+      for (auto& entry : lvalue.map->entries) {
+        if (valuesEqual(entry.first, lvalue.mapKey)) return entry.second;
+      }
+      fail(Span{}, "Key " + formatValue(lvalue.mapKey, false) + " is not in the map.");
   }
   return makeVoid();
 }
@@ -1257,6 +1326,15 @@ void Interpreter::writeLValue(const LValue& lvalue, Value value) {
       return;
     case LValue::Kind::Element:
       (*lvalue.array)[lvalue.index] = std::move(value);
+      return;
+    case LValue::Kind::MapEntry:
+      for (auto& entry : lvalue.map->entries) {
+        if (valuesEqual(entry.first, lvalue.mapKey)) {
+          entry.second = std::move(value);
+          return;
+        }
+      }
+      lvalue.map->entries.emplace_back(std::move(lvalue.mapKey), std::move(value));
       return;
   }
 }
@@ -1355,6 +1433,8 @@ Value Interpreter::eval(const Expr& expr, Env& env) {
   case ExprKind::Field: return evalField(static_cast<const FieldExpr&>(expr), env);
   case ExprKind::SafeNav: return evalSafeNav(static_cast<const SafeNavExpr&>(expr), env);
   case ExprKind::ArrayLit: return evalArray(static_cast<const ArrayLitExpr&>(expr), env);
+  case ExprKind::MapLit: return evalMap(static_cast<const MapLitExpr&>(expr), env);
+  case ExprKind::SetLit: return evalSet(static_cast<const SetLitExpr&>(expr), env);
   case ExprKind::Tuple: return evalTuple(static_cast<const TupleExpr&>(expr), env);
   case ExprKind::Lambda: return evalLambda(static_cast<const LambdaExpr&>(expr), env);
   case ExprKind::Match: return evalMatch(static_cast<const MatchExpr&>(expr), env);
@@ -1407,30 +1487,75 @@ Value Interpreter::evalArray(const ArrayLitExpr& expr, Env& env) {
   return makeArray(std::move(array));
 }
 
+Value Interpreter::evalMap(const MapLitExpr& expr, Env& env) {
+  auto map = std::make_shared<MapObj>();
+  for (const auto& entry : expr.entries) {
+    Value key = eval(*entry.first, env);
+    Value value = eval(*entry.second, env);
+    bool replaced = false;
+    for (auto& existing : map->entries) {
+      if (valuesEqual(existing.first, key)) {
+        existing.second = std::move(value);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) map->entries.emplace_back(std::move(key), std::move(value));
+  }
+  return makeMap(std::move(map));
+}
+
+Value Interpreter::evalSet(const SetLitExpr& expr, Env& env) {
+  auto set = std::make_shared<SetObj>();
+  for (const auto& element : expr.elements) {
+    Value value = eval(*element, env);
+    bool seen = false;
+    for (const Value& existing : set->elements) {
+      if (valuesEqual(existing, value)) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) set->elements.push_back(std::move(value));
+  }
+  return makeSet(std::move(set));
+}
+
 Value Interpreter::evalIndex(const IndexExpr& expr, Env& env) {
   Value object = eval(*expr.object, env);
-  Value indexValue = eval(*expr.index, env);
-  std::int64_t index = expectInt(indexValue, expr.index->span, "The index");
 
-  if (auto* array = std::get_if<ArrayPtr>(&object.data)) {
+  if (auto* map = std::get_if<MapPtr>(&object.data)) {
+    Value key = eval(*expr.index, env);
+    for (const auto& entry : (*map)->entries) {
+      if (valuesEqual(entry.first, key)) return entry.second;
+    }
+    fail(expr.span, "Key " + formatValue(key, false) + " is not in the map.",
+         "Check for the key with 'contains' or use 'get' with a default.");
+  }
+
+  ArrayWindow window;
+  if (arrayWindowOf(object, window)) {
+    std::int64_t index = expectInt(eval(*expr.index, env), expr.index->span, "The index");
     std::size_t normalized =
-        static_cast<std::size_t>(normalizeIndex(index, (*array)->size(), expr.span));
-    return (**array)[normalized];
+        static_cast<std::size_t>(normalizeIndex(index, window.length, expr.span));
+    return (*window.storage)[window.offset + normalized];
   }
   if (auto* text = std::get_if<std::string>(&object.data)) {
+    std::int64_t index = expectInt(eval(*expr.index, env), expr.index->span, "The index");
     std::size_t length = codepointCount(*text);
     std::size_t normalized = static_cast<std::size_t>(normalizeIndex(index, length, expr.span));
     return makeChar(codepointAt(*text, normalized));
   }
-  fail(expr.span, "Only arrays and strings can be indexed.");
+  fail(expr.span, "Only arrays, maps, and strings can be indexed.");
 }
 
 Value Interpreter::evalSlice(const SliceExpr& expr, Env& env) {
   Value object = eval(*expr.object, env);
   bool isString = false;
   std::int64_t length = 0;
-  if (auto* array = std::get_if<ArrayPtr>(&object.data)) {
-    length = static_cast<std::int64_t>((*array)->size());
+  ArrayWindow window;
+  if (arrayWindowOf(object, window)) {
+    length = static_cast<std::int64_t>(window.length);
   } else if (auto* text = std::get_if<std::string>(&object.data)) {
     isString = true;
     length = static_cast<std::int64_t>(codepointCount(*text));
@@ -1471,10 +1596,19 @@ Value Interpreter::evalSlice(const SliceExpr& expr, Env& env) {
     return makeString(std::move(out));
   }
 
-  auto* array = std::get_if<ArrayPtr>(&object.data);
+  if (step == 1) {
+    // A unit-step slice is a window over the source storage: element writes
+    // through the slice are visible in the original array.
+    auto view = std::make_shared<ArrayView>();
+    view->storage = window.storage;
+    view->offset = window.offset + static_cast<std::size_t>(start);
+    view->length = static_cast<std::size_t>(end - start);
+    return makeView(std::move(view));
+  }
+
   auto result = std::make_shared<std::vector<Value>>();
   for (std::int64_t i = start; i < end; i += step) {
-    result->push_back((**array)[static_cast<std::size_t>(i)]);
+    result->push_back((*window.storage)[window.offset + static_cast<std::size_t>(i)]);
   }
   return makeArray(std::move(result));
 }
@@ -1641,7 +1775,9 @@ Value Interpreter::evalTry(const TryExpr& expr, Env& env) {
 Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   Value iterable = eval(*expr.iterable, env);
   auto result = std::make_shared<std::vector<Value>>();
+  auto resultSet = expr.isSet ? std::make_shared<SetObj>() : nullptr;
 
+  ArrayWindow window;
   // Reserve the exact capacity when the source length is known. Without this the
   // result vector reallocates and copies its Values several times per run.
   if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
@@ -1649,8 +1785,12 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
       result->reserve(static_cast<std::size_t>((range->end - range->start + range->step - 1) /
                                                range->step));
     }
-  } else if (auto* array = std::get_if<ArrayPtr>(&iterable.data)) {
-    result->reserve((*array)->size());
+  } else if (arrayWindowOf(iterable, window)) {
+    result->reserve(window.length);
+  } else if (auto* map = std::get_if<MapPtr>(&iterable.data)) {
+    result->reserve((*map)->entries.size());
+  } else if (auto* set = std::get_if<SetPtr>(&iterable.data)) {
+    result->reserve((*set)->elements.size());
   } else if (auto* text = std::get_if<std::string>(&iterable.data)) {
     result->reserve(text->size());
   }
@@ -1659,13 +1799,28 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
   child.parent = &env;
   child.vars[expr.var].mutableBinding = false;
 
+  auto emit = [&](Value value) {
+    if (!resultSet) {
+      result->push_back(std::move(value));
+      return;
+    }
+    for (const Value& existing : resultSet->elements) {
+      if (valuesEqual(existing, value)) return;
+    }
+    resultSet->elements.push_back(std::move(value));
+  };
+
   auto runIteration = [&](Value element) {
     child.vars[expr.var].value = std::move(element);
     if (expr.condition && !expectBool(eval(*expr.condition, child), expr.condition->span,
                                       "The comprehension condition")) {
       return;
     }
-    result->push_back(eval(*expr.element, child));
+    emit(eval(*expr.element, child));
+  };
+
+  const auto finish = [&]() -> Value {
+    return resultSet ? makeSet(std::move(resultSet)) : makeArray(std::move(result));
   };
 
   if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
@@ -1673,18 +1828,34 @@ Value Interpreter::evalComprehension(const ComprehensionExpr& expr, Env& env) {
       runIteration(makeInt(i));
       if (i > std::numeric_limits<std::int64_t>::max() - range->step) break;
     }
-    return makeArray(std::move(result));
+    return finish();
   }
-  if (auto* array = std::get_if<ArrayPtr>(&iterable.data)) {
-    const auto snapshot = **array;
+  if (arrayWindowOf(iterable, window)) {
+    const std::vector<Value> snapshot(window.storage->begin() +
+                                          static_cast<std::ptrdiff_t>(window.offset),
+                                      window.storage->begin() +
+                                          static_cast<std::ptrdiff_t>(window.offset +
+                                                                      window.length));
     for (const auto& element : snapshot) runIteration(element);
-    return makeArray(std::move(result));
+    return finish();
+  }
+  if (auto* map = std::get_if<MapPtr>(&iterable.data)) {
+    std::vector<Value> keys;
+    keys.reserve((*map)->entries.size());
+    for (const auto& entry : (*map)->entries) keys.push_back(entry.first);
+    for (const Value& key : keys) runIteration(key);
+    return finish();
+  }
+  if (auto* set = std::get_if<SetPtr>(&iterable.data)) {
+    const std::vector<Value> snapshot = (*set)->elements;
+    for (const Value& element : snapshot) runIteration(element);
+    return finish();
   }
   if (auto* text = std::get_if<std::string>(&iterable.data)) {
     std::size_t index = 0;
     char32_t codepoint = 0;
     while (decodeUtf8(*text, index, codepoint)) runIteration(makeChar(codepoint));
-    return makeArray(std::move(result));
+    return finish();
   }
   fail(expr.iterable->span, "This value cannot be iterated over.");
 }
@@ -1761,6 +1932,15 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
   if (auto* left = std::get_if<ArrayPtr>(&lhs.data)) {
     return *left == std::get<ArrayPtr>(rhs.data);
   }
+  if (auto* left = std::get_if<ArrayViewPtr>(&lhs.data)) {
+    return *left == std::get<ArrayViewPtr>(rhs.data);
+  }
+  if (auto* left = std::get_if<MapPtr>(&lhs.data)) {
+    return *left == std::get<MapPtr>(rhs.data);
+  }
+  if (auto* left = std::get_if<SetPtr>(&lhs.data)) {
+    return *left == std::get<SetPtr>(rhs.data);
+  }
   if (auto* left = std::get_if<StructPtr>(&lhs.data)) {
     return *left == std::get<StructPtr>(rhs.data);
   }
@@ -1773,9 +1953,24 @@ bool Interpreter::valuesEqual(const Value& lhs, const Value& rhs) {
 Value Interpreter::applyBinary(BinOp op, const Value& lhs, const Value& rhs, Span span) {
   if (op == BinOp::In || op == BinOp::NotIn) {
     bool found = false;
-    if (auto* array = std::get_if<ArrayPtr>(&rhs.data)) {
-      for (const auto& item : **array) {
-        if (valuesEqual(lhs, item)) {
+    ArrayWindow window;
+    if (arrayWindowOf(rhs, window)) {
+      for (std::size_t i = 0; i < window.length; ++i) {
+        if (valuesEqual(lhs, (*window.storage)[window.offset + i])) {
+          found = true;
+          break;
+        }
+      }
+    } else if (auto* map = std::get_if<MapPtr>(&rhs.data)) {
+      for (const auto& entry : (*map)->entries) {
+        if (valuesEqual(entry.first, lhs)) {
+          found = true;
+          break;
+        }
+      }
+    } else if (auto* set = std::get_if<SetPtr>(&rhs.data)) {
+      for (const Value& element : (*set)->elements) {
+        if (valuesEqual(lhs, element)) {
           found = true;
           break;
         }
@@ -1791,7 +1986,7 @@ Value Interpreter::applyBinary(BinOp op, const Value& lhs, const Value& rhs, Spa
         found = (str->find(*sub) != std::string::npos);
       }
     } else {
-      fail(span, "Right operand of 'in' must be an array, range, or string.");
+      fail(span, "Right operand of 'in' must be an array, map, set, range, or string.");
     }
     return makeBool(op == BinOp::In ? found : !found);
   }
@@ -2308,6 +2503,15 @@ Value Interpreter::callBuiltinFast(BuiltinId id, const std::string& name, ArgLis
         if (auto* array = std::get_if<ArrayPtr>(&value.data)) {
           return makeInt(static_cast<std::int64_t>((*array)->size()));
         }
+        if (auto* view = std::get_if<ArrayViewPtr>(&value.data)) {
+          return makeInt(static_cast<std::int64_t>((*view)->length));
+        }
+        if (auto* map = std::get_if<MapPtr>(&value.data)) {
+          return makeInt(static_cast<std::int64_t>((*map)->entries.size()));
+        }
+        if (auto* set = std::get_if<SetPtr>(&value.data)) {
+          return makeInt(static_cast<std::int64_t>((*set)->elements.size()));
+        }
         break;
       case BuiltinId::Abs:
         if (auto* number = std::get_if<std::int64_t>(&value.data)) {
@@ -2393,11 +2597,73 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
     if (auto* text = std::get_if<std::string>(&args[0].data)) {
       return makeInt(static_cast<std::int64_t>(codepointCount(*text)));
     }
-    if (auto* array = std::get_if<ArrayPtr>(&args[0].data)) {
-      return makeInt(static_cast<std::int64_t>((*array)->size()));
+    ArrayWindow window;
+    if (arrayWindowOf(args[0], window)) {
+      return makeInt(static_cast<std::int64_t>(window.length));
     }
-    fail(span, "'len' requires a string or an array.");
+    if (auto* map = std::get_if<MapPtr>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>((*map)->entries.size()));
+    }
+    if (auto* set = std::get_if<SetPtr>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>((*set)->elements.size()));
+    }
+    fail(span, "'len' requires a string, array, map, or set.");
   }
+  if (name == "set") {
+    auto result = std::make_shared<SetObj>();
+    auto add = [&](Value value) {
+      for (const Value& existing : result->elements) {
+        if (valuesEqual(existing, value)) return;
+      }
+      result->elements.push_back(std::move(value));
+    };
+    if (args.empty()) return makeSet(std::move(result));
+    if (args.size() != 1) fail(span, "'set' expects at most 1 argument.");
+    ArrayWindow window;
+    if (arrayWindowOf(args[0], window)) {
+      for (std::size_t i = 0; i < window.length; ++i) {
+        add((*window.storage)[window.offset + i]);
+      }
+      return makeSet(std::move(result));
+    }
+    if (auto* other = std::get_if<SetPtr>(&args[0].data)) {
+      for (const Value& element : (*other)->elements) add(element);
+      return makeSet(std::move(result));
+    }
+    if (auto* range = std::get_if<RangeValue>(&args[0].data)) {
+      for (std::int64_t i = range->start; i < range->end; i += range->step) {
+        add(makeInt(i));
+        if (i > std::numeric_limits<std::int64_t>::max() - range->step) break;
+      }
+      return makeSet(std::move(result));
+    }
+    if (auto* text = std::get_if<std::string>(&args[0].data)) {
+      std::size_t index = 0;
+      char32_t codepoint = 0;
+      while (decodeUtf8(*text, index, codepoint)) add(makeChar(codepoint));
+      return makeSet(std::move(result));
+    }
+    fail(span, "'set' requires an array, set, range, or string.");
+  }
+
+  if (name == "unsafe_get" || name == "unsafe_set") {
+    const bool writing = name == "unsafe_set";
+    if (args.size() != (writing ? 3u : 2u)) {
+      fail(span, "'" + name + "' expects " + (writing ? "3 arguments" : "2 arguments") + ".");
+    }
+    ArrayWindow window;
+    if (!arrayWindowOf(args[0], window)) {
+      fail(span, "'" + name + "' requires an array or a view.");
+    }
+    const std::int64_t index = expectInt(args[1], span, "The index passed to '" + name + "'");
+    // Deliberately unchecked: no normalization and no bounds test. The caller
+    // accepts undefined behavior when the index is outside the array.
+    Value& slot = (*window.storage)[window.offset + static_cast<std::size_t>(index)];
+    if (!writing) return slot;
+    slot = std::move(args[2]);
+    return makeVoid();
+  }
+
   if (name == "print" || name == "eprint") {
     std::string line;
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -2432,10 +2698,17 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
     if (auto* text = std::get_if<std::string>(&args[0].data)) {
       return makeInt(static_cast<std::int64_t>(codepointCount(*text)));
     }
-    if (auto* array = std::get_if<ArrayPtr>(&args[0].data)) {
-      return makeInt(static_cast<std::int64_t>((*array)->size()));
+    ArrayWindow window;
+    if (arrayWindowOf(args[0], window)) {
+      return makeInt(static_cast<std::int64_t>(window.length));
     }
-    fail(span, "'len' requires a string or an array.");
+    if (auto* map = std::get_if<MapPtr>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>((*map)->entries.size()));
+    }
+    if (auto* set = std::get_if<SetPtr>(&args[0].data)) {
+      return makeInt(static_cast<std::int64_t>((*set)->elements.size()));
+    }
+    fail(span, "'len' requires a string, array, map, or set.");
   }
 
   if (name == "str") {
@@ -2749,6 +3022,46 @@ Value Interpreter::callBuiltinMethod(const Value& object, const std::string& met
   const auto stringArg = [&](std::size_t index, const std::string& what) -> const std::string& {
     return expectString(args[index], span, what);
   };
+  const auto sortRange = [](std::vector<Value>& items, std::size_t offset, std::size_t length) {
+    std::sort(items.begin() + static_cast<std::ptrdiff_t>(offset),
+              items.begin() + static_cast<std::ptrdiff_t>(offset + length),
+              [](const Value& a, const Value& b) {
+                if (auto* left = std::get_if<std::int64_t>(&a.data)) {
+                  return *left < std::get<std::int64_t>(b.data);
+                }
+                if (auto* left = std::get_if<double>(&a.data)) {
+                  return *left < std::get<double>(b.data);
+                }
+                return std::get<std::string>(a.data) < std::get<std::string>(b.data);
+              });
+  };
+
+  if (auto* viewPtr = std::get_if<ArrayViewPtr>(&object.data)) {
+    ArrayViewPtr view = *viewPtr;
+    const bool structural = method == "append" || method == "extend" || method == "insert" ||
+                            method == "pop" || method == "remove" || method == "clear" ||
+                            method == "remove_at";
+    if (structural) {
+      fail(span, "Cannot '" + method + "' a view.",
+           "A view is a fixed-size window; copy the slice into a new array first.");
+    }
+    if (method == "reverse") {
+      noArgs();
+      std::vector<Value>& storage = *view->storage;
+      std::reverse(storage.begin() + static_cast<std::ptrdiff_t>(view->offset),
+                   storage.begin() + static_cast<std::ptrdiff_t>(view->offset + view->length));
+      return makeVoid();
+    }
+    if (method == "sort") {
+      noArgs();
+      sortRange(*view->storage, view->offset, view->length);
+      return makeVoid();
+    }
+    auto snapshot = std::make_shared<std::vector<Value>>(
+        view->storage->begin() + static_cast<std::ptrdiff_t>(view->offset),
+        view->storage->begin() + static_cast<std::ptrdiff_t>(view->offset + view->length));
+    return callBuiltinMethod(makeArray(std::move(snapshot)), method, args, span);
+  }
 
   if (auto* array = std::get_if<ArrayPtr>(&object.data)) {
     ArrayPtr items = *array;
@@ -2834,15 +3147,7 @@ Value Interpreter::callBuiltinMethod(const Value& object, const std::string& met
     }
     if (method == "sort") {
       noArgs();
-      std::sort(items->begin(), items->end(), [](const Value& a, const Value& b) {
-        if (auto* left = std::get_if<std::int64_t>(&a.data)) {
-          return *left < std::get<std::int64_t>(b.data);
-        }
-        if (auto* left = std::get_if<double>(&a.data)) {
-          return *left < std::get<double>(b.data);
-        }
-        return std::get<std::string>(a.data) < std::get<std::string>(b.data);
-      });
+      sortRange(*items, 0, items->size());
       return makeVoid();
     }
     if (method == "contains") {
@@ -2871,6 +3176,192 @@ Value Interpreter::callBuiltinMethod(const Value& object, const std::string& met
       return makeOptional(true, method == "first" ? items->front() : items->back());
     }
     fail(span, "Array has no method '" + method + "'.");
+  }
+
+  if (auto* mapPtr = std::get_if<MapPtr>(&object.data)) {
+    MapPtr map = *mapPtr;
+    if (method == "get") {
+      arity(1, 2, "1 or 2 arguments (key[, default])");
+      for (const auto& entry : map->entries) {
+        if (valuesEqual(entry.first, args[0])) return entry.second;
+      }
+      if (args.size() == 2) return args[1];
+      return makeNone();
+    }
+    if (method == "pop") {
+      arity(1, 2, "1 or 2 arguments (key[, default])");
+      for (auto it = map->entries.begin(); it != map->entries.end(); ++it) {
+        if (valuesEqual(it->first, args[0])) {
+          Value value = std::move(it->second);
+          map->entries.erase(it);
+          return value;
+        }
+      }
+      if (args.size() == 2) return args[1];
+      fail(span, "Key " + formatValue(args[0], false) + " is not in the map.");
+    }
+    if (method == "contains") {
+      arity(1, 1, "1 argument (key)");
+      for (const auto& entry : map->entries) {
+        if (valuesEqual(entry.first, args[0])) return makeBool(true);
+      }
+      return makeBool(false);
+    }
+    if (method == "keys") {
+      noArgs();
+      auto result = std::make_shared<std::vector<Value>>();
+      result->reserve(map->entries.size());
+      for (const auto& entry : map->entries) result->push_back(entry.first);
+      return makeArray(std::move(result));
+    }
+    if (method == "values") {
+      noArgs();
+      auto result = std::make_shared<std::vector<Value>>();
+      result->reserve(map->entries.size());
+      for (const auto& entry : map->entries) result->push_back(entry.second);
+      return makeArray(std::move(result));
+    }
+    if (method == "items") {
+      noArgs();
+      auto result = std::make_shared<std::vector<Value>>();
+      result->reserve(map->entries.size());
+      for (const auto& entry : map->entries) {
+        result->push_back(makeTuple({entry.first, entry.second}));
+      }
+      return makeArray(std::move(result));
+    }
+    if (method == "clear") {
+      noArgs();
+      map->entries.clear();
+      return makeVoid();
+    }
+    if (method == "copy") {
+      noArgs();
+      auto result = std::make_shared<MapObj>();
+      result->entries = map->entries;
+      return makeMap(std::move(result));
+    }
+    if (method == "update") {
+      arity(1, 1, "1 argument (map)");
+      auto* other = std::get_if<MapPtr>(&args[0].data);
+      if (!other) fail(span, "The 'update' argument must be a map.");
+      for (const auto& entry : (*other)->entries) {
+        bool replaced = false;
+        for (auto& existing : map->entries) {
+          if (valuesEqual(existing.first, entry.first)) {
+            existing.second = entry.second;
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced) map->entries.push_back(entry);
+      }
+      return makeVoid();
+    }
+    fail(span, "Map has no method '" + method + "'.");
+  }
+
+  if (auto* setPtr = std::get_if<SetPtr>(&object.data)) {
+    SetPtr set = *setPtr;
+    const auto containsValue = [&](const Value& value) {
+      for (const Value& element : set->elements) {
+        if (valuesEqual(element, value)) return true;
+      }
+      return false;
+    };
+    const auto otherSet = [&](const std::string& what) -> SetPtr {
+      auto* other = std::get_if<SetPtr>(&args[0].data);
+      if (!other) fail(span, what + " must be a set.");
+      return *other;
+    };
+
+    if (method == "add") {
+      arity(1, 1, "1 argument (value)");
+      if (!containsValue(args[0])) set->elements.push_back(args[0]);
+      return makeVoid();
+    }
+    if (method == "remove") {
+      arity(1, 1, "1 argument (value)");
+      for (auto it = set->elements.begin(); it != set->elements.end(); ++it) {
+        if (valuesEqual(*it, args[0])) {
+          set->elements.erase(it);
+          return makeVoid();
+        }
+      }
+      fail(span, "Value is not in the set.");
+    }
+    if (method == "discard") {
+      arity(1, 1, "1 argument (value)");
+      for (auto it = set->elements.begin(); it != set->elements.end(); ++it) {
+        if (valuesEqual(*it, args[0])) {
+          set->elements.erase(it);
+          return makeVoid();
+        }
+      }
+      return makeVoid();
+    }
+    if (method == "contains") {
+      arity(1, 1, "1 argument (value)");
+      return makeBool(containsValue(args[0]));
+    }
+    if (method == "clear") {
+      noArgs();
+      set->elements.clear();
+      return makeVoid();
+    }
+    if (method == "copy") {
+      noArgs();
+      auto result = std::make_shared<SetObj>();
+      result->elements = set->elements;
+      return makeSet(std::move(result));
+    }
+    if (method == "union" || method == "intersection" || method == "difference") {
+      arity(1, 1, "1 argument (set)");
+      SetPtr other = otherSet("The '" + method + "' argument");
+      auto result = std::make_shared<SetObj>();
+      const auto addUnique = [&](const Value& value) {
+        for (const Value& existing : result->elements) {
+          if (valuesEqual(existing, value)) return;
+        }
+        result->elements.push_back(value);
+      };
+      const auto inOther = [&](const Value& value) {
+        for (const Value& element : other->elements) {
+          if (valuesEqual(element, value)) return true;
+        }
+        return false;
+      };
+      if (method == "union") {
+        for (const Value& value : set->elements) addUnique(value);
+        for (const Value& value : other->elements) addUnique(value);
+      } else if (method == "intersection") {
+        for (const Value& value : set->elements) {
+          if (inOther(value)) addUnique(value);
+        }
+      } else {
+        for (const Value& value : set->elements) {
+          if (!inOther(value)) addUnique(value);
+        }
+      }
+      return makeSet(std::move(result));
+    }
+    if (method == "issubset" || method == "issuperset") {
+      arity(1, 1, "1 argument (set)");
+      SetPtr other = otherSet("The '" + method + "' argument");
+      const auto inSet = [&](const SetPtr& haystack, const Value& value) {
+        for (const Value& element : haystack->elements) {
+          if (valuesEqual(element, value)) return true;
+        }
+        return false;
+      };
+      const SetPtr& source = method == "issubset" ? set : other;
+      const SetPtr& target = method == "issubset" ? other : set;
+      for (const Value& value : source->elements) {
+        if (!inSet(target, value)) return makeBool(false);
+      }
+      return makeBool(true);
+    }
+    fail(span, "Set has no method '" + method + "'.");
   }
 
   if (auto* text = std::get_if<std::string>(&object.data)) {
@@ -3199,7 +3690,31 @@ const std::string& Interpreter::expectString(const Value& value, Span span,
 
 ArrayPtr Interpreter::expectArray(const Value& value, Span span, const std::string& what) {
   if (auto* result = std::get_if<ArrayPtr>(&value.data)) return *result;
+  ArrayWindow window;
+  if (arrayWindowOf(value, window)) {
+    return std::make_shared<std::vector<Value>>(
+        window.storage->begin() + static_cast<std::ptrdiff_t>(window.offset),
+        window.storage->begin() + static_cast<std::ptrdiff_t>(window.offset + window.length));
+  }
   fail(span, what + " must be an array.");
+}
+
+bool Interpreter::arrayWindowOf(const Value& value, ArrayWindow& out) const {
+  if (auto* array = std::get_if<ArrayPtr>(&value.data)) {
+    out.storage = *array;
+    out.offset = 0;
+    out.length = (*array)->size();
+    out.isView = false;
+    return true;
+  }
+  if (auto* view = std::get_if<ArrayViewPtr>(&value.data)) {
+    out.storage = (*view)->storage;
+    out.offset = (*view)->offset;
+    out.length = (*view)->length;
+    out.isView = true;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace a

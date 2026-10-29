@@ -177,6 +177,7 @@ struct NamedTypeExpr : TypeExpr {
 
 struct ArrayTypeExpr : TypeExpr {
   TypeExprPtr element;
+  std::int64_t length = -1;  // -1 for a dynamically sized array
 };
 
 struct OptionalTypeExpr : TypeExpr {
@@ -185,6 +186,15 @@ struct OptionalTypeExpr : TypeExpr {
 
 struct TupleTypeExpr : TypeExpr {
   std::vector<TypeExprPtr> elements;
+};
+
+struct MapTypeExpr : TypeExpr {
+  TypeExprPtr key;
+  TypeExprPtr value;
+};
+
+struct SetTypeExpr : TypeExpr {
+  TypeExprPtr element;
 };
 
 struct FunctionTypeExpr : TypeExpr {
@@ -363,6 +373,7 @@ struct ComprehensionExpr : Expr {
   Span varSpan;
   ExprPtr iterable;
   ExprPtr condition;  // may be null
+  bool isSet = false;  // `{expr for ...}` builds a set; `[expr for ...]` a list
 };
 
 struct Pattern {

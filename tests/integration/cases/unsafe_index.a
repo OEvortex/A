@@ -1,0 +1,10 @@
+import unsafe
+
+xs = [1, 2, 3, 4]
+unsafe.set(xs, 0, 10)
+print(unsafe.get(xs, 0), xs)
+
+view = xs[1..3]
+unsafe.set(view, 1, 42)
+print(xs, view)
+print(unsafe.get(view, 0))

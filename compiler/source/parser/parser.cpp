@@ -728,6 +728,24 @@ TypeExprPtr Parser::parseTypeExpr() {
       first->span = Span::join(start, previousSpan());
       type = std::move(first);
     }
+  } else if (check(Tok::LBrace)) {
+    Span start = cur().span;
+    advance();
+    auto first = parseTypeExpr();
+    if (match(Tok::Colon)) {
+      auto map = std::make_unique<MapTypeExpr>();
+      map->key = std::move(first);
+      map->value = parseTypeExpr();
+      expect(Tok::RBrace, "'}' after the map value type");
+      map->span = Span::join(start, previousSpan());
+      type = std::move(map);
+    } else {
+      auto set = std::make_unique<SetTypeExpr>();
+      set->element = std::move(first);
+      expect(Tok::RBrace, "'}' after the set element type");
+      set->span = Span::join(start, previousSpan());
+      type = std::move(set);
+    }
   } else if (check(Tok::KwFn)) {
     Span start = cur().span;
     advance();
@@ -765,6 +783,28 @@ TypeExprPtr Parser::parseTypeExpr() {
     }
     named->span = Span::join(named->span, previousSpan());
     type = std::move(named);
+  }
+
+  // Fixed-size suffixes are C-like: `i32[2][3]` is two rows of three. Collect
+  // the dimensions in source order and wrap the element type from the inside
+  // out, so the first suffix becomes the outermost array.
+  std::vector<std::pair<std::int64_t, Span>> dimensions;
+  while (check(Tok::LBracket)) {
+    Span start = cur().span;
+    advance();
+    const Token& size = expect(Tok::Int, "a fixed array length");
+    if (size.intValue <= 0) {
+      fail(size.span, "A fixed array length must be a positive integer.");
+    }
+    expect(Tok::RBracket, "']' after the array length");
+    dimensions.push_back({size.intValue, Span::join(start, previousSpan())});
+  }
+  for (auto it = dimensions.rbegin(); it != dimensions.rend(); ++it) {
+    auto fixed = std::make_unique<ArrayTypeExpr>();
+    fixed->span = Span::join(it->second, type->span);
+    fixed->element = std::move(type);
+    fixed->length = it->first;
+    type = std::move(fixed);
   }
 
   while (match(Tok::Question)) {
@@ -1317,12 +1357,29 @@ ExprPtr Parser::parsePrimary() {
       advance();
       if (check(Tok::RBrace)) {
         advance();
-        // Empty set literal: {}
-        auto set = std::make_unique<SetLitExpr>();
-        set->span = Span::join(start, previousSpan());
-        return set;
+        // `{}` is an empty map, as in Python; an empty set needs set().
+        auto map = std::make_unique<MapLitExpr>();
+        map->span = Span::join(start, previousSpan());
+        return map;
       }
       auto firstKey = parseExpression();
+      if (check(Tok::KwFor)) {
+        advance();
+        const Token& varTok = expect(Tok::Ident, "a loop variable name");
+        expect(Tok::KwIn, "'in' after the loop variable");
+        auto comprehension = std::make_unique<ComprehensionExpr>();
+        comprehension->isSet = true;
+        comprehension->var = varTok.lexeme;
+        comprehension->varSpan = varTok.span;
+        comprehension->element = std::move(firstKey);
+        comprehension->iterable = parseExpression();
+        if (match(Tok::KwIf)) {
+          comprehension->condition = parseExpression();
+        }
+        expect(Tok::RBrace, "'}' after the set comprehension");
+        comprehension->span = Span::join(start, previousSpan());
+        return comprehension;
+      }
       if (match(Tok::Colon)) {
         // Map literal: {key: value, ...}
         auto map = std::make_unique<MapLitExpr>();
@@ -1330,8 +1387,10 @@ ExprPtr Parser::parsePrimary() {
         map->entries.push_back({std::move(firstKey), std::move(firstVal)});
         while (match(Tok::Comma)) {
           if (check(Tok::RBrace)) break;
-          map->entries.push_back({parseExpression(), parseExpression()});
+          auto key = parseExpression();
           expect(Tok::Colon, "':' after map key");
+          auto value = parseExpression();
+          map->entries.push_back({std::move(key), std::move(value)});
         }
         expect(Tok::RBrace, "'}' after map entries");
         map->span = Span::join(start, previousSpan());

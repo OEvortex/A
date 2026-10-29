@@ -767,7 +767,8 @@ bool checkNativeExpr(const Expr& expr) {
         name == "append_file" || name == "file_exists" || name == "remove_file" ||
         name == "flush" || name == "read_line" || name == "eprint" ||
         name == "panic" || name == "assert" || name == "assert_eq" ||
-        name == "int" || name == "float")
+        name == "int" || name == "float" || name == "set" ||
+        name == "unsafe_get" || name == "unsafe_set")
       return false;
     for (const auto& a : c.args)
       if (!checkNativeExpr(*a.value)) return false;

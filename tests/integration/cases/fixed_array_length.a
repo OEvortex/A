@@ -1,0 +1,2 @@
+numbers: i32[3] = [1, 2]
+print(numbers)

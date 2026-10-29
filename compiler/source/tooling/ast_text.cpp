@@ -39,7 +39,18 @@ std::string typeText(const TypeExpr* type) {
     return text;
   }
   if (const auto* array = dynamic_cast<const ArrayTypeExpr*>(type)) {
-    return "[" + typeText(array->element.get()) + "]";
+    if (array->length < 0) {
+      return "[" + typeText(array->element.get()) + "]";
+    }
+    // Fixed dimensions render as suffixes in source order: `i32[2][3]`.
+    std::string dims;
+    const TypeExpr* current = type;
+    while (const auto* fixed = dynamic_cast<const ArrayTypeExpr*>(current)) {
+      if (fixed->length < 0) break;
+      dims += "[" + std::to_string(fixed->length) + "]";
+      current = fixed->element.get();
+    }
+    return typeText(current) + dims;
   }
   if (const auto* optional = dynamic_cast<const OptionalTypeExpr*>(type)) {
     const std::string inner = typeText(optional->element.get());
@@ -55,6 +66,12 @@ std::string typeText(const TypeExpr* type) {
       text += typeText(tuple->elements[i].get());
     }
     return text + ")";
+  }
+  if (const auto* map = dynamic_cast<const MapTypeExpr*>(type)) {
+    return "{" + typeText(map->key.get()) + ": " + typeText(map->value.get()) + "}";
+  }
+  if (const auto* set = dynamic_cast<const SetTypeExpr*>(type)) {
+    return "{" + typeText(set->element.get()) + "}";
   }
   if (const auto* fn = dynamic_cast<const FunctionTypeExpr*>(type)) {
     std::string text = "fn(";

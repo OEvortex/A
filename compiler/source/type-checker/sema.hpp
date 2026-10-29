@@ -153,6 +153,7 @@ class Sema {
   void checkWhile(WhileStmt& stmt);
   void checkDoWhile(DoWhileStmt& stmt);
   void checkFor(ForStmt& stmt);
+  TypePtr iterableElementType(TypePtr iterableType, Span span, const std::string& hint);
   void checkLoop(LoopStmt& stmt);
   void checkReturn(ReturnStmt& stmt);
   void checkDefer(DeferStmt& stmt);
@@ -179,6 +180,7 @@ class Sema {
   void checkPattern(Pattern& pattern, TypePtr subjectType);
   void checkLambdaAgainst(LambdaExpr& expr, TypePtr expected);
   void checkArgAgainst(Expr& expr, TypePtr expected, const std::string& context);
+  void checkFixedArrayLength(Expr& value, TypePtr expected);
 
   TypePtr checkFunctionValueCall(const std::string& name, TypePtr fnType, CallExpr& call);
 

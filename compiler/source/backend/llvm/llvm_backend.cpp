@@ -1218,7 +1218,8 @@ bool checkSupportedExpr(const Expr& expr) {
       if (name == "write_file" || name == "read_file" || name == "append_file" ||
           name == "file_exists" || name == "remove_file" || name == "flush" ||
           name == "input" || name == "read_line" || name == "len" ||
-          name == "int" || name == "float") {
+          name == "int" || name == "float" || name == "set" ||
+          name == "unsafe_get" || name == "unsafe_set") {
         return false;
       }
       for (const auto& a : c.args) if (!checkSupportedExpr(*a.value)) return false;

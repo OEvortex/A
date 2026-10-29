@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +46,8 @@ struct Type {
   int moduleId = -1;
   std::vector<TypePtr> params;
   TypePtr ret;
+  // Static length for fixed-size arrays; -1 means dynamically sized.
+  std::int64_t length = -1;
 
   // Used when kind == Var.
   int varId = 0;
@@ -86,9 +89,10 @@ inline TypePtr typeFloat(int bits) {
   return type;
 }
 
-inline TypePtr typeArray(TypePtr elem) {
+inline TypePtr typeArray(TypePtr elem, std::int64_t length = -1) {
   auto type = makeType(TypeKind::Array);
   type->elem = std::move(elem);
+  type->length = length;
   return type;
 }
 
@@ -213,7 +217,16 @@ inline std::string typeName(const TypePtr& type) {
     case TypeKind::Int:
       return (t->isSigned ? "i" : "u") + std::to_string(t->bits);
     case TypeKind::Float: return "f" + std::to_string(t->bits);
-    case TypeKind::Array: return "[" + typeName(t->elem) + "]";
+    case TypeKind::Array: {
+      if (t->length < 0) return "[" + typeName(t->elem) + "]";
+      std::string dims;
+      TypePtr current = t;
+      while (current && current->kind == TypeKind::Array && current->length >= 0) {
+        dims += "[" + std::to_string(current->length) + "]";
+        current = resolveType(current->elem);
+      }
+      return typeName(current) + dims;
+    }
     case TypeKind::Range: return "range<" + typeName(t->elem) + ">";
     case TypeKind::Optional: return typeName(t->elem) + "?";
     case TypeKind::Result: return "Result<" + typeName(t->elem) + ", " + typeName(t->errorType) + ">";

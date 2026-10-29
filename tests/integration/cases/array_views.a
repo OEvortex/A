@@ -1,0 +1,20 @@
+xs = [10, 20, 30, 40, 50]
+view = xs[1..4]
+print(view, len(view))
+view[1] = 99
+print(xs)
+xs[0] = 7
+print(view)
+view.reverse()
+print(view, xs)
+view.sort()
+print(view, xs)
+print(view.count(40), view.index(40), view.contains(20))
+print(view.first(), view.last())
+print(view.copy())
+print(xs[0..3])
+
+nested = xs[1..4][1..3]
+print(nested)
+nested[0] = 1
+print(xs, nested)

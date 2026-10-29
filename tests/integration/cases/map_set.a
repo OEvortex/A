@@ -1,0 +1,49 @@
+m = {"a": 1, "b": 2}
+print(m, len(m))
+print(m["a"])
+m["c"] = 3
+print(m)
+print(m.get("c"), m.get("zz"), m.get("zz", 99))
+print(m.contains("b"), "a" in m, "zz" not in m)
+print(m.keys())
+print(m.values())
+print(m.items())
+print(m.pop("b"))
+print(m)
+m.update({"d": 4, "a": 10})
+print(m)
+print(m.copy())
+
+n = {3, 1, 2, 2}
+print(n, len(n))
+print(2 in n)
+n.add(5)
+n.add(1)
+print(n)
+n.discard(42)
+n.remove(5)
+print(n)
+print(n.contains(9))
+print(n.union({7, 1}))
+print(n.intersection({1, 3, 4}))
+print(n.difference({1}))
+print(n.issubset({1, 2, 3, 4}), n.issuperset({1}))
+
+doubled = {i * 2 for i in 0..4}
+print(doubled)
+empty = set()
+empty.add("x")
+print(empty)
+
+total = 0
+for key in m:
+  total += len(key)
+print(total)
+
+empty_map: {str: [i32]} = {}
+empty_map["row"] = [1, 2]
+print(empty_map)
+
+empty_set: {f64} = set()
+empty_set.add(1.5)
+print(empty_set)

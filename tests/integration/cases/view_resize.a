@@ -1,0 +1,4 @@
+xs = [1, 2, 3]
+view = xs[0..2]
+view.append(4)
+print(view)

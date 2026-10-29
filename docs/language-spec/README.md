@@ -58,6 +58,9 @@ Built-in types:
 | `f32`, `f64` | IEEE floating point |
 | `String` | immutable UTF-8 text |
 | `[T]` | homogeneous array |
+| `T[N]`, `T[N][M]` | fixed-size and multidimensional array |
+| `{K: V}` | map from keys of type `K` to values of type `V` |
+| `{T}` | set of elements of type `T` |
 | `(T, U, ...)` | tuple |
 | `fn(T, U) -> R` | function value |
 | `T?` | optional value (either `Some(T)` or `None`) |
@@ -123,8 +126,9 @@ while n < 2
 
 ### `for` loop — iteration
 
-Iterates over a range, array, string, or other iterable. Ranges are written
-`lo..hi` (exclusive of `hi`) and may include an optional step: `lo..hi..step`.
+Iterates over a range, array, map (over its keys), set, or string. Ranges are
+written `lo..hi` (exclusive of `hi`) and may include an optional step:
+`lo..hi..step`.
 
 ```a
 # range 0..4 → 0, 1, 2, 3
@@ -282,8 +286,10 @@ evens = [n for n in values if n % 2 == 0]
 letters = [c for c in "hello"]
 ```
 
-The iterable may be a range, an array (iterated over a snapshot), or a string
-(code points). The loop variable is scoped to the comprehension and immutable.
+The iterable may be a range, an array or view (iterated over a snapshot), a
+map (its keys), a set, or a string (code points). A `{...}` comprehension
+produces a set instead of an array. The loop variable is scoped to the
+comprehension and immutable.
 
 ### Match expressions
 
@@ -350,6 +356,11 @@ for i in 0..10..2:      # stepped range: 0, 2, 4, 6, 8
     ...
 
 for item in array:      # iterates over a snapshot of the array
+
+for key in mapping:     # iterates over a map's keys
+
+for value in {1, 2, 3}: # iterates over a set's elements
+    ...
     ...
 
 for ch in "text":       # iterates over code points
@@ -538,7 +549,9 @@ accept numbers, bools, and numeric strings (surrounding ASCII whitespace and a
 leading `+` are allowed) and raise a runtime error on invalid input. There are
 no `to_int`/`to_float` methods.
 
-## Arrays
+## Arrays and collections
+
+### Arrays
 
 Arrays are reference values, support negative indexing, and carry methods:
 
@@ -563,6 +576,83 @@ Arrays are reference values, support negative indexing, and carry methods:
 Slices use exclusive end bounds and an optional positive step:
 `items[0..10..2]`. A non-positive step is a runtime error.
 
+A unit-step slice (`items[1..4]`) is a **view**: a fixed-size window over the
+original storage. Element reads and writes, `reverse()` and `sort()` act on the
+window and are visible in the source array; methods that change the length
+(`append`, `extend`, `insert`, `pop`, `remove`, `remove_at`, `clear`) reject
+views at run time. Copy a view first (`view.copy()`) to get an independent
+array. Stepped slices (`items[0..10..2]`) always copy.
+
+### Fixed-size and multidimensional arrays
+
+Annotate an array with a length to require that exact size:
+
+```a
+numbers: i32[5] = [1, 2, 3, 4, 5]
+grid: i32[2][3] = [[1, 2, 3], [4, 5, 6]]
+```
+
+The length suffix binds from the outside in, so `i32[2][3]` is two rows of
+three. Fixed-size arrays are checked at compile time: the literal must hold
+exactly the declared number of elements, and length-changing methods are
+rejected. Indexing, views, and element assignment work as for dynamic arrays.
+
+### Maps
+
+Map literals use `{key: value, ...}`; `{}` is an empty map, so annotate it
+(e.g. `m: {str: i32} = {}`). Keys are unique and keep insertion order; a
+literal key that repeats replaces the earlier value.
+
+| Method | Result |
+| ------ | ------ |
+| `get(key[, default])` | value, or the default, or `None` |
+| `pop(key[, default])` | remove and return the value; runtime error when absent without a default |
+| `contains(key)` | membership test (`key in map` also works) |
+| `keys()`, `values()` | `[K]` / `[V]` in insertion order |
+| `items()` | `[(K, V)]` pairs in insertion order |
+| `update(other)` | copy every entry of `other`, replacing equal keys |
+| `copy()` | shallow copy |
+| `clear()` | remove every entry |
+
+`map[key]` reads an entry and raises a runtime error when the key is absent;
+`map[key] = value` inserts or replaces. `len(map)` is the number of entries,
+and `for key in map:` iterates over the keys.
+
+### Sets
+
+Set literals use `{a, b, c}` and set comprehensions use `{expr for x in ...}`;
+`set()` creates an empty set and `set(iterable)` builds one from an array,
+range, or string. Sets keep insertion order and ignore duplicate values.
+
+| Method | Result |
+| ------ | ------ |
+| `add(value)` | insert when absent |
+| `remove(value)` | remove; runtime error when absent |
+| `discard(value)` | remove when present |
+| `contains(value)` | membership test (`value in set` also works) |
+| `union(other)`, `intersection(other)`, `difference(other)` | new set |
+| `issubset(other)`, `issuperset(other)` | `bool` |
+| `copy()`, `clear()` | shallow copy / empty the set |
+
+`len(set)` is the number of elements, sets are iterable, and they cannot be
+indexed.
+
+### Unchecked indexing
+
+The `unsafe` native module exposes unchecked access for code that has already
+validated its indices:
+
+```a
+import unsafe
+
+unsafe.get(values, index)
+unsafe.set(values, index, value)
+```
+
+Both accept arrays and views, perform no normalization or bounds test, and are
+undefined behavior when the index is outside the collection. Prefer ordinary
+indexing; use `unsafe` only in tight loops that prove the index safe.
+
 ## Built-in functions
 
 | Name | Description |
@@ -571,7 +661,7 @@ Slices use exclusive end bounds and an optional positive step:
 | `eprint(values...)` | same, to stderr |
 | `flush()` | flush stdout and stderr |
 | `input(prompt?)` | print prompt, read one line as `String` |
-| `len(container)` | length of a string (code points) or array |
+| `len(container)` | length of a string (code points), array, view, map, or set |
 | `str(value)` | convert any value to its display form |
 | `int(value)` | `i64` from an int, bool, float (truncated toward zero), or numeric string |
 | `float(value)` | `f64` from an int, bool, float, or numeric string |
@@ -589,6 +679,8 @@ Slices use exclusive end bounds and an optional positive step:
 | `any(array, fn)`, `all(array, fn)` | `bool` aggregates |
 | `sum(array)` | numeric or string concatenation, `0` when empty |
 | `join(array, sep)` | concatenate string forms with `sep` |
+| `set([iterable])` | empty set, or a set of the iterable's elements |
+| `unsafe.get(array, index)`, `unsafe.set(array, index, value)` | unchecked element access (native module `unsafe`) |
 | `Some(value)` | wrap a value in an optional |
 | `read_file(path)` | entire file as `String` |
 | `write_file(path, text)` | overwrite a file |
@@ -663,8 +755,7 @@ and exits with code 1 when any test fails.
 
 ## Not yet supported
 
-Interfaces/traits, `?` error propagation over `Result` types, map and set
-values, fixed-size and multidimensional arrays, `i128`/`u128`/`f16`/`bf16`,
-package management, and concurrency primitives are future work. Generics,
-type aliases, class inheritance, open-ended ranges, and raw triple-quoted
-strings are supported.
+Interfaces/traits, `?` error propagation over `Result` types,
+`i128`/`u128`/`f16`/`bf16`, package management, and concurrency primitives are
+future work. Generics, type aliases, class inheritance, open-ended ranges, and
+raw triple-quoted strings are supported.

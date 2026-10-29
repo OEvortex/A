@@ -51,12 +51,12 @@ against the compiler (2026-10-29).
 
 ## 5. Arrays & Collections
 
-- [ ] Fixed-size arrays — `numbers: i32[5] = [...]` (Plan §3.10)
-- [ ] Multidimensional arrays (Plan §3.10)
-- [ ] Views over existing storage (Plan §3.10)
-- [ ] Unchecked indexing — unsafe interface (Plan §3.10)
-- [ ] Map (`{k: v}`) and set (`{1, 2}`) literals — rejected with a clear
-      diagnostic because no runtime value representation exists yet
+- [x] Fixed-size arrays — `numbers: i32[5] = [...]` (Plan §3.10)
+- [x] Multidimensional arrays (Plan §3.10)
+- [x] Views over existing storage (Plan §3.10)
+- [x] Unchecked indexing — `unsafe.get` / `unsafe.set` module (Plan §3.10)
+- [x] Map (`{k: v}`) and set (`{1, 2}`) literals, methods, iteration, `in`,
+      `len`, and `set()` (Plan §3.10)
 
 ---
 
@@ -171,14 +171,20 @@ against the compiler (2026-10-29).
 
 ## Recently Completed
 
+- [x] Fixed-size and multidimensional arrays with compile-time length checks
+      (2026-10-29)
+- [x] Array views from unit-step slices, with write-through and resize
+      rejection (2026-10-29)
+- [x] Map and set literals, comprehensions, iteration, indexing, `in`, and
+      full method surfaces (2026-10-29)
+- [x] `unsafe` native module: `unsafe.get` / `unsafe.set` unchecked indexing
+      (2026-10-29)
 - [x] Python-compatible `str`/`list` method surface (2026-10-29)
 - [x] Free `int(x)` / `float(x)` conversions (2026-10-29)
 - [x] Compiler warnings with stable codes: `W0001` unused variable, `W0002`
       unreachable statement (2026-10-29)
 - [x] Machine-readable diagnostics: `a check --json` (2026-10-29)
 - [x] `a test` runner for `fn test_*()` functions (2026-10-29)
-- [x] Map/set literals rejected at compile time instead of failing at runtime
-      with an internal error (2026-10-29)
 - [x] TODO audit: confirmed implemented — raw strings, open-ended ranges,
       class inheritance, generics, type aliases, enum values, `a check/fmt/doc`
       (2026-10-29)
