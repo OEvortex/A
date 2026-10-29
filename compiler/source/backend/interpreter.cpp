@@ -240,6 +240,464 @@ bool parseFloat(const std::string& text, double& out) {
   return true;
 }
 
+// ------------------------------------------------- Python string primitives
+//
+// Case mapping and classification are ASCII-only, matching the existing
+// upper()/lower() behaviour: non-ASCII codepoints pass through unchanged and
+// classify as non-letters. Indices exposed by string methods are codepoints.
+
+bool isAsciiSpaceByte(unsigned char c) {
+  return c == ' ' || (c >= '\t' && c <= '\r');
+}
+
+bool isAsciiDigitByte(unsigned char c) { return c >= '0' && c <= '9'; }
+bool isAsciiUpperByte(unsigned char c) { return c >= 'A' && c <= 'Z'; }
+bool isAsciiLowerByte(unsigned char c) { return c >= 'a' && c <= 'z'; }
+bool isAsciiAlphaByte(unsigned char c) {
+  return isAsciiUpperByte(c) || isAsciiLowerByte(c);
+}
+bool isAsciiAlnumByte(unsigned char c) {
+  return isAsciiAlphaByte(c) || isAsciiDigitByte(c);
+}
+
+std::string asciiLowerText(const std::string& text) {
+  std::string out = text;
+  for (char& c : out) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiUpperByte(byte)) c = static_cast<char>(byte + ('a' - 'A'));
+  }
+  return out;
+}
+
+std::string asciiUpperText(const std::string& text) {
+  std::string out = text;
+  for (char& c : out) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiLowerByte(byte)) c = static_cast<char>(byte - ('a' - 'A'));
+  }
+  return out;
+}
+
+std::string asciiSwapCaseText(const std::string& text) {
+  std::string out = text;
+  for (char& c : out) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiUpperByte(byte)) c = static_cast<char>(byte + ('a' - 'A'));
+    else if (isAsciiLowerByte(byte)) c = static_cast<char>(byte - ('a' - 'A'));
+  }
+  return out;
+}
+
+std::string capitalizeText(const std::string& text) {
+  std::string out = text;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    unsigned char byte = static_cast<unsigned char>(out[i]);
+    if (i == 0 && isAsciiLowerByte(byte)) {
+      out[i] = static_cast<char>(byte - ('a' - 'A'));
+    } else if (isAsciiUpperByte(byte)) {
+      out[i] = static_cast<char>(byte + ('a' - 'A'));
+    }
+  }
+  return out;
+}
+
+std::string titleText(const std::string& text) {
+  std::string out = text;
+  bool previousCased = false;
+  for (char& c : out) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiAlphaByte(byte)) {
+      if (previousCased) {
+        if (isAsciiUpperByte(byte)) c = static_cast<char>(byte + ('a' - 'A'));
+      } else if (isAsciiLowerByte(byte)) {
+        c = static_cast<char>(byte - ('a' - 'A'));
+      }
+      previousCased = true;
+    } else {
+      previousCased = false;
+    }
+  }
+  return out;
+}
+
+bool isLowerText(const std::string& text) {
+  bool hasCased = false;
+  for (char c : text) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiUpperByte(byte)) return false;
+    if (isAsciiLowerByte(byte)) hasCased = true;
+  }
+  return hasCased;
+}
+
+bool isUpperText(const std::string& text) {
+  bool hasCased = false;
+  for (char c : text) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiLowerByte(byte)) return false;
+    if (isAsciiUpperByte(byte)) hasCased = true;
+  }
+  return hasCased;
+}
+
+bool isTitleText(const std::string& text) {
+  bool hasCased = false;
+  bool previousCased = false;
+  for (char c : text) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (isAsciiAlphaByte(byte)) {
+      if (previousCased ? isAsciiUpperByte(byte) : isAsciiLowerByte(byte)) return false;
+      hasCased = true;
+      previousCased = true;
+    } else {
+      previousCased = false;
+    }
+  }
+  return hasCased;
+}
+
+bool isPrintableText(const std::string& text) {
+  for (char c : text) {
+    unsigned char byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte == 0x7f) return false;
+  }
+  return true;
+}
+
+bool isAsciiText(const std::string& text) {
+  for (char c : text) {
+    if (static_cast<unsigned char>(c) >= 0x80) return false;
+  }
+  return true;
+}
+
+bool allBytesMatch(const std::string& text, bool (*predicate)(unsigned char)) {
+  if (text.empty()) return false;
+  for (char c : text) {
+    if (!predicate(static_cast<unsigned char>(c))) return false;
+  }
+  return true;
+}
+
+bool isIdentifierText(const std::string& text) {
+  if (text.empty()) return false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    unsigned char byte = static_cast<unsigned char>(text[i]);
+    if (i == 0) {
+      if (!isAsciiAlphaByte(byte) && byte != '_') return false;
+    } else if (!isAsciiAlnumByte(byte) && byte != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::int64_t pySliceStart(std::int64_t index, std::int64_t length) {
+  if (index < 0) index += length;
+  return index < 0 ? 0 : index;
+}
+
+std::int64_t pySliceEnd(std::int64_t index, std::int64_t length) {
+  if (index < 0) index += length;
+  if (index < 0) return 0;
+  return index > length ? length : index;
+}
+
+std::size_t byteOffsetForCp(const std::string& text, std::int64_t cpIndex) {
+  if (cpIndex <= 0) return 0;
+  std::size_t offset = 0;
+  std::int64_t seen = 0;
+  char32_t ch = 0;
+  while (seen < cpIndex && decodeUtf8(text, offset, ch)) ++seen;
+  return offset;
+}
+
+struct SliceWindow {
+  std::size_t begin = 0;
+  std::size_t end = 0;
+  std::int64_t startCp = 0;
+  std::int64_t endCp = 0;
+  bool valid = true;
+};
+
+SliceWindow sliceWindow(const std::string& text, bool hasStart, std::int64_t start,
+                        bool hasEnd, std::int64_t end) {
+  const std::int64_t length = static_cast<std::int64_t>(codepointCount(text));
+  const std::int64_t s = hasStart ? pySliceStart(start, length) : 0;
+  std::int64_t e = hasEnd ? pySliceEnd(end, length) : length;
+  if (s > length) return {text.size(), text.size(), s, s, false};
+  if (e < s) e = s;
+  return {byteOffsetForCp(text, s), byteOffsetForCp(text, e), s, e, true};
+}
+
+std::int64_t codepointIndexOfByte(const std::string& text, std::size_t byteIndex) {
+  return static_cast<std::int64_t>(codepointCount(text.substr(0, byteIndex)));
+}
+
+std::int64_t findInWindow(const std::string& text, const std::string& needle,
+                          const SliceWindow& window, bool reverse) {
+  if (!window.valid) return -1;
+  if (needle.empty()) return reverse ? window.endCp : window.startCp;
+  const std::size_t haystack = window.end - window.begin;
+  if (needle.size() > haystack) return -1;
+  std::size_t position = std::string::npos;
+  if (reverse) {
+    position = text.rfind(needle, window.end - needle.size());
+    if (position == std::string::npos || position < window.begin) return -1;
+  } else {
+    position = text.find(needle, window.begin);
+    if (position == std::string::npos || position + needle.size() > window.end) return -1;
+  }
+  return window.startCp + codepointIndexOfByte(text, position) -
+         codepointIndexOfByte(text, window.begin);
+}
+
+std::int64_t countInWindow(const std::string& text, const std::string& needle,
+                           const SliceWindow& window) {
+  if (!window.valid) return 0;
+  if (needle.empty()) return window.endCp - window.startCp + 1;
+  std::int64_t count = 0;
+  std::size_t position = window.begin;
+  while (position + needle.size() <= window.end) {
+    std::size_t hit = text.find(needle, position);
+    if (hit == std::string::npos || hit + needle.size() > window.end) break;
+    ++count;
+    position = hit + needle.size();
+  }
+  return count;
+}
+
+bool windowStartsWith(const std::string& text, const std::string& prefix,
+                      const SliceWindow& window) {
+  if (!window.valid) return false;
+  std::size_t length = window.end - window.begin;
+  return prefix.size() <= length &&
+         text.compare(window.begin, prefix.size(), prefix) == 0;
+}
+
+bool windowEndsWith(const std::string& text, const std::string& suffix,
+                    const SliceWindow& window) {
+  if (!window.valid) return false;
+  std::size_t length = window.end - window.begin;
+  if (suffix.size() > length) return false;
+  return text.compare(window.end - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool codepointInSet(char32_t ch, const std::string& set) {
+  std::size_t index = 0;
+  char32_t candidate = 0;
+  while (decodeUtf8(set, index, candidate)) {
+    if (candidate == ch) return true;
+  }
+  return false;
+}
+
+std::string stripText(const std::string& text, const std::string* set, bool left,
+                      bool right) {
+  const auto matches = [&](char32_t ch) {
+    if (set) return codepointInSet(ch, *set);
+    return ch < 0x80 && isAsciiSpaceByte(static_cast<unsigned char>(ch));
+  };
+
+  std::size_t begin = 0;
+  if (left) {
+    while (begin < text.size()) {
+      std::size_t probe = begin;
+      char32_t ch = 0;
+      if (!decodeUtf8(text, probe, ch) || !matches(ch)) break;
+      begin = probe;
+    }
+  }
+  std::size_t end = text.size();
+  if (right) {
+    std::size_t keptEnd = begin;
+    std::size_t position = begin;
+    char32_t ch = 0;
+    while (decodeUtf8(text, position, ch)) {
+      if (!matches(ch)) keptEnd = position;
+    }
+    end = keptEnd;
+  }
+  return text.substr(begin, end - begin);
+}
+
+std::string padText(const std::string& text, std::int64_t width,
+                    const std::string& fill, int align) {
+  const std::int64_t length = static_cast<std::int64_t>(codepointCount(text));
+  if (width <= length) return text;
+  const std::int64_t padding = width - length;
+  std::int64_t leftPad = 0;
+  std::int64_t rightPad = padding;
+  if (align == 1) {
+    leftPad = padding;
+    rightPad = 0;
+  } else if (align == 2) {
+    leftPad = padding / 2 + ((padding % 2 != 0 && width % 2 != 0) ? 1 : 0);
+    rightPad = padding - leftPad;
+  }
+  std::string out;
+  for (std::int64_t i = 0; i < leftPad; ++i) out += fill;
+  out += text;
+  for (std::int64_t i = 0; i < rightPad; ++i) out += fill;
+  return out;
+}
+
+std::string zfillText(const std::string& text, std::int64_t width) {
+  const std::int64_t length = static_cast<std::int64_t>(codepointCount(text));
+  if (width <= length) return text;
+  std::string body = text;
+  std::string sign;
+  if (!body.empty() && (body[0] == '+' || body[0] == '-')) {
+    sign = body.substr(0, 1);
+    body.erase(0, 1);
+  }
+  std::string out = sign;
+  out.append(static_cast<std::size_t>(width - length), '0');
+  out += body;
+  return out;
+}
+
+std::string expandTabsText(const std::string& text, std::int64_t tabsize) {
+  std::string out;
+  std::size_t position = 0;
+  char32_t ch = 0;
+  std::int64_t column = 0;
+  while (decodeUtf8(text, position, ch)) {
+    if (ch == U'\t') {
+      if (tabsize > 0) {
+        std::int64_t spaces = tabsize - (column % tabsize);
+        out.append(static_cast<std::size_t>(spaces), ' ');
+        column += spaces;
+      }
+    } else {
+      out += utf8Encode(ch);
+      if (ch == U'\n' || ch == U'\r') {
+        column = 0;
+      } else {
+        ++column;
+      }
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> splitWhitespace(const std::string& text, std::int64_t maxsplit,
+                                         bool right) {
+  std::vector<std::string> parts;
+  if (!right) {
+    std::size_t position = 0;
+    while (true) {
+      while (position < text.size() &&
+             isAsciiSpaceByte(static_cast<unsigned char>(text[position]))) {
+        ++position;
+      }
+      if (position >= text.size()) break;
+      if (maxsplit >= 0 && static_cast<std::int64_t>(parts.size()) == maxsplit) {
+        parts.push_back(text.substr(position));
+        break;
+      }
+      std::size_t start = position;
+      while (position < text.size() &&
+             !isAsciiSpaceByte(static_cast<unsigned char>(text[position]))) {
+        ++position;
+      }
+      parts.push_back(text.substr(start, position - start));
+    }
+    return parts;
+  }
+
+  std::int64_t end = static_cast<std::int64_t>(text.size());
+  std::vector<std::string> reversed;
+  while (true) {
+    while (end > 0 && isAsciiSpaceByte(static_cast<unsigned char>(text[end - 1]))) --end;
+    if (end <= 0) break;
+    if (maxsplit >= 0 && static_cast<std::int64_t>(reversed.size()) == maxsplit) {
+      reversed.push_back(text.substr(0, static_cast<std::size_t>(end)));
+      break;
+    }
+    std::int64_t stop = end;
+    while (end > 0 && !isAsciiSpaceByte(static_cast<unsigned char>(text[end - 1]))) --end;
+    reversed.push_back(text.substr(static_cast<std::size_t>(end),
+                                   static_cast<std::size_t>(stop - end)));
+  }
+  std::reverse(reversed.begin(), reversed.end());
+  return reversed;
+}
+
+std::vector<std::string> splitLiteral(const std::string& text, const std::string& separator,
+                                      std::int64_t maxsplit, bool right) {
+  std::vector<std::string> parts;
+  if (!right) {
+    std::size_t start = 0;
+    while (maxsplit < 0 || static_cast<std::int64_t>(parts.size()) < maxsplit) {
+      std::size_t hit = text.find(separator, start);
+      if (hit == std::string::npos) break;
+      parts.push_back(text.substr(start, hit - start));
+      start = hit + separator.size();
+    }
+    parts.push_back(text.substr(start));
+    return parts;
+  }
+
+  std::size_t end = text.size();
+  std::vector<std::string> reversed;
+  while (maxsplit < 0 || static_cast<std::int64_t>(reversed.size()) < maxsplit) {
+    if (end < separator.size()) break;
+    std::size_t hit = text.rfind(separator, end - separator.size());
+    if (hit == std::string::npos) break;
+    reversed.push_back(text.substr(hit + separator.size(),
+                                   end - hit - separator.size()));
+    end = hit;
+  }
+  reversed.push_back(text.substr(0, end));
+  std::reverse(reversed.begin(), reversed.end());
+  return reversed;
+}
+
+std::vector<std::string> splitLinesText(const std::string& text, bool keepends) {
+  std::vector<std::string> lines;
+  std::size_t start = 0;
+  std::size_t position = 0;
+  while (position < text.size()) {
+    unsigned char byte = static_cast<unsigned char>(text[position]);
+    std::size_t terminator = 0;
+    if (byte == '\r' && position + 1 < text.size() && text[position + 1] == '\n') {
+      terminator = 2;
+    } else if (byte == '\n' || byte == '\r' || byte == '\v' || byte == '\f' ||
+               (byte >= 0x1c && byte <= 0x1e)) {
+      terminator = 1;
+    }
+    if (terminator == 0) {
+      ++position;
+      continue;
+    }
+    std::size_t length = position - start + (keepends ? terminator : 0);
+    lines.push_back(text.substr(start, length));
+    position += terminator;
+    start = position;
+  }
+  if (start < text.size()) lines.push_back(text.substr(start));
+  return lines;
+}
+
+std::string replaceText(const std::string& text, const std::string& from,
+                        const std::string& to, std::int64_t limit) {
+  if (limit == 0) return text;
+  std::string out;
+  std::size_t start = 0;
+  std::int64_t replaced = 0;
+  while (limit < 0 || replaced < limit) {
+    std::size_t hit = text.find(from, start);
+    if (hit == std::string::npos) break;
+    out.append(text, start, hit - start);
+    out += to;
+    start = hit + from.size();
+    ++replaced;
+  }
+  out.append(text, start, std::string::npos);
+  return out;
+}
+
 }  // namespace
 
 Interpreter::Interpreter(const ModuleGraph& graph, const SemaResult& result,
@@ -483,6 +941,8 @@ void Interpreter::exec(const Stmt& stmt, Env& env) {
     };
 
     if (auto* range = std::get_if<RangeValue>(&iterable.data)) {
+      if (range->step == 0)
+        fail(node->iterable->span, "The range step must not be zero.");
       for (std::int64_t i = range->start; i < range->end; i += range->step) {
         try {
           runIteration(makeInt(i));
@@ -1823,6 +2283,48 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
     if (args.size() != 1) fail(span, "'sqrt' expects 1 argument.");
     return makeFloat(std::sqrt(expectFloat(args[0], span, "sqrt")));
   }
+  if (name == "int") {
+    if (args.size() != 1) fail(span, "'int' expects 1 argument.");
+    const Value& value = args[0];
+    if (auto* number = std::get_if<std::int64_t>(&value.data)) return makeInt(*number);
+    if (auto* boolean = std::get_if<bool>(&value.data)) return makeInt(*boolean ? 1 : 0);
+    if (auto* number = std::get_if<double>(&value.data)) {
+      if (!std::isfinite(*number)) fail(span, "Cannot convert a non-finite float to 'int'.");
+      if (*number < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+          *number > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        fail(span, "Float value is out of range for 'int'.");
+      }
+      return makeInt(static_cast<std::int64_t>(*number));
+    }
+    if (auto* text = std::get_if<std::string>(&value.data)) {
+      std::string body = stripText(*text, nullptr, true, true);
+      if (!body.empty() && body[0] == '+') body.erase(0, 1);
+      std::int64_t parsed = 0;
+      if (!parseInteger(body, parsed)) {
+        fail(span, "Cannot parse \"" + *text + "\" as an integer.");
+      }
+      return makeInt(parsed);
+    }
+    fail(span, "'int' requires a number, bool, or numeric string.");
+  }
+  if (name == "float") {
+    if (args.size() != 1) fail(span, "'float' expects 1 argument.");
+    const Value& value = args[0];
+    if (auto* number = std::get_if<double>(&value.data)) return makeFloat(*number);
+    if (auto* number = std::get_if<std::int64_t>(&value.data)) {
+      return makeFloat(static_cast<double>(*number));
+    }
+    if (auto* boolean = std::get_if<bool>(&value.data)) return makeFloat(*boolean ? 1.0 : 0.0);
+    if (auto* text = std::get_if<std::string>(&value.data)) {
+      const std::string body = stripText(*text, nullptr, true, true);
+      double parsed = 0;
+      if (!parseFloat(body, parsed)) {
+        fail(span, "Cannot parse \"" + *text + "\" as a float.");
+      }
+      return makeFloat(parsed);
+    }
+    fail(span, "'float' requires a number, bool, or numeric string.");
+  }
   if (name == "str") {
     if (args.size() != 1) fail(span, "'str' expects 1 argument.");
     return makeString(formatValue(args[0], false));
@@ -2173,73 +2675,107 @@ Value Interpreter::callBuiltin(const std::string& name, ArgList& args, Span span
 
 Value Interpreter::callBuiltinMethod(const Value& object, const std::string& method,
                                      ArgList& args, Span span) {
+  const auto noArgs = [&]() {
+    if (!args.empty()) fail(span, "Method '" + method + "' takes no arguments.");
+  };
+  const auto arity = [&](std::size_t low, std::size_t high, const std::string& usage) {
+    if (args.size() < low || args.size() > high) {
+      fail(span, "Method '" + method + "' expects " + usage + ", found " +
+                     std::to_string(args.size()) + ".");
+    }
+  };
+  const auto intArg = [&](std::size_t index, const char* what) {
+    return expectInt(args[index], span, what);
+  };
+  const auto stringArg = [&](std::size_t index, const std::string& what) -> const std::string& {
+    return expectString(args[index], span, what);
+  };
+
   if (auto* array = std::get_if<ArrayPtr>(&object.data)) {
-    if (method == "push") {
-      if (args.size() != 1) fail(span, "Method 'push' expects 1 argument.");
-      (*array)->push_back(std::move(args[0]));
+    ArrayPtr items = *array;
+    if (method == "append") {
+      arity(1, 1, "1 argument (value)");
+      items->push_back(std::move(args[0]));
+      return makeVoid();
+    }
+    if (method == "extend") {
+      arity(1, 1, "1 argument (array)");
+      ArrayPtr other = expectArray(args[0], span, "The 'extend' argument");
+      std::vector<Value> copy(*other);
+      for (Value& value : copy) items->push_back(std::move(value));
+      return makeVoid();
+    }
+    if (method == "insert") {
+      arity(2, 2, "2 arguments (index, value)");
+      std::int64_t index = intArg(0, "The index passed to 'insert'");
+      const std::int64_t size = static_cast<std::int64_t>(items->size());
+      if (index < 0) index += size;
+      if (index < 0) index = 0;
+      if (index > size) index = size;
+      items->insert(items->begin() + index, std::move(args[1]));
       return makeVoid();
     }
     if (method == "pop") {
-      if (!(*array)->empty()) {
-        Value value = std::move((*array)->back());
-        (*array)->pop_back();
-        return value;
-      }
-      fail(span, "Cannot pop from an empty array.");
-    }
-    if (method == "reverse") {
-      if (!args.empty()) fail(span, "Method 'reverse' takes no arguments.");
-      std::reverse((*array)->begin(), (*array)->end());
-      return makeVoid();
-    }
-    if (method == "contains") {
-      if (args.size() != 1) fail(span, "Method 'contains' expects 1 argument.");
-      for (const auto& elem : **array) {
-        if (valuesEqual(elem, args[0])) {
-          return makeBool(true);
-        }
-      }
-      return makeBool(false);
-    }
-    if (method == "join") {
-      if (args.size() != 1) fail(span, "Method 'join' expects 1 argument (separator).");
-      const std::string& sep = expectString(args[0], span, "The 'join' separator");
-      return makeString(joinValues(**array, sep));
-    }
-    if (method == "insert") {
-      if (args.size() != 2) fail(span, "Method 'insert' expects 2 arguments (index, value).");
-      std::int64_t raw = expectInt(args[0], span, "The index passed to 'insert'");
-      std::int64_t size = static_cast<std::int64_t>((*array)->size());
-      if (raw < 0) raw += size;
-      if (raw < 0 || raw > size) {
-        fail(span, "Insertion index " + std::to_string(raw) +
-                       " is out of bounds for an array of length " + std::to_string(size) + ".",
-             "Use an index from 0 through the array length.");
-      }
-      (*array)->insert((*array)->begin() + raw, std::move(args[1]));
-      return makeVoid();
-    }
-    if (method == "remove_at") {
-      if (args.size() != 1) fail(span, "Method 'remove_at' expects 1 argument.");
-      std::int64_t raw = expectInt(args[0], span, "The index passed to 'remove_at'");
-      std::size_t index = static_cast<std::size_t>(
-          normalizeIndex(raw, (*array)->size(), span));
-      Value value = std::move((**array)[index]);
-      (*array)->erase((*array)->begin() + static_cast<std::ptrdiff_t>(index));
+      arity(0, 1, "at most 1 argument (index)");
+      if (items->empty()) fail(span, "Cannot pop from an empty array.");
+      const std::int64_t raw = args.empty()
+                                   ? static_cast<std::int64_t>(items->size()) - 1
+                                   : intArg(0, "The index passed to 'pop'");
+      const std::size_t index =
+          static_cast<std::size_t>(normalizeIndex(raw, items->size(), span));
+      Value value = std::move((*items)[index]);
+      items->erase(items->begin() + static_cast<std::ptrdiff_t>(index));
       return value;
     }
-    if (method == "index_of") {
-      if (args.size() != 1) fail(span, "Method 'index_of' expects 1 argument.");
-      for (std::size_t i = 0; i < (*array)->size(); ++i) {
-        if (valuesEqual((**array)[i], args[0])) {
-          return makeInt(static_cast<std::int64_t>(i));
+    if (method == "remove") {
+      arity(1, 1, "1 argument (value)");
+      for (auto it = items->begin(); it != items->end(); ++it) {
+        if (valuesEqual(*it, args[0])) {
+          items->erase(it);
+          return makeVoid();
         }
       }
-      return makeInt(-1);
+      fail(span, "Value is not in the list.");
+    }
+    if (method == "clear") {
+      noArgs();
+      items->clear();
+      return makeVoid();
+    }
+    if (method == "copy") {
+      noArgs();
+      return makeArray(std::make_shared<std::vector<Value>>(*items));
+    }
+    if (method == "count") {
+      arity(1, 1, "1 argument (value)");
+      std::int64_t total = 0;
+      for (const Value& value : *items) {
+        if (valuesEqual(value, args[0])) ++total;
+      }
+      return makeInt(total);
+    }
+    if (method == "index") {
+      arity(1, 3, "1 to 3 arguments (value[, start[, end]])");
+      const std::int64_t size = static_cast<std::int64_t>(items->size());
+      std::int64_t start = args.size() > 1 ? intArg(1, "The 'start' argument") : 0;
+      std::int64_t end = args.size() > 2 ? intArg(2, "The 'end' argument") : size;
+      start = pySliceStart(start, size);
+      end = pySliceEnd(end, size);
+      for (std::int64_t i = start; i < end; ++i) {
+        if (valuesEqual((*items)[static_cast<std::size_t>(i)], args[0])) {
+          return makeInt(i);
+        }
+      }
+      fail(span, "Value is not in the list.");
+    }
+    if (method == "reverse") {
+      noArgs();
+      std::reverse(items->begin(), items->end());
+      return makeVoid();
     }
     if (method == "sort") {
-      if (!args.empty()) fail(span, "Method 'sort' takes no arguments.");
-      std::sort((*array)->begin(), (*array)->end(), [](const Value& a, const Value& b) {
+      noArgs();
+      std::sort(items->begin(), items->end(), [](const Value& a, const Value& b) {
         if (auto* left = std::get_if<std::int64_t>(&a.data)) {
           return *left < std::get<std::int64_t>(b.data);
         }
@@ -2250,135 +2786,263 @@ Value Interpreter::callBuiltinMethod(const Value& object, const std::string& met
       });
       return makeVoid();
     }
+    if (method == "contains") {
+      arity(1, 1, "1 argument (value)");
+      for (const auto& element : *items) {
+        if (valuesEqual(element, args[0])) return makeBool(true);
+      }
+      return makeBool(false);
+    }
+    if (method == "join") {
+      arity(1, 1, "1 argument (separator)");
+      return makeString(joinValues(*items, stringArg(0, "The 'join' separator")));
+    }
+    if (method == "remove_at") {
+      arity(1, 1, "1 argument (index)");
+      const std::int64_t raw = intArg(0, "The index passed to 'remove_at'");
+      const std::size_t index =
+          static_cast<std::size_t>(normalizeIndex(raw, items->size(), span));
+      Value value = std::move((*items)[index]);
+      items->erase(items->begin() + static_cast<std::ptrdiff_t>(index));
+      return value;
+    }
     if (method == "first" || method == "last") {
-      if (!args.empty()) fail(span, "Method '" + method + "' takes no arguments.");
-      if ((*array)->empty()) return makeNone();
-      return makeOptional(true, method == "first" ? (*array)->front() : (*array)->back());
+      noArgs();
+      if (items->empty()) return makeNone();
+      return makeOptional(true, method == "first" ? items->front() : items->back());
     }
     fail(span, "Array has no method '" + method + "'.");
   }
 
   if (auto* text = std::get_if<std::string>(&object.data)) {
-    if (method == "to_int") {
-      if (!args.empty()) fail(span, "Method 'to_int' takes no arguments.");
-      std::int64_t value = 0;
-      if (!parseInteger(*text, value)) {
-        fail(span, "Cannot parse \"" + *text + "\" as an integer.",
-             "Check for whitespace or non-digit characters.");
-      }
-      return makeInt(value);
+    const std::string& source = *text;
+    const auto rangeWindow = [&](std::size_t first) {
+      const bool hasStart = args.size() > first;
+      const std::int64_t start = hasStart ? intArg(first, "The 'start' argument") : 0;
+      const bool hasEnd = args.size() > first + 1;
+      const std::int64_t end = hasEnd ? intArg(first + 1, "The 'end' argument") : 0;
+      return sliceWindow(source, hasStart, start, hasEnd, end);
+    };
+    const auto arrayOf = [](std::vector<std::string> parts) {
+      auto values = std::make_shared<std::vector<Value>>();
+      values->reserve(parts.size());
+      for (std::string& part : parts) values->push_back(makeString(std::move(part)));
+      return makeArray(std::move(values));
+    };
+
+    if (method == "capitalize") {
+      noArgs();
+      return makeString(capitalizeText(source));
     }
-    if (method == "to_float") {
-      if (!args.empty()) fail(span, "Method 'to_float' takes no arguments.");
-      double value = 0;
-      if (!parseFloat(*text, value)) {
-        fail(span, "Cannot parse \"" + *text + "\" as a float.");
-      }
-      return makeFloat(value);
+    if (method == "casefold" || method == "lower") {
+      noArgs();
+      return makeString(asciiLowerText(source));
     }
-    if (method == "upper" || method == "lower") {
-      if (!args.empty()) fail(span, "Method '" + method + "' takes no arguments.");
-      std::string out = *text;
-      for (char& c : out) {
-        unsigned char byte = static_cast<unsigned char>(c);
-        c = static_cast<char>(method == "upper" ? std::toupper(byte) : std::tolower(byte));
-      }
-      return makeString(std::move(out));
+    if (method == "upper") {
+      noArgs();
+      return makeString(asciiUpperText(source));
     }
-    if (method == "trim") {
-      if (!args.empty()) fail(span, "Method 'trim' takes no arguments.");
-      std::size_t begin = 0;
-      std::size_t end = text->size();
-      while (begin < end && std::isspace(static_cast<unsigned char>((*text)[begin]))) ++begin;
-      while (end > begin && std::isspace(static_cast<unsigned char>((*text)[end - 1]))) --end;
-      return makeString(text->substr(begin, end - begin));
+    if (method == "swapcase") {
+      noArgs();
+      return makeString(asciiSwapCaseText(source));
     }
-    if (method == "contains") {
-      if (args.size() != 1) fail(span, "Method 'contains' expects 1 argument.");
-      const std::string& needle = expectString(args[0], span, "The 'contains' argument");
-      return makeBool(text->find(needle) != std::string::npos);
+    if (method == "title") {
+      noArgs();
+      return makeString(titleText(source));
     }
-    if (method == "split") {
-      if (args.size() != 1) fail(span, "Method 'split' expects 1 argument.");
-      const std::string& separator = expectString(args[0], span, "The 'split' separator");
-      if (separator.empty()) fail(span, "The 'split' separator must not be empty.");
-      auto parts = std::make_shared<std::vector<Value>>();
-      std::size_t start = 0;
-      while (true) {
-        std::size_t position = text->find(separator, start);
-        if (position == std::string::npos) {
-          parts->push_back(makeString(text->substr(start)));
-          break;
+    if (method == "isalnum") {
+      noArgs();
+      return makeBool(allBytesMatch(source, isAsciiAlnumByte));
+    }
+    if (method == "isalpha") {
+      noArgs();
+      return makeBool(allBytesMatch(source, isAsciiAlphaByte));
+    }
+    if (method == "isascii") {
+      noArgs();
+      return makeBool(isAsciiText(source));
+    }
+    if (method == "isdecimal" || method == "isdigit" || method == "isnumeric") {
+      noArgs();
+      return makeBool(allBytesMatch(source, isAsciiDigitByte));
+    }
+    if (method == "isidentifier") {
+      noArgs();
+      return makeBool(isIdentifierText(source));
+    }
+    if (method == "islower") {
+      noArgs();
+      return makeBool(isLowerText(source));
+    }
+    if (method == "isprintable") {
+      noArgs();
+      return makeBool(isPrintableText(source));
+    }
+    if (method == "isspace") {
+      noArgs();
+      return makeBool(allBytesMatch(source, isAsciiSpaceByte));
+    }
+    if (method == "istitle") {
+      noArgs();
+      return makeBool(isTitleText(source));
+    }
+    if (method == "isupper") {
+      noArgs();
+      return makeBool(isUpperText(source));
+    }
+    if (method == "center" || method == "ljust" || method == "rjust") {
+      arity(1, 2, "1 or 2 arguments (width[, fillchar])");
+      const std::int64_t width = intArg(0, "The width argument");
+      std::string fill = " ";
+      if (args.size() == 2) {
+        const std::string& candidate = stringArg(1, "The fill character");
+        if (codepointCount(candidate) != 1) {
+          fail(span, "The fill character must be exactly one code point.");
         }
-        parts->push_back(makeString(text->substr(start, position - start)));
-        start = position + separator.size();
+        fill = candidate;
       }
-      return makeArray(std::move(parts));
+      const int align = method == "ljust" ? 0 : (method == "rjust" ? 1 : 2);
+      return makeString(padText(source, width, fill, align));
+    }
+    if (method == "count") {
+      arity(1, 3, "1 to 3 arguments (sub[, start[, end]])");
+      const std::string& needle = stringArg(0, "The 'count' argument");
+      return makeInt(countInWindow(source, needle, rangeWindow(1)));
+    }
+    if (method == "find" || method == "rfind") {
+      arity(1, 3, "1 to 3 arguments (sub[, start[, end]])");
+      const std::string& needle = stringArg(0, "The 'find' argument");
+      return makeInt(
+          findInWindow(source, needle, rangeWindow(1), method == "rfind"));
+    }
+    if (method == "index" || method == "rindex") {
+      arity(1, 3, "1 to 3 arguments (sub[, start[, end]])");
+      const std::string& needle = stringArg(0, "The 'index' argument");
+      const std::int64_t position =
+          findInWindow(source, needle, rangeWindow(1), method == "rindex");
+      if (position < 0) fail(span, "Substring not found.");
+      return makeInt(position);
+    }
+    if (method == "startswith" || method == "endswith") {
+      arity(1, 3, "1 to 3 arguments (prefix[, start[, end]])");
+      const std::string& part = stringArg(0, "The argument to '" + method + "'");
+      const SliceWindow window = rangeWindow(1);
+      return makeBool(method == "startswith" ? windowStartsWith(source, part, window)
+                                             : windowEndsWith(source, part, window));
+    }
+    if (method == "expandtabs") {
+      arity(0, 1, "at most 1 argument (tabsize)");
+      const std::int64_t tabsize = args.empty() ? 8 : intArg(0, "The tabsize argument");
+      return makeString(expandTabsText(source, tabsize));
+    }
+    if (method == "strip" || method == "lstrip" || method == "rstrip") {
+      arity(0, 1, "at most 1 argument (characters)");
+      const std::string* set = nullptr;
+      if (!args.empty()) set = &stringArg(0, "The characters argument");
+      return makeString(stripText(source, set, method != "rstrip", method != "lstrip"));
+    }
+    if (method == "partition" || method == "rpartition") {
+      arity(1, 1, "1 argument (separator)");
+      const std::string& separator = stringArg(0, "The 'partition' separator");
+      if (separator.empty()) {
+        fail(span, "The '" + method + "' separator must not be empty.");
+      }
+      const std::size_t hit = method == "partition" ? source.find(separator)
+                                                    : source.rfind(separator);
+      if (hit == std::string::npos) {
+        if (method == "partition") {
+          return makeTuple({makeString(source), makeString(""), makeString("")});
+        }
+        return makeTuple({makeString(""), makeString(""), makeString(source)});
+      }
+      return makeTuple({makeString(source.substr(0, hit)), makeString(separator),
+                        makeString(source.substr(hit + separator.size()))});
+    }
+    if (method == "removeprefix" || method == "removesuffix") {
+      arity(1, 1, "1 argument (affix)");
+      const std::string& affix = stringArg(0, "The affix argument");
+      if (affix.empty()) return makeString(source);
+      if (method == "removeprefix" && source.compare(0, affix.size(), affix) == 0) {
+        return makeString(source.substr(affix.size()));
+      }
+      if (method == "removesuffix" && source.size() >= affix.size() &&
+          source.compare(source.size() - affix.size(), affix.size(), affix) == 0) {
+        return makeString(source.substr(0, source.size() - affix.size()));
+      }
+      return makeString(source);
     }
     if (method == "replace") {
-      if (args.size() != 2) fail(span, "Method 'replace' expects 2 arguments.");
-      const std::string& needle = expectString(args[0], span, "The 'replace' target");
-      const std::string& replacement = expectString(args[1], span, "The 'replace' replacement");
+      arity(2, 3, "2 or 3 arguments (old, new[, count])");
+      const std::string& needle = stringArg(0, "The 'replace' target");
+      const std::string& replacement = stringArg(1, "The 'replace' replacement");
       if (needle.empty()) fail(span, "The 'replace' target must not be empty.");
-      std::string out;
-      std::size_t start = 0;
-      while (true) {
-        std::size_t position = text->find(needle, start);
-        if (position == std::string::npos) {
-          out += text->substr(start);
-          break;
+      const std::int64_t limit =
+          args.size() == 3 ? intArg(2, "The count passed to 'replace'") : -1;
+      return makeString(replaceText(source, needle, replacement, limit));
+    }
+    if (method == "split" || method == "rsplit") {
+      arity(0, 2, "at most 2 arguments (separator[, maxsplit])");
+      const bool right = method == "rsplit";
+      const std::string* separator = nullptr;
+      std::int64_t maxsplit = -1;
+      if (args.size() == 1) {
+        if (auto* value = std::get_if<std::string>(&args[0].data)) {
+          separator = value;
+        } else {
+          maxsplit = intArg(0, "The maxsplit argument");
         }
-        out += text->substr(start, position - start);
-        out += replacement;
-        start = position + needle.size();
+      } else if (args.size() == 2) {
+        separator = &stringArg(0, "The 'split' separator");
+        maxsplit = intArg(1, "The maxsplit argument");
+      }
+      if (separator && separator->empty()) {
+        fail(span, "The '" + method + "' separator must not be empty.");
+      }
+      return arrayOf(separator ? splitLiteral(source, *separator, maxsplit, right)
+                               : splitWhitespace(source, maxsplit, right));
+    }
+    if (method == "splitlines") {
+      arity(0, 1, "at most 1 argument (keepends)");
+      const bool keepends =
+          args.empty() ? false : expectBool(args[0], span, "The 'keepends' argument");
+      return arrayOf(splitLinesText(source, keepends));
+    }
+    if (method == "join") {
+      arity(1, 1, "1 argument (array)");
+      ArrayPtr parts = expectArray(args[0], span, "The 'join' argument");
+      std::string out;
+      for (std::size_t i = 0; i < parts->size(); ++i) {
+        auto* part = std::get_if<std::string>(&(*parts)[i].data);
+        if (!part) fail(span, "The array passed to 'join' must contain only strings.");
+        if (i > 0) out += source;
+        out += *part;
       }
       return makeString(std::move(out));
     }
-    if (method == "starts_with" || method == "ends_with") {
-      if (args.size() != 1) fail(span, "Method '" + method + "' expects 1 argument.");
-      const std::string& part = expectString(args[0], span, "The argument to '" + method + "'");
-      if (method == "starts_with") {
-        return makeBool(text->size() >= part.size() &&
-                        text->compare(0, part.size(), part) == 0);
-      }
-      return makeBool(text->size() >= part.size() &&
-                      text->compare(text->size() - part.size(), part.size(), part) == 0);
+    if (method == "zfill") {
+      arity(1, 1, "1 argument (width)");
+      return makeString(zfillText(source, intArg(0, "The width argument")));
     }
-    if (method == "find") {
-      if (args.size() != 1) fail(span, "Method 'find' expects 1 argument.");
-      const std::string& needle = expectString(args[0], span, "The 'find' argument");
-      std::size_t position = text->find(needle);
-      if (position == std::string::npos) return makeInt(-1);
-      std::size_t count = codepointCount(text->substr(0, position));
-      return makeInt(static_cast<std::int64_t>(count));
+    if (method == "contains") {
+      arity(1, 1, "1 argument (substring)");
+      return makeBool(source.find(stringArg(0, "The 'contains' argument")) !=
+                      std::string::npos);
     }
     if (method == "repeat") {
-      if (args.size() != 1) fail(span, "Method 'repeat' expects 1 argument.");
-      std::int64_t count = expectInt(args[0], span, "The count passed to 'repeat'");
+      arity(1, 1, "1 argument (count)");
+      const std::int64_t count = intArg(0, "The count passed to 'repeat'");
       if (count < 0) fail(span, "The 'repeat' count must not be negative.");
       std::string out;
-      for (std::int64_t i = 0; i < count; ++i) out += *text;
+      for (std::int64_t i = 0; i < count; ++i) out += source;
       return makeString(std::move(out));
     }
     if (method == "chars") {
-      if (!args.empty()) fail(span, "Method 'chars' takes no arguments.");
+      noArgs();
       auto chars = std::make_shared<std::vector<Value>>();
       std::size_t index = 0;
       char32_t codepoint = 0;
-      while (decodeUtf8(*text, index, codepoint)) chars->push_back(makeChar(codepoint));
+      while (decodeUtf8(source, index, codepoint)) chars->push_back(makeChar(codepoint));
       return makeArray(std::move(chars));
-    }
-    if (method == "try_to_int") {
-      if (!args.empty()) fail(span, "Method 'try_to_int' takes no arguments.");
-      std::int64_t value = 0;
-      if (!parseInteger(*text, value)) return makeNone();
-      return makeOptional(true, makeInt(value));
-    }
-    if (method == "try_to_float") {
-      if (!args.empty()) fail(span, "Method 'try_to_float' takes no arguments.");
-      double value = 0;
-      if (!parseFloat(*text, value)) return makeNone();
-      return makeOptional(true, makeFloat(value));
     }
     fail(span, "String has no method '" + method + "'.");
   }

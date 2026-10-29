@@ -57,6 +57,17 @@ int runSource(const std::string& displayPath, std::string source, const DriverCo
     return runLLVMModule(graph, result, in, out, err);
   }
 
+  if (isNativeSupported(graph)) {
+    int code = runNativeBinary(graph, result, in, out, err);
+    if (code >= 0) {
+      sink.flush(err, config.useColor);
+      return code;
+    }
+    // The native emitter accepted the AST but g++ could not compile the
+    // result (e.g. a type mismatch it did not anticipate): fall back to the
+    // interpreter so the program still runs correctly.
+  }
+
   Interpreter interp(graph, result, sink, in, out, err);
   int code = interp.run();
   sink.flush(err, config.useColor);

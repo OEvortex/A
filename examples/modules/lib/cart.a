@@ -6,7 +6,7 @@ struct Cart:
     total: Money
 
     fn add(self, name: String, price: Money) -> void:
-        self.items.push(name)
+        self.items.append(name)
         self.total = Money(self.total.cents + price.cents)
 
     fn render(self) -> void:

@@ -1,0 +1,1 @@
+print("abc".index("z"))

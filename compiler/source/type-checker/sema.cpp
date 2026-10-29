@@ -29,7 +29,8 @@ bool isMathBuiltin(const std::string& name) {
 bool isKnownBuiltin(const std::string& name) {
   static const char* names[] = {
       "print",    "eprint",   "input",     "len",      "str",      "abs",
-      "min",      "max",      "pow",       "flush",    "read_file", "write_file",
+      "int",      "float",    "min",       "max",      "pow",      "flush",
+      "read_file", "write_file",
       "append_file", "file_exists", "list_dir", "remove_file", "create_dir",
       "remove_dir", "rename", "current_dir", "now", "sleep", "panic", "assert",
       "assert_eq", "map",  "filter",   "reduce",   "any",
@@ -2058,59 +2059,107 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
   }
 
   if (object->kind == TypeKind::Array) {
-    if (method == "push") {
-      if (rejectNamed()) return typeError();
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'push' expects 1 argument, found " +
+    auto arity = [&](std::size_t low, std::size_t high, const std::string& usage) -> bool {
+      if (call.args.size() < low || call.args.size() > high) {
+        sink_.error(call.span, "Method '" + method + "' expects " + usage + ", found " +
                                    std::to_string(call.args.size()) + ".");
         for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
+        return false;
       }
+      return true;
+    };
+    auto elementArg = [&](std::size_t index, const std::string& where) {
+      TypePtr type = inferExpr(*call.args[index].value);
+      if (!unify(type, object->elem)) {
+        reportMismatch(type, object->elem, call.args[index].value->span, where);
+      }
+    };
+    auto indexArg = [&](std::size_t index, const char* what) {
+      TypePtr type = inferExpr(*call.args[index].value);
+      requireInteger(type, call.args[index].value->span, what);
+    };
+
+    if (method == "append") {
+      if (rejectNamed()) return typeError();
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0, "in 'append'");
+      return typeVoid();
+    }
+    if (method == "extend") {
+      if (rejectNamed()) return typeError();
+      if (!arity(1, 1, "1 argument (array)")) return typeError();
       TypePtr argType = inferExpr(*call.args[0].value);
-      if (!unify(argType, object->elem)) {
-        reportMismatch(argType, object->elem, call.args[0].value->span, "in 'push'");
+      TypePtr resolved = resolveType(argType);
+      if (resolved->kind != TypeKind::Array) {
+        sink_.error(call.args[0].value->span,
+                    "'extend' expects an array, found " + typePhrase(resolved) + ".");
+      } else if (!unify(resolved->elem, object->elem)) {
+        reportMismatch(resolved->elem, object->elem, call.args[0].value->span, "in 'extend'");
       }
+      return typeVoid();
+    }
+    if (method == "insert") {
+      if (rejectNamed()) return typeError();
+      if (!arity(2, 2, "2 arguments (index, value)")) return typeError();
+      indexArg(0, "The index passed to 'insert'");
+      elementArg(1, "in 'insert'");
       return typeVoid();
     }
     if (method == "pop") {
       if (rejectNamed()) return typeError();
-      if (!call.args.empty()) {
-        sink_.error(call.span, "Method 'pop' takes no arguments.");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-      }
+      if (!arity(0, 1, "at most 1 argument (index)")) return typeError();
+      if (call.args.size() == 1) indexArg(0, "The index passed to 'pop'");
       return object->elem;
     }
-    if (method == "reverse") {
+    if (method == "remove") {
       if (rejectNamed()) return typeError();
-      if (!call.args.empty()) {
-        sink_.error(call.span, "Method 'reverse' takes no arguments.");
-        for (auto& arg : call.args) inferExpr(*arg.value);
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0, "in 'remove'");
+      return typeVoid();
+    }
+    if (method == "clear" || method == "reverse" || method == "sort") {
+      if (rejectNamed()) return typeError();
+      if (!arity(0, 0, "no arguments")) return typeError();
+      if (method == "sort") {
+        TypePtr element = resolveType(object->elem);
+        if (element->kind != TypeKind::Var && element->kind != TypeKind::Int &&
+            element->kind != TypeKind::Float && element->kind != TypeKind::String) {
+          sink_.error(field.fieldSpan,
+                      "'sort' requires an array of integers, floats, or strings, found " +
+                          typePhrase(object) + ".");
+        }
       }
       return typeVoid();
     }
+    if (method == "copy") {
+      if (rejectNamed()) return typeError();
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeArray(object->elem);
+    }
+    if (method == "count") {
+      if (rejectNamed()) return typeError();
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0, "in 'count'");
+      return typeInt(64, true);
+    }
+    if (method == "index") {
+      if (rejectNamed()) return typeError();
+      if (!arity(1, 3, "1 to 3 arguments (value[, start[, end]])")) return typeError();
+      elementArg(0, "in 'index'");
+      for (std::size_t i = 1; i < call.args.size(); ++i) {
+        indexArg(i, i == 1 ? "The 'start' argument" : "The 'end' argument");
+      }
+      return typeInt(64, true);
+    }
     if (method == "contains") {
       if (rejectNamed()) return typeError();
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'contains' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr argType = inferExpr(*call.args[0].value);
-      if (!unify(argType, object->elem)) {
-        reportMismatch(argType, object->elem, call.args[0].value->span,
-                       "in argument 1 to 'contains'");
-      }
+      if (!arity(1, 1, "1 argument (value)")) return typeError();
+      elementArg(0, "in 'contains'");
       return typeBool();
     }
     if (method == "join") {
       if (rejectNamed()) return typeError();
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'join' expects 1 argument (separator), found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
+      if (!arity(1, 1, "1 argument (separator)")) return typeError();
       TypePtr argType = inferExpr(*call.args[0].value);
       if (!unify(argType, typeString())) {
         reportMismatch(argType, typeString(), call.args[0].value->span,
@@ -2118,175 +2167,183 @@ TypePtr Sema::checkMethodCall(const TypePtr& objectType, FieldExpr& field, CallE
       }
       return typeString();
     }
-    if (method == "insert") {
-      if (rejectNamed()) return typeError();
-      if (call.args.size() != 2) {
-        sink_.error(call.span, "Method 'insert' expects 2 arguments (index, value), found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr indexType = inferExpr(*call.args[0].value);
-      requireInteger(indexType, call.args[0].value->span, "The index passed to 'insert'");
-      TypePtr valueType = inferExpr(*call.args[1].value);
-      if (!unify(valueType, object->elem)) {
-        reportMismatch(valueType, object->elem, call.args[1].value->span, "in 'insert'");
-      }
-      return typeVoid();
-    }
     if (method == "remove_at") {
       if (rejectNamed()) return typeError();
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'remove_at' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr indexType = inferExpr(*call.args[0].value);
-      requireInteger(indexType, call.args[0].value->span, "The index passed to 'remove_at'");
+      if (!arity(1, 1, "1 argument (index)")) return typeError();
+      indexArg(0, "The index passed to 'remove_at'");
       return object->elem;
-    }
-    if (method == "index_of") {
-      if (rejectNamed()) return typeError();
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'index_of' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr argType = inferExpr(*call.args[0].value);
-      if (!unify(argType, object->elem)) {
-        reportMismatch(argType, object->elem, call.args[0].value->span,
-                       "in argument 1 to 'index_of'");
-      }
-      return typeInt(64, true);
-    }
-    if (method == "sort") {
-      if (rejectNamed()) return typeError();
-      if (!call.args.empty()) {
-        sink_.error(call.span, "Method 'sort' takes no arguments.");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-      }
-      TypePtr element = resolveType(object->elem);
-      if (element->kind != TypeKind::Var && element->kind != TypeKind::Int &&
-          element->kind != TypeKind::Float && element->kind != TypeKind::String) {
-        sink_.error(field.fieldSpan,
-                    "'sort' requires an array of integers, floats, or strings, found " +
-                        typePhrase(object) + ".");
-      }
-      return typeVoid();
     }
     if (method == "first" || method == "last") {
       if (rejectNamed()) return typeError();
-      if (!call.args.empty()) {
-        sink_.error(call.span, "Method '" + method + "' takes no arguments.");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-      }
+      if (!arity(0, 0, "no arguments")) return typeError();
       return typeOptional(object->elem);
     }
     sink_.error(field.fieldSpan,
                 "Array has no method named '" + method + "'.",
-                "Available array methods: push(v), pop(), insert(i, v), remove_at(i), "
-                "contains(v), index_of(v), sort(), reverse(), first(), last(), join(sep).");
+                "Available array methods: append(v), extend(xs), insert(i, v), "
+                "remove_at(i), pop([i]), remove(v), clear(), copy(), count(v), "
+                "index(v[, start[, end]]), contains(v), sort(), reverse(), "
+                "first(), last(), join(sep).");
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
 
   if (object->kind == TypeKind::String) {
     if (rejectNamed()) return typeError();
-    auto expectNoArgs = [&]() -> bool {
-      if (!call.args.empty()) {
-        sink_.error(call.span, "Method '" + method + "' takes no arguments.");
+    auto arity = [&](std::size_t low, std::size_t high, const std::string& usage) -> bool {
+      if (call.args.size() < low || call.args.size() > high) {
+        sink_.error(call.span, "Method '" + method + "' expects " + usage + ", found " +
+                                   std::to_string(call.args.size()) + ".");
         for (auto& arg : call.args) inferExpr(*arg.value);
         return false;
       }
       return true;
     };
-    if (method == "to_int") {
-      if (!expectNoArgs()) return typeError();
+    auto stringArg = [&](std::size_t index, const std::string& where) {
+      TypePtr type = inferExpr(*call.args[index].value);
+      if (!unify(type, typeString())) {
+        reportMismatch(type, typeString(), call.args[index].value->span, where);
+      }
+    };
+    auto intArg = [&](std::size_t index, const char* what) {
+      TypePtr type = inferExpr(*call.args[index].value);
+      requireInteger(type, call.args[index].value->span, what);
+    };
+    auto boolArg = [&](std::size_t index, const char* what) {
+      TypePtr type = inferExpr(*call.args[index].value);
+      if (!unify(type, typeBool())) {
+        reportMismatch(type, typeBool(), call.args[index].value->span, what);
+      }
+    };
+
+    if (method == "capitalize" || method == "casefold" || method == "lower" ||
+        method == "upper" || method == "swapcase" || method == "title") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeString();
+    }
+    if (method == "isalnum" || method == "isalpha" || method == "isascii" ||
+        method == "isdecimal" || method == "isdigit" || method == "isidentifier" ||
+        method == "islower" || method == "isnumeric" || method == "isprintable" ||
+        method == "isspace" || method == "istitle" || method == "isupper") {
+      if (!arity(0, 0, "no arguments")) return typeError();
+      return typeBool();
+    }
+    if (method == "center" || method == "ljust" || method == "rjust") {
+      if (!arity(1, 2, "1 or 2 arguments (width[, fillchar])")) return typeError();
+      intArg(0, "The width argument");
+      if (call.args.size() == 2) stringArg(1, "in the fill character");
+      return typeString();
+    }
+    if (method == "count" || method == "find" || method == "rfind" || method == "index" ||
+        method == "rindex") {
+      if (!arity(1, 3, "1 to 3 arguments (sub[, start[, end]])")) return typeError();
+      stringArg(0, "in argument 1 to '" + method + "'");
+      for (std::size_t i = 1; i < call.args.size(); ++i) {
+        intArg(i, i == 1 ? "The 'start' argument" : "The 'end' argument");
+      }
       return typeInt(64, true);
     }
-    if (method == "to_float") {
-      if (!expectNoArgs()) return typeError();
-      return typeFloat(64);
+    if (method == "startswith" || method == "endswith") {
+      if (!arity(1, 3, "1 to 3 arguments (affix[, start[, end]])")) return typeError();
+      stringArg(0, "in argument 1 to '" + method + "'");
+      for (std::size_t i = 1; i < call.args.size(); ++i) {
+        intArg(i, i == 1 ? "The 'start' argument" : "The 'end' argument");
+      }
+      return typeBool();
     }
-    if (method == "upper" || method == "lower" || method == "trim") {
-      if (!expectNoArgs()) return typeError();
+    if (method == "expandtabs") {
+      if (!arity(0, 1, "at most 1 argument (tabsize)")) return typeError();
+      if (call.args.size() == 1) intArg(0, "The tabsize argument");
       return typeString();
     }
-    if (method == "contains" || method == "split") {
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method '" + method + "' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr argType = inferExpr(*call.args[0].value);
-      if (!unify(argType, typeString())) {
-        reportMismatch(argType, typeString(), call.args[0].value->span,
-                       "in argument 1 to '" + method + "'");
-      }
-      return method == "contains" ? typeBool() : typeArray(typeString());
+    if (method == "strip" || method == "lstrip" || method == "rstrip") {
+      if (!arity(0, 1, "at most 1 argument (characters)")) return typeError();
+      if (call.args.size() == 1) stringArg(0, "in the characters argument");
+      return typeString();
+    }
+    if (method == "partition" || method == "rpartition") {
+      if (!arity(1, 1, "1 argument (separator)")) return typeError();
+      stringArg(0, "in the separator argument");
+      return typeTuple({typeString(), typeString(), typeString()});
+    }
+    if (method == "removeprefix" || method == "removesuffix") {
+      if (!arity(1, 1, "1 argument (affix)")) return typeError();
+      stringArg(0, "in the affix argument");
+      return typeString();
     }
     if (method == "replace") {
-      if (call.args.size() != 2) {
-        sink_.error(call.span, "Method 'replace' expects 2 arguments, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      for (std::size_t i = 0; i < 2; ++i) {
-        TypePtr argType = inferExpr(*call.args[i].value);
-        if (!unify(argType, typeString())) {
-          reportMismatch(argType, typeString(), call.args[i].value->span,
-                         "in argument " + std::to_string(i + 1) + " to 'replace'");
+      if (!arity(2, 3, "2 or 3 arguments (old, new[, count])")) return typeError();
+      stringArg(0, "in the 'old' argument");
+      stringArg(1, "in the 'new' argument");
+      if (call.args.size() == 3) intArg(2, "The count passed to 'replace'");
+      return typeString();
+    }
+    if (method == "split" || method == "rsplit") {
+      if (!arity(0, 2, "at most 2 arguments (separator[, maxsplit])")) return typeError();
+      if (call.args.size() == 1) {
+        TypePtr first = inferExpr(*call.args[0].value);
+        if (!unify(first, typeString())) {
+          requireInteger(first, call.args[0].value->span, "The maxsplit argument");
         }
+      } else if (call.args.size() == 2) {
+        stringArg(0, "in the separator argument");
+        intArg(1, "The maxsplit argument");
+      }
+      return typeArray(typeString());
+    }
+    if (method == "splitlines") {
+      if (!arity(0, 1, "at most 1 argument (keepends)")) return typeError();
+      if (call.args.size() == 1) boolArg(0, "The 'keepends' argument");
+      return typeArray(typeString());
+    }
+    if (method == "join") {
+      if (!arity(1, 1, "1 argument (array)")) return typeError();
+      TypePtr argType = inferExpr(*call.args[0].value);
+      TypePtr resolved = resolveType(argType);
+      if (resolved->kind != TypeKind::Array) {
+        sink_.error(call.args[0].value->span,
+                    "'join' expects an array of strings, found " + typePhrase(resolved) + ".");
+      } else if (!unify(resolved->elem, typeString())) {
+        reportMismatch(resolved->elem, typeString(), call.args[0].value->span,
+                       "in the array passed to 'join'");
       }
       return typeString();
     }
-    if (method == "starts_with" || method == "ends_with" || method == "find") {
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method '" + method + "' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr argType = inferExpr(*call.args[0].value);
-      if (!unify(argType, typeString())) {
-        reportMismatch(argType, typeString(), call.args[0].value->span,
-                       "in argument 1 to '" + method + "'");
-      }
-      return method == "find" ? typeInt(64, true) : typeBool();
+    if (method == "zfill") {
+      if (!arity(1, 1, "1 argument (width)")) return typeError();
+      intArg(0, "The width argument");
+      return typeString();
+    }
+    if (method == "contains") {
+      if (!arity(1, 1, "1 argument (substring)")) return typeError();
+      stringArg(0, "in the 'contains' argument");
+      return typeBool();
     }
     if (method == "repeat") {
-      if (call.args.size() != 1) {
-        sink_.error(call.span, "Method 'repeat' expects 1 argument, found " +
-                                   std::to_string(call.args.size()) + ".");
-        for (auto& arg : call.args) inferExpr(*arg.value);
-        return typeError();
-      }
-      TypePtr argType = inferExpr(*call.args[0].value);
-      requireInteger(argType, call.args[0].value->span, "The count passed to 'repeat'");
+      if (!arity(1, 1, "1 argument (count)")) return typeError();
+      intArg(0, "The count passed to 'repeat'");
       return typeString();
     }
     if (method == "chars") {
-      if (!expectNoArgs()) return typeError();
+      if (!arity(0, 0, "no arguments")) return typeError();
       return typeArray(typeChar());
-    }
-    if (method == "try_to_int") {
-      if (!expectNoArgs()) return typeError();
-      return typeOptional(typeInt(64, true));
-    }
-    if (method == "try_to_float") {
-      if (!expectNoArgs()) return typeError();
-      return typeOptional(typeFloat(64));
     }
     sink_.error(field.fieldSpan,
                 "String has no method named '" + method + "'.",
-                "Available string methods: to_int(), to_float(), try_to_int(), "
-                "try_to_float(), upper(), lower(), trim(), contains(sub), split(sep), "
-                "replace(sub, with), starts_with(prefix), ends_with(suffix), find(sub), "
-                "repeat(n), chars().");
+                "Available string methods: capitalize(), casefold(), lower(), upper(), "
+                "swapcase(), title(), center(width[, fill]), ljust(width[, fill]), "
+                "rjust(width[, fill]), zfill(width), count(sub[, start[, end]]), "
+                "find(sub[, start[, end]]), rfind(sub[, start[, end]]), "
+                "index(sub[, start[, end]]), rindex(sub[, start[, end]]), "
+                "startswith(prefix[, start[, end]]), endswith(suffix[, start[, end]]), "
+                "expandtabs([tabsize]), strip([chars]), lstrip([chars]), "
+                "rstrip([chars]), partition(sep), rpartition(sep), "
+                "removeprefix(affix), removesuffix(affix), replace(old, new[, count]), "
+                "split([sep[, maxsplit]]), rsplit([sep[, maxsplit]]), "
+                "splitlines([keepends]), join(parts), isalnum(), isalpha(), isascii(), "
+                "isdecimal(), isdigit(), isidentifier(), islower(), isnumeric(), "
+                "isprintable(), isspace(), istitle(), isupper(), "
+                "contains(sub), repeat(n), chars().");
     for (auto& arg : call.args) inferExpr(*arg.value);
     return typeError();
   }
@@ -2376,6 +2433,30 @@ TypePtr Sema::checkBuiltinCall(const std::string& name, CallExpr& call) {
       sink_.error(call.args[0].value->span, "Cannot convert a void value to a string.");
     }
     return typeString();
+  }
+
+  if (name == "int" || name == "float") {
+    TypePtr result = name == "int" ? typeInt(64, true) : typeFloat(64);
+    if (call.args.size() != 1) {
+      arityError(1);
+      inferArgs();
+      return result;
+    }
+    TypePtr type = inferExpr(*call.args[0].value);
+    TypePtr resolved = resolveType(type);
+    if (resolved->kind == TypeKind::Var) {
+      if (!constrainVar(type, Constraint::Numeric)) {
+        sink_.error(call.args[0].value->span,
+                    "Cannot infer the argument type for '" + name + "'.",
+                    "Add a type annotation to the argument.");
+      }
+    } else if (resolved->kind != TypeKind::Int && resolved->kind != TypeKind::Float &&
+               resolved->kind != TypeKind::Bool && resolved->kind != TypeKind::String) {
+      sink_.error(call.args[0].value->span,
+                  "'" + name + "' requires a number, bool, or numeric string, found " +
+                      typePhrase(resolved) + ".");
+    }
+    return result;
   }
 
   if (name == "abs") {

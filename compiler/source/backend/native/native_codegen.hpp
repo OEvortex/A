@@ -16,4 +16,15 @@ bool emitNativeCpp(const ModuleGraph& graph, const SemaResult& sema, std::ostrea
 bool buildNativeBinary(const ModuleGraph& graph, const SemaResult& sema,
                        const std::string& outputPath, std::ostream& err);
 
+// Compiles via the native C++ backend and executes the resulting program
+// directly, streaming stdout/stderr. Returns the program's exit code, or -1
+// when the program could not be compiled by the native emitter.
+int runNativeBinary(const ModuleGraph& graph, const SemaResult& sema,
+                    std::istream& in, std::ostream& out, std::ostream& err);
+
+// Returns true if the AST only contains constructs the native C++ emitter
+// compiles correctly, so `a run` can execute such programs at native build
+// speed. Anything else falls back to the tree-walking interpreter.
+bool isNativeSupported(const ModuleGraph& graph);
+
 }  // namespace a

@@ -1217,7 +1217,8 @@ bool checkSupportedExpr(const Expr& expr) {
       // Native runtime functions are handled by interpreter or native backend
       if (name == "write_file" || name == "read_file" || name == "append_file" ||
           name == "file_exists" || name == "remove_file" || name == "flush" ||
-          name == "input" || name == "read_line" || name == "len") {
+          name == "input" || name == "read_line" || name == "len" ||
+          name == "int" || name == "float") {
         return false;
       }
       for (const auto& a : c.args) if (!checkSupportedExpr(*a.value)) return false;

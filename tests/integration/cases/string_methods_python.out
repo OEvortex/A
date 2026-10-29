@@ -1,0 +1,29 @@
+capitalize: Hello world
+casefold: hÉllo
+title: Hello World
+swapcase: hELLO wORLD
+center: --ab- | -ab-
+ljust: ab... rjust: ...ab
+zfill: 00042 -0042 +007
+count: 2 empty: 4
+find: 4 rfind: 4
+index: 2 rindex: 4
+startswith: true endswith: true
+expandtabs: a   b   c
+strip: hello lstrip: hi   rstrip:   hi
+partition: ("a", "-", "b-c")
+rpartition: ("a-b", "-", "c")
+removeprefix: happy removesuffix: happy
+replace: bba
+split: ["a", "b", "c"] | ["a", "b,c"]
+rsplit: ["a,b", "c"]
+splitlines: ["a", "b", "c"] keep: ["a\n", "b"]
+join: a-b-c
+isalnum: true isalpha: true isascii: false
+isdecimal: true isdigit: true isnumeric: true
+isidentifier: true false
+islower: true isupper: true istitle: true
+isprintable: true isspace: true
+utf8 find: 2 count: 2
+contains: true repeat: abab
+chars: [h, é]

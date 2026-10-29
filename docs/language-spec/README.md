@@ -505,24 +505,36 @@ print("héllo"[0..5])     # héllo
 print("abcdef"[0..6..2]) # ace
 ```
 
-Methods:
+Methods (Python-compatible names; case conversion and classification are
+ASCII-only, and non-ASCII code points pass through unchanged):
 
 | Method | Result |
 | ------ | ------ |
-| `to_int()` | parse an integer, runtime error on invalid input |
-| `to_float()` | parse a float, runtime error on invalid input |
-| `try_to_int()` | `i32?`, `None` when the text is not an integer |
-| `try_to_float()` | `f64?`, `None` when the text is not a float |
-| `upper()`, `lower()` | ASCII case conversion |
-| `trim()` | strip surrounding ASCII whitespace |
-| `contains(sub)` | substring test |
-| `starts_with(sub)`, `ends_with(sub)` | prefix/suffix tests |
-| `find(sub)` | code-point index of the first match, or `-1` |
-| `replace(old, new)` | replace every occurrence |
-| `repeat(n)` | repeat the string `n` times |
-| `split(sep)` | `[String]` of pieces |
-| `chars()` | `[char]` of code points |
-| `join` | arrays only, see below |
+| `capitalize()`, `title()`, `swapcase()` | ASCII case conversion |
+| `casefold()`, `lower()`, `upper()` | ASCII case conversion |
+| `center(width[, fill])`, `ljust(width[, fill])`, `rjust(width[, fill])` | pad to `width` code points |
+| `zfill(width)` | zero-pad, keeping a leading `+`/`-` |
+| `count(sub[, start[, end]])` | number of non-overlapping matches |
+| `find(sub[, start[, end]])`, `rfind(...)` | code-point index of the match, or `-1` |
+| `index(sub[, start[, end]])`, `rindex(...)` | code-point index, runtime error when absent |
+| `startswith(prefix[, start[, end]])`, `endswith(suffix[, start[, end]])` | prefix/suffix tests |
+| `expandtabs([tabsize])` | expand tabs (default 8) |
+| `strip([chars])`, `lstrip([chars])`, `rstrip([chars])` | trim characters (default ASCII whitespace) |
+| `partition(sep)`, `rpartition(sep)` | `(before, sep, after)` tuple |
+| `removeprefix(affix)`, `removesuffix(affix)` | exact prefix/suffix removal |
+| `replace(old, new[, count])` | replace occurrences |
+| `split([sep[, maxsplit]])`, `rsplit([sep[, maxsplit]])` | `[String]`; without a separator splits on whitespace |
+| `splitlines([keepends])` | `[String]` split on line boundaries |
+| `join(parts)` | join a `[String]` with the receiver |
+| `isalnum()`, `isalpha()`, `isascii()`, `isdecimal()`, `isdigit()`, `isidentifier()`, `islower()`, `isnumeric()`, `isprintable()`, `isspace()`, `istitle()`, `isupper()` | classification tests |
+| `contains(sub)` | A extension: substring test |
+| `repeat(n)` | A extension: repeat the string `n` times |
+| `chars()` | A extension: `[char]` of code points |
+
+Numeric conversion uses the free functions `int(x)` and `float(x)`, which
+accept numbers, bools, and numeric strings (surrounding ASCII whitespace and a
+leading `+` are allowed) and raise a runtime error on invalid input. There are
+no `to_int`/`to_float` methods.
 
 ## Arrays
 
@@ -530,16 +542,21 @@ Arrays are reference values, support negative indexing, and carry methods:
 
 | Method | Result |
 | ------ | ------ |
-| `push(value)` | append, returns `void` |
-| `pop()` | remove and return the last element |
-| `insert(index, value)` | insert before `index`, returns `void` |
-| `remove_at(index)` | remove and return the element |
+| `append(value)` | append, returns `void` |
+| `extend(other)` | append every element of another array |
+| `insert(index, value)` | insert before `index`; clamps to the valid range |
+| `pop([index])` | remove and return the last element (or the given index) |
+| `remove(value)` | remove the first equal element, runtime error when absent |
+| `clear()` | remove every element |
+| `copy()` | shallow copy |
+| `count(value)` | number of occurrences |
+| `index(value[, start[, end]])` | first index, runtime error when absent |
 | `reverse()` | reverse in place |
-| `sort()` | sort ints, floats, or strings in place |
-| `contains(value)` | membership test |
-| `index_of(value)` | first index or `-1` |
-| `first()`, `last()` | `T?`, `None` when empty |
-| `join(sep)` | concatenate string forms with `sep` |
+| `sort()` | sort ints, floats, or strings in place (no `key=`/`reverse=`) |
+| `remove_at(index)` | A extension: remove and return the element |
+| `contains(value)` | A extension: membership test |
+| `first()`, `last()` | A extension: `T?`, `None` when empty |
+| `join(sep)` | A extension: concatenate string forms with `sep` |
 
 Slices use exclusive end bounds and an optional positive step:
 `items[0..10..2]`. A non-positive step is a runtime error.
@@ -554,6 +571,8 @@ Slices use exclusive end bounds and an optional positive step:
 | `input(prompt?)` | print prompt, read one line as `String` |
 | `len(container)` | length of a string (code points) or array |
 | `str(value)` | convert any value to its display form |
+| `int(value)` | `i64` from an int, bool, float (truncated toward zero), or numeric string |
+| `float(value)` | `f64` from an int, bool, float, or numeric string |
 | `abs(x)` | absolute value |
 | `min(a, b)`, `max(a, b)` | matching numeric arguments |
 | `pow(base, exp)` | `f64` power |

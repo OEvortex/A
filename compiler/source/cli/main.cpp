@@ -58,6 +58,7 @@ struct Options {
   std::string path;
   std::string outputPath;
   std::string backend = "llvm";
+  bool hasExplicitBackend = false;
   bool emitLLVM = false;
   std::vector<std::string> modulePaths;
   std::string stdlibRoot;
@@ -118,8 +119,10 @@ bool parseOptions(int argc, char** argv, Options& options, std::ostream& err) {
         return false;
       }
       options.backend = argv[++i];
+      options.hasExplicitBackend = true;
     } else if (arg.rfind("--backend=", 0) == 0) {
       options.backend = arg.substr(10);
+      options.hasExplicitBackend = true;
     } else if (arg == "-o" || arg == "--output") {
       if (i + 1 >= argc) {
         err << "error: '" << arg << "' requires a file path\n";
@@ -234,6 +237,11 @@ int main(int argc, char** argv) {
   config.stdlibRoot = options.stdlibRoot;
 
   if (options.command == "build") {
+    std::string backend = options.backend;
+    // Default build backend is native C++ codegen for full language coverage unless --backend=llvm is explicitly specified
+    if (backend == "llvm" && !options.hasExplicitBackend) {
+      backend = "native";
+    }
     std::string out = options.outputPath;
     if (out.empty()) {
       out = options.path;
@@ -249,7 +257,7 @@ int main(int argc, char** argv) {
     if (options.emitLLVM) {
       return a::emitLLVMFile(options.path, out, config, std::cerr);
     }
-    return a::buildFile(options.path, out, config, options.backend, std::cerr);
+    return a::buildFile(options.path, out, config, backend, std::cerr);
   }
 
   if (options.command == "fmt") {

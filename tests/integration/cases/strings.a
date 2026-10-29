@@ -1,6 +1,6 @@
 name = "World"
 print("Hello, {name}!")
 print("sum = {2 + 3}")
-print("  Hello World  ".trim().upper())
+print("  Hello World  ".strip().upper())
 print("a,b,c".split(","))
-print("Hello".contains("ell"), "42".to_int() + 1)
+print("Hello".contains("ell"), int("42") + 1)

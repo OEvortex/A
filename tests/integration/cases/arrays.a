@@ -1,6 +1,6 @@
 nums = [1, 2, 3]
 print(nums, len(nums))
-nums.push(4)
+nums.append(4)
 print(nums[0], nums[3])
 print(nums[0..2])
 print(nums.pop())

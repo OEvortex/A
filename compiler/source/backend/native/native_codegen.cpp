@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -9,6 +10,8 @@
 #include <iostream>
 #include <filesystem>
 #include <set>
+#include <unistd.h>
+#include <sys/wait.h>
 
 namespace a {
 
@@ -88,6 +91,7 @@ class NativeEmitter {
 
   void emitHeaders() {
     out_ << "#include <iostream>\n";
+    out_ << "#include <cstdlib>\n";
     out_ << "#include <vector>\n";
     out_ << "#include <string>\n";
     out_ << "#include <cmath>\n";
@@ -105,6 +109,16 @@ class NativeEmitter {
     out_ << "void a_print(const T& val) { std::cout << std::fixed << std::setprecision(1) << val << std::endl; }\n";
     out_ << "inline void a_print(int_t val) { std::cout << val << std::endl; }\n";
     out_ << "inline void a_print(const std::string& val) { std::cout << val << std::endl; }\n\n";
+
+    out_ << "inline void a_fail_div() {\n";
+    out_ << "    std::cerr << \"Division by zero.\\nCheck the divisor before dividing.\" << std::endl;\n";
+    out_ << "    std::exit(2);\n";
+    out_ << "}\n\n";
+
+    out_ << "inline void a_fail_shift(std::int64_t amount) {\n";
+    out_ << "    std::cerr << \"Shift amount \" << amount << \" is out of range.\" << std::endl;\n";
+    out_ << "    std::exit(2);\n";
+    out_ << "}\n\n";
 
     out_ << "inline float_t_ a_sqrt(float_t_ val) { return std::sqrt(val); }\n";
     out_ << "inline float_t_ a_round(float_t_ val) { return std::round(val); }\n";
@@ -367,6 +381,33 @@ class NativeEmitter {
       }
       case ExprKind::Binary: {
         const auto& bin = static_cast<const BinaryExpr&>(expr);
+        // Division, remainder and shifts need runtime guards; the native
+        // backend would otherwise turn divisor/remainder zero or out-of-range
+        // shift amounts into hardware exceptions instead of clean errors.
+        if (bin.binop == BinOp::Div || bin.binop == BinOp::Mod) {
+          out_ << "(";
+          emitExpr(*bin.rhs);
+          out_ << " == 0 ? (a_fail_div(), int_t(0)) : (";
+          emitExpr(*bin.lhs);
+          out_ << " " << bin.op << " ";
+          emitExpr(*bin.rhs);
+          out_ << "))";
+          break;
+        }
+        if (bin.binop == BinOp::Shl || bin.binop == BinOp::Shr) {
+          out_ << "(";
+          emitExpr(*bin.rhs);
+          out_ << " < 0 || ";
+          emitExpr(*bin.rhs);
+          out_ << " > 63 ? (a_fail_shift(";
+          emitExpr(*bin.rhs);
+          out_ << "), int_t(0)) : (";
+          emitExpr(*bin.lhs);
+          out_ << " " << bin.op << " ";
+          emitExpr(*bin.rhs);
+          out_ << "))";
+          break;
+        }
         out_ << "(";
         emitExpr(*bin.lhs);
         out_ << " " << bin.op << " ";
@@ -563,6 +604,200 @@ bool buildNativeBinary(const ModuleGraph& graph, const SemaResult& sema,
   if (code != 0) {
     err << "error: compilation command failed with code " << code << "\n";
     return false;
+  }
+  return true;
+}
+
+int runNativeBinary(const ModuleGraph& graph, const SemaResult& sema,
+                    std::istream& in, std::ostream& out, std::ostream& err) {
+  (void)in;
+  std::string tmpBase = "/tmp/a_native_run_" + std::to_string(getpid()) + "_" + std::to_string(rand());
+  if (!buildNativeBinary(graph, sema, tmpBase, err)) {
+    return -1;  // native emitter could not compile the program
+  }
+
+  // Execute directly and stream stdout/stderr.
+  std::string runCmd = tmpBase + " 2>/tmp/a_native_err.txt";
+  FILE* pipe = popen(runCmd.c_str(), "r");
+  if (!pipe) {
+    err << "error: failed to execute native binary\n";
+    std::filesystem::remove(tmpBase);
+    return 2;
+  }
+
+  char buf[256];
+  while (fgets(buf, sizeof(buf), pipe)) {
+    out << buf;
+  }
+  int status = pclose(pipe);
+
+  std::ifstream errFile("/tmp/a_native_err.txt");
+  if (errFile) {
+    std::string errLine;
+    while (std::getline(errFile, errLine)) {
+      err << errLine << "\n";
+    }
+  }
+  std::filesystem::remove("/tmp/a_native_err.txt");
+  std::filesystem::remove(tmpBase);
+
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  return 2;
+}
+
+namespace {
+
+bool checkNativeExpr(const Expr& expr) {
+  switch (expr.kind) {
+  case ExprKind::IntLit:
+  case ExprKind::FloatLit:
+  case ExprKind::BoolLit:
+    return true;
+  case ExprKind::CharLit:
+    return false;  // native emitter has no character-literal support
+  case ExprKind::StringLit: {
+    // Interpolated parts are silently dropped by the native emitter.
+    const auto& s = static_cast<const StringLitExpr&>(expr);
+    for (const auto& p : s.parts)
+      if (p.isExpr) return false;
+    return true;
+  }
+  case ExprKind::Ident:
+    return true;
+  case ExprKind::Unary: {
+    const auto& u = static_cast<const UnaryExpr&>(expr);
+    // "-", "!", "not", "~", "++", "--" all map to valid C++ unary operators.
+    const bool ok = u.op == "-" || u.op == "!" || u.op == "not" || u.op == "~" ||
+                    u.op == "++" || u.op == "--";
+    return ok && checkNativeExpr(*u.operand);
+  }
+  case ExprKind::Binary: {
+    const auto& b = static_cast<const BinaryExpr&>(expr);
+    // `**` has no C++ operator.
+    if (b.binop == BinOp::Pow) return false;
+    return checkNativeExpr(*b.lhs) && checkNativeExpr(*b.rhs);
+  }
+  case ExprKind::Call: {
+    const auto& c = static_cast<const CallExpr&>(expr);
+    if (c.callee->kind != ExprKind::Ident) return false;  // closures unsupported
+    const std::string& name = static_cast<const IdentExpr&>(*c.callee).name;
+    // `print` only forwards its first argument; extra args are silently dropped.
+    if (name == "print")
+      return c.args.size() == 1 && checkNativeExpr(*c.args[0].value);
+    // These builtins are not provided by the native runtime helpers; they
+    // would produce an undeclared-identifier error, so route them to the
+    // interpreter instead.
+    if (name == "input" || name == "read_file" || name == "write_file" ||
+        name == "append_file" || name == "file_exists" || name == "remove_file" ||
+        name == "flush" || name == "read_line" || name == "eprint" ||
+        name == "panic" || name == "assert" || name == "assert_eq" ||
+        name == "int" || name == "float")
+      return false;
+    for (const auto& a : c.args)
+      if (!checkNativeExpr(*a.value)) return false;
+    return true;
+  }
+  case ExprKind::ArrayLit: {
+    const auto& arr = static_cast<const ArrayLitExpr&>(expr);
+    for (const auto& e : arr.elements)
+      if (!checkNativeExpr(*e)) return false;
+    return true;
+  }
+  default:
+    // Index, Slice, Field, SafeNav, Range, Ternary, Tuple, Lambda,
+    // Comprehension, Match, Try, MapLit, SetLit are not emitted correctly.
+    return false;
+  }
+}
+
+bool checkNativeStmt(const Stmt& stmt);
+
+bool checkNativeStmts(const std::vector<StmtPtr>& stmts) {
+  for (const auto& s : stmts)
+    if (!checkNativeStmt(*s)) return false;
+  return true;
+}
+
+bool checkNativeStmt(const Stmt& stmt) {
+  switch (stmt.kind) {
+  case StmtKind::Let: {
+    const auto& s = static_cast<const LetStmt&>(stmt);
+    return !s.init || checkNativeExpr(*s.init);
+  }
+  case StmtKind::Assign: {
+    const auto& s = static_cast<const AssignStmt&>(stmt);
+    if (s.target->kind != ExprKind::Ident) return false;
+    return checkNativeExpr(*s.value);
+  }
+  case StmtKind::Expr: {
+    const auto& s = static_cast<const ExprStmt&>(stmt);
+    return checkNativeExpr(*s.expr);
+  }
+  case StmtKind::Return: {
+    const auto& s = static_cast<const ReturnStmt&>(stmt);
+    return !s.value || checkNativeExpr(*s.value);
+  }
+  case StmtKind::Break:
+  case StmtKind::Continue:
+    return true;
+  case StmtKind::If: {
+    const auto& s = static_cast<const IfStmt&>(stmt);
+    for (const auto& br : s.branches) {
+      if (!checkNativeExpr(*br.cond)) return false;
+      if (!checkNativeStmts(br.body)) return false;
+    }
+    return checkNativeStmts(s.elseBody);
+  }
+  case StmtKind::While: {
+    const auto& s = static_cast<const WhileStmt&>(stmt);
+    if (!checkNativeExpr(*s.cond)) return false;
+    return checkNativeStmts(s.body);
+  }
+  case StmtKind::For: {
+    const auto& s = static_cast<const ForStmt&>(stmt);
+    // A literal zero step would make the native loop run forever.
+    if (s.iterable->kind == ExprKind::Range) {
+      const auto& r = static_cast<const RangeExpr&>(*s.iterable);
+      if (r.step) {
+        if (const auto* lit = static_cast<const IntLitExpr*>(r.step.get()))
+          if (lit->value == 0) return false;
+      }
+    }
+    if (!checkNativeExpr(*s.iterable)) return false;
+    return checkNativeStmts(s.body);
+  }
+  default:
+    // DoWhile, Defer, Destructure, Loop, Import, FromImport are not emitted.
+    return false;
+  }
+}
+
+}  // namespace
+
+bool isNativeSupported(const ModuleGraph& graph) {
+  if (graph.modules.empty()) return false;
+  for (const auto& mod : graph.modules) {
+    if (!mod.program) continue;
+    for (const auto& st : mod.program->statements) {
+      switch (st->kind) {
+      case StmtKind::FnDecl: {
+        const auto& fn = static_cast<const FnDecl&>(*st);
+        if (!checkNativeStmts(fn.body)) return false;
+        break;
+      }
+      case StmtKind::StructDecl: {
+        const auto& sd = static_cast<const StructDecl&>(*st);
+        for (const auto& m : sd.methods)
+          if (!checkNativeStmts(m->body)) return false;
+        break;
+      }
+      case StmtKind::EnumDecl:
+      case StmtKind::TypeAlias:
+        break;
+      default:
+        if (!checkNativeStmt(*st)) return false;
+      }
+    }
   }
   return true;
 }

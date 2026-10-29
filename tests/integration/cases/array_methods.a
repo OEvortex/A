@@ -1,5 +1,5 @@
 var xs = [3, 1, 4, 1, 5]
-print("len:", len(xs), "contains:", xs.contains(4), "index:", xs.index_of(1), "missing:", xs.index_of(9))
+print("len:", len(xs), "contains:", xs.contains(4), "index:", xs.index(1))
 print("first:", xs.first(), "last:", xs.last())
 
 xs.insert(0, 10)
